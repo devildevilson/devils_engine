@@ -5,6 +5,7 @@
 
 #include "devils_engine/originator/computation_queue.h"
 #include "devils_engine/originator/device_form.h"
+#include "devils_engine/utils/process_memory.h"
 
 // Реализация учёта: накопление записей и сводка по ним.
 //
@@ -137,6 +138,28 @@ size_t touched_bytes(const std::span<const field_ref>& inputs, const std::span<c
   return total;
 }
 
+memory_summary summarize_memory(const execution_profile& profile, const size_t declared_buffers) {
+  memory_summary summary;
+  summary.declared_buffers = declared_buffers;
+  // ПИК ПРОЦЕССА, а не текущее значение: временная таблица живёт миллисекунды и к концу шага уже
+  // возвращена аллокатору, но пока она была, машина её держала.
+  summary.peak_resident = utils::peak_resident_bytes();
+
+  for (const auto& record : profile.records()) {
+    if (!record.declared_footprint) {
+      summary.undeclared_calls += 1;
+      summary.undeclared_microseconds += record.microseconds;
+      continue;
+    }
+    if (record.footprint <= summary.largest_temporary) continue;
+    summary.largest_temporary = record.footprint;
+    summary.largest_temporary_call = record.label;
+    summary.largest_temporary_step = record.step;
+  }
+
+  return summary;
+}
+
 profile_summary summarize(const execution_profile& profile) {
   profile_summary summary;
 
@@ -262,7 +285,8 @@ double milliseconds(const uint64_t value) noexcept {
 }
 } // namespace
 
-std::string format_profile(const execution_profile& profile, const size_t top_calls) {
+std::string format_profile(const execution_profile& profile, const size_t top_calls,
+                           const size_t declared_buffers) {
   const auto summary = summarize(profile);
 
   std::string text;
@@ -396,6 +420,76 @@ std::string format_profile(const execution_profile& profile, const size_t top_ca
                             share(record.microseconds, summary.total_microseconds), record.label,
                             to_string(record.shape), to_string(record.fitness), record.step,
                             record.queue_size != 0 ? format_queue_shape(record) : ""));
+  }
+
+  // ПАМЯТЬ: объявленное против занятого. Раздел стоит последним не по важности, а потому, что он
+  // единственный говорит про величину, которую генератор обещает знать ЗАРАНЕЕ, а не про то, во что
+  // обошёлся этот прогон.
+  {
+    const auto memory = summarize_memory(profile, declared_buffers);
+    const auto megabytes = [](const size_t bytes) { return double(bytes) / (1024.0 * 1024.0); };
+
+    text.append("\nПАМЯТЬ:\n");
+    if (memory.declared_buffers != 0) {
+      text.append(std::format("  буферы объявлены     {:9.1f} МиБ\n", megabytes(memory.declared_buffers)));
+    }
+    if (memory.largest_temporary != 0) {
+      text.append(std::format("  наибольшая временная {:9.1f} МиБ  ({} в шаге '{}')\n",
+                              megabytes(memory.largest_temporary), memory.largest_temporary_call,
+                              memory.largest_temporary_step));
+    }
+    // ПРОБЕЛ ИЗМЕРЯЕТСЯ ТОЙ ЖЕ ВЕЛИЧИНОЙ, что и всё остальное: вызов, не объявивший стоимость, — это
+    // не ноль, а НЕИЗВЕСТНО, и знать, сколько работы стоит за этим «неизвестно», важнее самого числа.
+    if (memory.undeclared_calls != 0) {
+      text.append(std::format("  НЕ ОБЪЯВИЛИ         {:5} вызовов ({:.1f}% часов) — их стоимость неизвестна, а не нулевая\n",
+                              memory.undeclared_calls,
+                              share(memory.undeclared_microseconds, summary.total_microseconds)));
+      // ИМЕНА, а не только число: пробел закрывается по одному инструменту, и порядок работы задаёт
+      // доля, как и у недостающих тел.
+      std::vector<std::pair<std::string, uint64_t>> silent;
+      for (const auto& record : profile.records()) {
+        if (record.declared_footprint) continue;
+        const auto found = std::find_if(silent.begin(), silent.end(),
+                                        [&](const auto& entry) { return entry.first == record.label; });
+        if (found != silent.end()) {
+          found->second += record.microseconds;
+          continue;
+        }
+        silent.emplace_back(record.label, record.microseconds);
+      }
+      std::sort(silent.begin(), silent.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+      text.append("                      ");
+      for (size_t i = 0; i < silent.size() && i < 8; ++i) {
+        text.append(std::format("{}{}", i == 0 ? "" : ", ", silent[i].first));
+      }
+      if (silent.size() > 8) {
+        text.append(std::format(" и ещё {}", silent.size() - 8));
+      }
+      text.push_back('\n');
+    }
+    if (memory.peak_resident != 0) {
+      text.append(std::format("  пик процесса         {:9.1f} МиБ\n", megabytes(memory.peak_resident)));
+      // ОТНОШЕНИЕ ОБЪЯВЛЕННОГО К ЗАНЯТОМУ ГОВОРИТСЯ В ОБЕ СТОРОНЫ, и это не симметрия ради красоты:
+      // молчать в одну из них значило бы прятать ровно то, ради чего величина и считается.
+      //
+      //   объявлено МЕНЬШЕ пика — часть стоимости не названа никем, и обещание «назвать стоимость до
+      //   запуска» выполняется только на объявленную часть;
+      //   объявлено БОЛЬШЕ пика — оценки верхние (число дуг у соседства, длина очереди у заливки), и
+      //   запас говорит, насколько они грубы. Это законно: занижать стоимость памяти нельзя, а
+      //   завышать — можно, если сказать вслух.
+      const size_t named = memory.declared_buffers + memory.largest_temporary;
+      if (memory.peak_resident > named) {
+        text.append(std::format("  НЕ РАЗЛОЖЕНО         {:9.1f} МиБ  (образ процесса, lua, ресурсы, чужие "
+                                "библиотеки — и всё, что ещё не объявлено)\n",
+                                megabytes(memory.peak_resident - named)));
+      } else {
+        text.append(std::format("  объявлено с запасом  {:9.1f} МиБ  (оценки временных таблиц ВЕРХНИЕ: занижать "
+                                "стоимость памяти нельзя)\n",
+                                megabytes(named - memory.peak_resident)));
+      }
+    } else {
+      text.append("  пик процесса         не измеряется на этой платформе\n");
+    }
   }
 
   text.append("\nПО ШАГАМ:\n");

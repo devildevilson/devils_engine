@@ -41,6 +41,7 @@ target_link_libraries(devils_originator
 
 add_library(devils_engine::originator ALIAS devils_originator)
 
+
 # Слой demiurg: генератор как РЕСУРС. Отдельная цель по той же причине, что lua и devils_script —
 # ядру генератора незачем знать, откуда приехал текст. Потребителю, который читает документы с диска
 # (стенд, тест), эта цель не нужна вовсе.

@@ -793,7 +793,14 @@ void tool_registry::add_volume_tools() {
                        .shape = aperture::scatter,
                        .input_count = 2,
                        .output_count = 3,
-                       .body = tool_marching_cubes});
+                       .body = tool_marching_cubes,
+                       // Случай куба на клетку плюс смещения: обе таблицы живут ровно на время вызова
+                       // и в объявлении буферов их нет. Клеток на один узел меньше, чем отсчётов по
+                       // каждой оси, но верхняя оценка по отсчётам проще и не занижает.
+                       .footprint = [](const tool_call& call) {
+                         const size_t samples = call.input(0).valid() ? call.input(0).count() : 0;
+                         return samples * sizeof(uint8_t) + (samples + 1) * sizeof(uint32_t);
+                       }});
   add(tool_description{.name = "polyline_distance",
                        .shape = aperture::gather,
                        .input_count = 3,

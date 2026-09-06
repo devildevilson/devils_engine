@@ -138,3 +138,35 @@ TEST_CASE("originator profile measures what residency between calls would save")
   CHECK(summary.payable_transfer_per_call == 2200);
   CHECK(summary.payable_transfer_shared == 1200);
 }
+
+TEST_CASE("originator memory summary tells 'nothing' apart from 'unknown'") {
+  originator::execution_profile profile;
+
+  profile.begin_step("topology");
+  // Объявленный ноль — это ОТВЕТ: инструмент посмотрел на себя и сказал, что таблиц не заводит.
+  auto free_call = made("topology", "remap", 100, originator::device_fitness::ready);
+  free_call.declared_footprint = true;
+  profile.add(free_call);
+
+  auto heavy = made("topology", "sphere_adjacency", 700, originator::device_fitness::refused);
+  heavy.footprint = 96 * 1024 * 1024;
+  heavy.declared_footprint = true;
+  profile.add(heavy);
+
+  // А молчание — не ноль: стоимость этого вызова НЕИЗВЕСТНА, и отчёт обязан различать эти случаи,
+  // иначе неназванная память выглядит как бесплатная.
+  profile.add(made("topology", "hotspot_tracks", 200, originator::device_fitness::no_body));
+  profile.end_step(1000);
+
+  const auto memory = originator::summarize_memory(profile, 432 * 1024 * 1024);
+
+  CHECK(memory.declared_buffers == 432u * 1024u * 1024u);
+  // ПИК СЧИТАЕТСЯ ПО НАИБОЛЬШЕЙ таблице, а не по сумме: таблица живёт на время вызова и возвращается
+  // аллокатору до начала следующего.
+  CHECK(memory.largest_temporary == 96u * 1024u * 1024u);
+  CHECK(memory.largest_temporary_call == "sphere_adjacency");
+  CHECK(memory.largest_temporary_step == "topology");
+
+  CHECK(memory.undeclared_calls == 1);
+  CHECK(memory.undeclared_microseconds == 200);
+}

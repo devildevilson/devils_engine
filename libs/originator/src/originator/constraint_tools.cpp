@@ -627,6 +627,27 @@ private:
   size_t rollbacks_used_ = 0;
 };
 
+// ВРЕМЕННАЯ СТОИМОСТЬ РЕШАТЕЛЯ. Память здесь названа вслух с самого начала («волна это клетки x
+// ceil(тайлы/32) слов, и БОЛЬШЕ НИЧЕГО»), но названа была в комментарии — а теперь она объявлена,
+// то есть попадает в отчёт наравне с буферами.
+//
+// Журнал откатов считается ВЕРХНЕЙ оценкой: сколько изменений случится, до прогона не знает никто, и
+// ограничен он терпением (`rollbacks`) и памятью (`history`). Занижать нельзя, поэтому берётся
+// произведение, а не «обычно меньше».
+size_t collapse_footprint(const tool_call& call) {
+  const size_t cells = call.range_count();
+  const auto tiles = size_t(std::max<int64_t>(call.params->integer("tiles", 1), 1));
+  const size_t words = (tiles + 31) / 32;
+
+  const size_t wave = cells * words * sizeof(uint32_t);
+  // Поддержка, стек и отметки — по слову на клетку каждая.
+  const size_t working = cells * sizeof(uint32_t) * 3;
+  const auto history = size_t(std::max<int64_t>(call.params->integer("history", 0), 0));
+  const auto rollbacks = size_t(std::max<int64_t>(call.params->integer("rollbacks", 0), 0));
+  const size_t journal = history == 0 || rollbacks == 0 ? 0 : history * cells * sizeof(uint32_t) * 2;
+  return wave + working + journal;
+}
+
 // Соседство РАСТРА: четыре направления, порядок обхода фиксирован.
 struct raster_neighbours {
   size_t width = 0;
@@ -993,7 +1014,7 @@ void tool_registry::add_constraint_tools() {
   add(tool_description{
     .name = "collapse", .shape = aperture::sequential,
     .input_count = 3, .optional_inputs = 1, .output_count = 3, .optional_outputs = 2,
-    .body = tool_collapse, .prepare = prepare_raster_rules});
+    .body = tool_collapse, .prepare = prepare_raster_rules, .footprint = collapse_footprint});
 
   add(tool_description{
     .name = "graph_collapse", .shape = aperture::sequential,

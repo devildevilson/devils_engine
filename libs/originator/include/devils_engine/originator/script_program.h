@@ -82,6 +82,8 @@ private:
 
   std::unique_ptr<implementation> impl_;
 
+  friend size_t script_footprint(const script_program&, const size_t);
+
   friend void dispatch_script(const script_program&,
                               const std::span<const field_ref>&,
                               const std::span<const field_ref>&,
@@ -92,6 +94,12 @@ private:
                               const std::string_view&,
                               thread::atomic_pool*);
 };
+
+// ВРЕМЕННАЯ ПАМЯТЬ ПРОГРАММЫ: контекст виртуальной машины `devils_script`, СВОЙ У КАЖДОГО ЧАНКА.
+// Величина маленькая (стек операндов, сохранённые слоты и списки, объявленные самой программой), но
+// она есть, а «есть и мало» и «неизвестно» — разные ответы: молчание здесь означало бы, что учёт
+// памяти считает программы бесплатными, ничего об этом не сказав.
+size_t script_footprint(const script_program& program, const size_t workers);
 
 // Проверяет вызов программы, не исполняя его: число входов, совпадение имён привязок с теми, под
 // которыми программа компилировалась, изменяемость выхода, диапазон и наличие каждого `ctx:arg:` в

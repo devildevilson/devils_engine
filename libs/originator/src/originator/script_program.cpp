@@ -237,6 +237,16 @@ void run_chunk(const script_program::implementation& impl,
   }
 }
 
+size_t script_footprint(const script_program& program, const size_t workers) {
+  const auto& impl = *program.impl_;
+  // Контекст на чанк: операндный стек и saved-слоты, объявленные скомпилированной программой, плюс
+  // списки. Чанков одновременно столько, сколько рабочих потоков.
+  const size_t stack = std::max<size_t>(impl.program.max_stack, 1) * sizeof(ds::stack_element);
+  const size_t saved = std::max<size_t>(impl.program.max_saved, 1) * (sizeof(ds::stack_element) + sizeof(std::string_view));
+  const size_t lists = impl.program.lists.size() * sizeof(void*) * 4;
+  return (stack + saved + lists) * std::max<size_t>(workers, 1);
+}
+
 dispatch_check check_script_dispatch(const script_program& program,
                                     const std::span<const field_ref>& inputs,
                                     const std::span<const field_ref>& outputs,

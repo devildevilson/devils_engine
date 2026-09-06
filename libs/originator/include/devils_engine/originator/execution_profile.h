@@ -81,6 +81,11 @@ struct profile_record {
   // Время, потраченное на ПЕРЕВОД программы в GLSL, если он случился на этом вызове. Отдельно от
   // `microseconds`, потому что это цена первого чанка, а не цена работы.
   uint64_t translation_microseconds = 0;
+  // ВРЕМЕННАЯ ПАМЯТЬ ВЫЗОВА, объявленная инструментом. `declared_footprint == false` означает НЕ
+  // ОБЪЯВЛЕНО, а не ноль: это разные ответы, и отчёт обязан их различать — иначе неизвестная
+  // стоимость выглядела бы как бесплатная.
+  size_t footprint = 0;
+  bool declared_footprint = false;
   aperture::values shape = aperture::pointwise;
   device_fitness::values fitness = device_fitness::refused;
   // 0 => одиночный вызов; иначе число элементов очереди.
@@ -153,6 +158,28 @@ struct profile_run {
   size_t transfer_shared = 0;
 };
 
+// ПАМЯТЬ ГЕНЕРАТОРА: объявленное против занятого.
+//
+// Существует ради обещания «генератор обязан уметь назвать свою стоимость по памяти до запуска».
+// Держалось оно на сумме объявленных буферов, а замер показал, что машине нужно на треть больше: у
+// GN02 на миллионе клеток 432 MB объявлено против 562 MiB пика. Разница — временные таблицы
+// инструментов, которых нет ни в одном объявлении, и вот теперь они объявляются.
+struct memory_summary {
+  // Сумма объявленных буферов. Приходит от хоста: профилю пайплайн не виден.
+  size_t declared_buffers = 0;
+  // Наибольшая временная таблица за прогон и чей это вызов. Пик считается по НАИБОЛЬШЕЙ, а не по
+  // сумме: таблица живёт на время вызова и возвращается аллокатору сразу после.
+  size_t largest_temporary = 0;
+  std::string largest_temporary_call;
+  std::string largest_temporary_step;
+  // Сколько вызовов НЕ объявили свою временную стоимость и во что они обошлись по времени: пробел
+  // измеряется той же величиной, что и всё остальное.
+  size_t undeclared_calls = 0;
+  uint64_t undeclared_microseconds = 0;
+  // Пик резидентной памяти процесса. 0 означает «здесь не измеряется», а не «памяти не занято».
+  size_t peak_resident = 0;
+};
+
 struct profile_summary {
   uint64_t total_microseconds = 0;   // сумма стенных часов шагов
   uint64_t calls_microseconds = 0;   // сумма стенных часов вызовов
@@ -192,9 +219,16 @@ struct profile_summary {
 
 profile_summary summarize(const execution_profile& profile);
 
+// Память по записям профиля плюс объявленные буферы, которые называет вызывающий: сумму буферов знает
+// пайплайн, а профиль его не видит и видеть не должен.
+memory_summary summarize_memory(const execution_profile& profile, const size_t declared_buffers);
+
 // Текстовый отчёт: доли по годности и апертурам, самые дорогие вызовы, прогоны. Живёт здесь, чтобы у
 // каждой площадки не было своего представления одних и тех же чисел.
-std::string format_profile(const execution_profile& profile, const size_t top_calls = 8);
+// `declared_buffers` — сумма объявленных буферов пайплайна (`pipeline::total_byte_size`). Ноль
+// означает «хост её не назвал», и раздел памяти тогда честно говорит только про временные таблицы.
+std::string format_profile(const execution_profile& profile, const size_t top_calls = 8,
+                           const size_t declared_buffers = 0);
 
 } // namespace originator
 } // namespace devils_engine

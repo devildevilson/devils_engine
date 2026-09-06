@@ -162,11 +162,14 @@ private:
 // `prelude` — ФУНКЦИИ тела, которые нельзя объявить внутри `main`. Нужен там, где инструмент не
 // умещается в выражение: у шума это хеш решётки, интерполяция и октавы. Ставится ПОСЛЕ привязок,
 // поэтому преамбула вправе пользоваться и аксессорами, и push-константой.
+// `whole_group` — тело объявило, что ему нужна вся группа (`device_whole_group`): охранник тогда не
+// возвращает управление, а отдаётся телу признаком `active`.
 std::string build_device_shader(const std::span<const device_binding>& bindings,
                                 const std::span<const device_param>& params,
                                 const std::string_view& body,
                                 const uint32_t group_size = 64,
-                                const std::string_view& prelude = {});
+                                const std::string_view& prelude = {},
+                                const bool whole_group = false);
 
 } // namespace originator
 } // namespace devils_engine

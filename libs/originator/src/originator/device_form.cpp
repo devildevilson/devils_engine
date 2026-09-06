@@ -230,7 +230,8 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
                                 const std::span<const device_param>& params,
                                 const std::string_view& body,
                                 const uint32_t group_size,
-                                const std::string_view& prelude) {
+                                const std::string_view& prelude,
+                                const bool whole_group) {
   if (bindings.empty()) {
     utils::error{}("originator: a device form with no bindings computes nothing");
   }
@@ -311,8 +312,18 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
   // осям, а шейдер собирает индекс обратно — и оба конца этого соглашения живут в одном месте.
   text.append("  uint group = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;\n");
   text.append("  uint local = group * gl_WorkGroupSize.x + gl_LocalInvocationID.x;\n");
-  text.append("  if (local >= args.count) return;\n");
-  text.append("  uint index = args.begin + local;\n");
+  if (whole_group) {
+    // ОХРАННИК ПЕРЕЕЗЖАЕТ В ТЕЛО: до барьера обязаны дойти ВСЕ инвокации группы, а ранний возврат
+    // это ровно то, что им мешает. Индекс у неактивной инвокации прижат к началу диапазона, чтобы
+    // случайное чтение осталось в границах буфера, а не ушло за него.
+    // Признак зовётся `in_range`, а не `active`: `active` в GLSL — ЗАРЕЗЕРВИРОВАННОЕ слово, и ловится
+    // это только компилятором. Ровно тот случай, ради которого проверку и отдали glslc.
+    text.append("  bool in_range = local < args.count;\n");
+    text.append("  uint index = args.begin + (in_range ? local : 0u);\n");
+  } else {
+    text.append("  if (local >= args.count) return;\n");
+    text.append("  uint index = args.begin + local;\n");
+  }
   text.append(body);
   text.append("}\n");
   return text;

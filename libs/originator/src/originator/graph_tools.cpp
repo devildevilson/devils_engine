@@ -81,6 +81,31 @@ struct adjacency_index {
   double mean_radius = 1.0;
 };
 
+// ВРЕМЕННАЯ СТОИМОСТЬ СОСЕДСТВА, и она здесь самая крупная в библиотеке — аудит нашёл именно её.
+// Считается по тем самым таблицам, которые тело и заводит:
+//
+//   дерево      точка на клетку в kd-дереве подготовки;
+//   nearest     клетки x соседей, по номеру на каждого кандидата;
+//   degrees     степень на клетку;
+//   starts      смещения CSR, на одну больше числа клеток;
+//   filled      дуга дважды (симметризация) — по числу дуг;
+//   cursors     курсор на клетку.
+//
+// Число дуг до счёта неизвестно, поэтому берётся ВЕРХНЯЯ оценка: каждый нашёл `neighbours` соседей, и
+// каждая дуга легла дважды. Оценка сверху здесь честнее точной: занижать стоимость памяти нельзя.
+size_t adjacency_footprint(const tool_call& call) {
+  const size_t count = call.range_count();
+  const auto neighbours = size_t(std::clamp<int64_t>(call.params->integer("neighbours", 6), 1, 32));
+
+  const size_t tree = count * sizeof(tree_point);
+  const size_t nearest = count * neighbours * sizeof(uint32_t);
+  const size_t degrees = count * sizeof(uint32_t);
+  const size_t starts = (count + 1) * sizeof(uint32_t);
+  const size_t filled = count * neighbours * 2 * sizeof(uint32_t);
+  const size_t cursors = count * sizeof(uint32_t);
+  return tree + nearest + degrees + starts + filled + cursors;
+}
+
 std::shared_ptr<void> prepare_adjacency(const tool_call& call) {
   const auto positions = call.input(0).read();
   if (positions.type().components < 3) {
@@ -814,12 +839,13 @@ void tool_registry::add_graph_tools() {
   const auto add = [this](tool_description description) { this->add(std::move(description)); };
 
   add(tool_description{.name = "sphere_points", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
-                       .body = tool_sphere_points});
+                       .body = tool_sphere_points, .footprint = no_temporary_memory});
   add(tool_description{.name = "sphere_adjacency", .shape = aperture::scatter, .input_count = 1, .output_count = 2,
-                       .body = tool_sphere_adjacency, .prepare = prepare_adjacency});
+                       .body = tool_sphere_adjacency, .prepare = prepare_adjacency,
+                       .footprint = adjacency_footprint});
   add(tool_description{
     .name = "graph_blur", .shape = aperture::gather, .input_count = 3, .output_count = 1,
-    .body = tool_graph_blur,
+    .body = tool_graph_blur, .footprint = no_temporary_memory,
     // ГРАФ НА УСТРОЙСТВЕ — ЭТО ТРИ БУФЕРА И ОДИН ЦИКЛ, и больше ничего: смещения, дуги, значения.
     // Окно растра здесь неприменимо (у сферы нет плоскости), поэтому именно эта форма и переносится.
     //
@@ -841,10 +867,18 @@ void tool_registry::add_graph_tools() {
     // объявить это обязан инструмент.
     .device_integer_ready = true});
   add(tool_description{.name = "graph_flood", .shape = aperture::sequential, .input_count = 5, .output_count = 2,
-                       .body = tool_graph_flood});
+                       .body = tool_graph_flood,
+                       // Очередь с приоритетом плюс отметка занятости на клетку. Очередь ограничена
+                       // числом дуг: каждая клетка попадает в неё столько раз, сколько у неё соседей,
+                       // и это ВЕРХНЯЯ оценка — обычно много меньше, но занижать нельзя.
+                       .footprint = [](const tool_call& call) {
+                         const size_t count = call.range_count();
+                         const size_t arcs = call.input(1).valid() ? call.input(1).count() : count * 8;
+                         return count * sizeof(uint32_t) * 2 + arcs * (sizeof(uint32_t) * 2 + sizeof(double));
+                       }});
   add(tool_description{
     .name = "graph_frontier", .shape = aperture::gather, .input_count = 3, .output_count = 1,
-    .body = tool_graph_frontier,
+    .body = tool_graph_frontier, .footprint = no_temporary_memory,
     // Досрочный выход из цикла на устройстве обходится дешевле, чем кажется: волна всё равно ждёт
     // самого долгого соседа, но лишних чтений памяти не делает.
     .device_body = "  float own = in_2_at(index);\n"
@@ -861,14 +895,21 @@ void tool_registry::add_graph_tools() {
     .device_params = {{"ignore", -1.0}},
     .device_integer_ready = true});
   add(tool_description{.name = "poisson_seeds", .shape = aperture::sequential, .input_count = 3, .output_count = 1,
-                       .body = tool_poisson_seeds});
+                       .body = tool_poisson_seeds,
+                       // Кандидаты (по элементу), отметка блокировки и kd-дерево принятых. Кандидатов
+                       // не больше числа элементов — столько и объявляется.
+                       .footprint = [](const tool_call& call) {
+                         const size_t count = call.range_count();
+                         return count * (sizeof(float) * 3 + sizeof(uint32_t)) + count * sizeof(uint8_t) +
+                                count * sizeof(uint32_t) * 4;
+                       }});
   add(tool_description{.name = "graph_vote", .shape = aperture::gather, .input_count = 5, .output_count = 1,
-                       .body = tool_graph_vote});
+                       .body = tool_graph_vote, .footprint = no_temporary_memory});
   add(tool_description{.name = "graph_slope", .shape = aperture::gather, .input_count = 3, .output_count = 1,
-                       .body = tool_graph_slope});
+                       .body = tool_graph_slope, .footprint = no_temporary_memory});
   add(tool_description{
     .name = "lookup", .shape = aperture::gather, .input_count = 2, .output_count = 1,
-    .body = tool_lookup,
+    .body = tool_lookup, .footprint = no_temporary_memory,
     // Косвенность как данные: индекс лежит в поле, значение берётся из ДРУГОГО буфера. Смещение
     // существует потому, что метки считаются с единицы, а элементы буфера групп с нуля; молча
     // вычитать единицу нельзя — не всякое поле индексов является меткой.
@@ -881,9 +922,23 @@ void tool_registry::add_graph_tools() {
     .device_params = {{"offset", 0.0}, {"missing", 0.0}},
     .device_integer_ready = true});
   add(tool_description{.name = "connected_components", .shape = aperture::sequential, .input_count = 3,
-                       .output_count = 1, .body = tool_connected_components});
+                       .output_count = 1, .body = tool_connected_components,
+                       // Сырая нумерация, стек обхода и таблица размеров. Стек ограничен числом
+                       // клеток: глубже одного прохода по подграфу он не растёт.
+                       .footprint = [](const tool_call& call) {
+                         const size_t count = call.range_count();
+                         return count * sizeof(uint32_t) * 2 + count * sizeof(size_t);
+                       }});
   add(tool_description{.name = "label_adjacency", .shape = aperture::scatter, .input_count = 3, .output_count = 2,
-                       .body = tool_label_adjacency});
+                       .body = tool_label_adjacency,
+                       // Вектор векторов: строка на метку, а в ней соседи до чистки повторов. Оценка
+                       // берётся по числу ДУГ исходного графа — больше соседей у меток взяться
+                       // неоткуда, — плюс накладные самих векторов.
+                       .footprint = [](const tool_call& call) {
+                         const size_t rows = call.outputs.front().valid() ? call.outputs.front().count() : 0;
+                         const size_t arcs = call.input(2).valid() ? call.input(2).count() : 0;
+                         return rows * sizeof(std::vector<uint32_t>) + arcs * sizeof(uint32_t) * 2;
+                       }});
 }
 
 } // namespace originator

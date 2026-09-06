@@ -120,6 +120,78 @@ buffer_layout make_buffer_layout(const storage_kind::values storage,
   return layout;
 }
 
+namespace {
+// Выровненное начало внутри уже выделенного вектора. Правило то же, что в конструкторе, и живёт оно
+// в одном месте: два способа выровнять один и тот же буфер однажды разъедутся.
+std::byte* aligned_start(std::vector<std::byte>& memory) noexcept {
+  if (memory.empty()) {
+    return nullptr;
+  }
+  auto* raw = memory.data();
+  const auto address = reinterpret_cast<uintptr_t>(raw);
+  const auto aligned = align_up(size_t(address), plane_alignment);
+  return raw + (aligned - size_t(address));
+}
+} // namespace
+
+buffer::buffer(const buffer& other) :
+  name_(other.name_), layout_(other.layout_), extent_(other.extent_), count_(other.count_),
+  placement_(other.placement_) {
+  // СМЕЩЕНИЕ ВЫРАВНИВАНИЯ У КОПИИ СВОЁ, поэтому копируется НЕ ВЕКТОР, А ДАННЫЕ ОТ НАЧАЛА ДО НАЧАЛА.
+  //
+  // Копия вектора сохранила бы байты на их прежних СМЕЩЕНИЯХ, а выровненное начало у новой аллокации
+  // приходится на другое смещение — и копия читала бы свои же данные, сдвинутые на несколько байт.
+  // Ошибка при этом невидима по результату: буфер валиден, значения правдоподобны, просто не те.
+  memory_.assign(other.memory_.size(), std::byte{0});
+  data_ = aligned_start(memory_);
+  if (data_ != nullptr && other.data_ != nullptr) {
+    std::memcpy(data_, other.data_, layout_.byte_size(count_));
+  }
+}
+
+buffer& buffer::operator=(const buffer& other) {
+  if (this == &other) {
+    return *this;
+  }
+  name_ = other.name_;
+  layout_ = other.layout_;
+  extent_ = other.extent_;
+  count_ = other.count_;
+  placement_ = other.placement_;
+  memory_.assign(other.memory_.size(), std::byte{0});
+  data_ = aligned_start(memory_);
+  if (data_ != nullptr && other.data_ != nullptr) {
+    std::memcpy(data_, other.data_, layout_.byte_size(count_));
+  }
+  return *this;
+}
+
+buffer::buffer(buffer&& other) noexcept :
+  name_(std::move(other.name_)), layout_(std::move(other.layout_)), extent_(other.extent_),
+  count_(other.count_), placement_(std::move(other.placement_)), memory_(std::move(other.memory_)) {
+  // У переноса вектор тот же самый, но полагаться на это нельзя: реализация вправе не переносить
+  // память, а скопировать её. Пересчёт здесь стоит ничего и снимает вопрос.
+  data_ = aligned_start(memory_);
+  other.data_ = nullptr;
+  other.count_ = 0;
+}
+
+buffer& buffer::operator=(buffer&& other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+  name_ = std::move(other.name_);
+  layout_ = std::move(other.layout_);
+  extent_ = other.extent_;
+  count_ = other.count_;
+  placement_ = std::move(other.placement_);
+  memory_ = std::move(other.memory_);
+  data_ = aligned_start(memory_);
+  other.data_ = nullptr;
+  other.count_ = 0;
+  return *this;
+}
+
 buffer::buffer(std::string name, buffer_layout layout, const size_t count) :
   name_(std::move(name)), layout_(std::move(layout)), count_(count) {
   if (!layout_.valid()) {
@@ -152,10 +224,7 @@ buffer::buffer(std::string name, buffer_layout layout, const size_t count) :
 
   const size_t total = layout_.byte_size(count_);
   memory_.assign(total + plane_alignment, std::byte{0});
-  auto* raw = memory_.data();
-  const auto address = reinterpret_cast<uintptr_t>(raw);
-  const auto aligned = align_up(size_t(address), plane_alignment);
-  data_ = raw + (aligned - size_t(address));
+  data_ = aligned_start(memory_);
 }
 
 bool buffer_extent::declared() const noexcept {

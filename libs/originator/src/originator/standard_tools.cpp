@@ -567,7 +567,7 @@ void tool_registry::add_standard_tools() {
   // Именованная инициализация намеренно: набор полей описания инструмента будет расти, и
   // позиционная запись ломалась бы на каждом новом поле.
   add(tool_description{
-    .name = "fill", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_fill,
+    .name = "fill", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_fill, .footprint = no_temporary_memory,
     // Заливка не смотрит на род поля вовсе — она кладёт одно и то же число, и на устройстве тоже.
     // Поэтому она объявляет себя годной для любого рода: иначе очередь, начинающаяся с обнуления
     // целого счётчика, не переносилась бы вся из-за самого простого своего элемента.
@@ -576,7 +576,7 @@ void tool_registry::add_standard_tools() {
     .device_integer_ready = true});
   add(tool_description{
     .name = "position_grid", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
-    .body = tool_position_grid,
+    .body = tool_position_grid, .footprint = no_temporary_memory,
     // Форма приходит ОБЩЕЙ ШАПКОЙ (`extent_x`, `extent_y`), потому что она объявлена буфером, а не
     // параметром: второго способа назвать её нет ни на одном из путей. Начало координат — параметром,
     // и по той же причине, по которой его нет у тела на CPU: инструмент не знает про чанки, ключ
@@ -594,9 +594,9 @@ void tool_registry::add_standard_tools() {
                    "  out_0_set(index, 2u, args.origin_z + float(z) * args.cell_size);\n"
                    "#endif\n",
     .device_params = {{"cell_size", 1.0}, {"origin_x", 0.0}, {"origin_y", 0.0}, {"origin_z", 0.0}}});
-  add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise});
+  add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise, .footprint = no_temporary_memory});
   add(tool_description{
-    .name = "index", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_index,
+    .name = "index", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_index, .footprint = no_temporary_memory,
     // Номер элемента — целое, и поле под него объявляют целым; тело написано против `float`, поэтому
     // точность держится до 2^24 элементов. Дальше номер обязан ехать целым родом, и это цена, которую
     // объявляет `device_integer_ready`.
@@ -604,7 +604,7 @@ void tool_registry::add_standard_tools() {
     .device_params = {{"scale", 1.0}, {"offset", 0.0}},
     .device_integer_ready = true});
   add(tool_description{
-    .name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap,
+    .name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap, .footprint = no_temporary_memory,
     // `component` в устройственную форму не входит: многокомпонентное поле в очередь не пускается
     // (§3.2), поэтому компонента там всегда нулевая, и параметр стал бы ложью.
     // `sample` в GLSL — ЗАРЕЗЕРВИРОВАННОЕ слово (квалификатор интерполяции), поэтому величина
@@ -620,7 +620,7 @@ void tool_registry::add_standard_tools() {
                       {"max", std::numeric_limits<double>::infinity(), "upper"},
                       {"absolute", 0.0}}});
   add(tool_description{
-    .name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify,
+    .name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify, .footprint = no_temporary_memory,
     // Ветвление переведено ТЕРНАРНИКАМИ в том же порядке, в каком стоят проверки на CPU: порядок
     // здесь и есть правило, а не оформление — первая сработавшая проверка решает.
     .device_body = "  float height = in_0_at(index);\n"
@@ -633,25 +633,25 @@ void tool_registry::add_standard_tools() {
     // и над узким родом это точно: до 2^24 float32 представляет целые без потерь.
     .device_integer_ready = true});
   add(tool_description{
-    .name = "blend", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_blend,
+    .name = "blend", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_blend, .footprint = no_temporary_memory,
     .device_body = "  float value = args.weight_first * in_0_at(index) + args.weight_second * in_1_at(index) + args.offset;\n"
                    "  out_0_set(index, clamp(value, args.lower, args.upper));\n",
     .device_params = {{"first", 1.0, "weight_first"}, {"second", 1.0, "weight_second"}, {"offset", 0.0},
                       {"min", -std::numeric_limits<double>::infinity(), "lower"},
                       {"max", std::numeric_limits<double>::infinity(), "upper"}}});
   add(tool_description{
-    .name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay,
+    .name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay, .footprint = no_temporary_memory,
     // Отрицательное расстояние — метка «недостигнуто», а не расстояние; растить от неё экспоненту
     // нельзя, иначе дальше всех влияло бы сильнее всех. Зажим тот же, что на CPU.
     .device_body = "  float distance = max(0.0, in_0_at(index));\n"
                    "  out_0_set(index, args.offset + args.amplitude * exp(-distance / args.width));\n",
     .device_params = {{"width", 1.0}, {"amplitude", 1.0}, {"offset", 0.0}}});
   add(tool_description{
-    .name = "modulate", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_modulate,
+    .name = "modulate", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_modulate, .footprint = no_temporary_memory,
     .device_body = "  out_0_set(index, args.scale * in_0_at(index) * in_1_at(index) + args.offset);\n",
     .device_params = {{"scale", 1.0}, {"offset", 0.0}}});
   add(tool_description{
-    .name = "ratio", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_ratio,
+    .name = "ratio", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_ratio, .footprint = no_temporary_memory,
     // Знак знаменателя СОХРАНЯЕТСЯ при подъёме до минимума — иначе у отрицательной суммы весов
     // результат менял бы знак ровно там, где она мала. Обязательность `minimum_divisor` проверяет
     // тело на CPU; у устройственной формы значение по умолчанию бессмысленно, поэтому здесь стоит
@@ -662,15 +662,15 @@ void tool_registry::add_standard_tools() {
                    "  out_0_set(index, args.scale * in_0_at(index) / safe + args.offset);\n",
     .device_params = {{"scale", 1.0}, {"offset", 0.0}, {"minimum_divisor", 1.0e-9}}});
   add(tool_description{
-    .name = "maximum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_maximum,
+    .name = "maximum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_maximum, .footprint = no_temporary_memory,
     .device_body = "  out_0_set(index, max(in_0_at(index), in_1_at(index)));\n",
     .device_params = {}});
   add(tool_description{
-    .name = "minimum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_minimum,
+    .name = "minimum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_minimum, .footprint = no_temporary_memory,
     .device_body = "  out_0_set(index, min(in_0_at(index), in_1_at(index)));\n",
     .device_params = {}});
   add(tool_description{
-    .name = "box_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1, .body = tool_box_blur,
+    .name = "box_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1, .body = tool_box_blur, .footprint = no_temporary_memory,
     // Форма растра приходит ОБЩЕЙ ШАПКОЙ, а не параметром: `extent` объявлен буфером, и второго
     // способа назвать ширину не осталось ни на одном из путей.
     .device_body = "  uint radius = uint(args.radius);\n"
@@ -697,7 +697,7 @@ void tool_registry::add_standard_tools() {
 
   add(tool_description{
     .name = "filtered_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1,
-    .body = tool_filtered_blur,
+    .body = tool_filtered_blur, .footprint = no_temporary_memory,
     .device_body = "  vec2 texel = vec2(1.0) / vec2(float(args.extent_x), float(args.extent_y));\n"
                    "  vec2 uv = (vec2(float(index % args.extent_x), float(index / args.extent_x)) + vec2(0.5)) * texel;\n"
                    "  vec2 offset = texel * args.radius;\n"
@@ -714,7 +714,7 @@ void tool_registry::add_standard_tools() {
 
   add(tool_description{
     .name = "label_colour", .shape = aperture::pointwise, .input_count = 2, .output_count = 1,
-    .body = tool_label_colour,
+    .body = tool_label_colour, .footprint = no_temporary_memory,
     .device_body = "  uint hashed = uint(in_0_at(index)) * 2654435761u;\n"
                    "  vec3 base = vec3(float((hashed >> 16) & 255u), float((hashed >> 8) & 255u),\n"
                    "                   float(hashed & 255u)) / 255.0;\n"
@@ -727,18 +727,18 @@ void tool_registry::add_standard_tools() {
     .device_integer_ready = true});
 
   add(tool_description{.name = "reduce_min", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
-                       .partial = reduce_min_partial,
+                       .footprint = no_temporary_memory, .partial = reduce_min_partial,
                        .combine = [](const double a, const double b) { return std::min(a, b); },
                        .initial = std::numeric_limits<double>::infinity()});
   add(tool_description{.name = "reduce_max", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
-                       .partial = reduce_max_partial,
+                       .footprint = no_temporary_memory, .partial = reduce_max_partial,
                        .combine = [](const double a, const double b) { return std::max(a, b); },
                        .initial = -std::numeric_limits<double>::infinity()});
   add(tool_description{.name = "reduce_sum", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
-                       .partial = reduce_sum_partial,
+                       .footprint = no_temporary_memory, .partial = reduce_sum_partial,
                        .combine = [](const double a, const double b) { return a + b; }, .initial = 0.0});
   add(tool_description{.name = "reduce_count_above", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
-                       .partial = reduce_count_above_partial,
+                       .footprint = no_temporary_memory, .partial = reduce_count_above_partial,
                        .combine = [](const double a, const double b) { return a + b; }, .initial = 0.0});
 
   add_scatter_tools();

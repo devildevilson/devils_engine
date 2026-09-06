@@ -479,7 +479,8 @@ device_queue::device_queue(painter::compute_context& context, const computation_
 
     // 3. ТЕКСТ СОБИРАЕТСЯ ЗДЕСЬ, потому что только здесь известен выведенный род каждого поля. Тот же
     //    текст на тех же привязках даёт ту же программу — кэш контекста ключуется по нему.
-    const auto source = build_device_shader(shape, params, body_of(call), 64, prelude_of(call));
+    const auto source = build_device_shader(shape, params, body_of(call), 64, prelude_of(call),
+                                           call.tool != nullptr && call.tool->device_whole_group);
     const uint32_t push_size = uint32_t(sizeof(device_call_header) + params.size() * sizeof(float));
 
     call_plan plan;

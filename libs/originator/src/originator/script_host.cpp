@@ -507,8 +507,25 @@ sol::object script_host::run_tool(const std::string& tool_name, const sol::table
   const auto started = profile_ != nullptr ? now_us() : 0;
   const auto measured = [&](const size_t elements) {
     if (profile_ == nullptr) return;
+    // ВРЕМЕННУЮ СТОИМОСТЬ СПРАШИВАЕМ У ИНСТРУМЕНТА, собрав ему тот же вызов, который исполнялся:
+    // сколько таблиц он заведёт, зависит от привязок и параметров, и знает это только он.
+    size_t footprint = 0;
+    bool declared = false;
+    if (tool->footprint != nullptr) {
+      tool_call shape;
+      shape.inputs = inputs;
+      shape.outputs = outputs;
+      shape.params = &params;
+      shape.seed = seed;
+      shape.range_begin = begin;
+      shape.range_end = end;
+      shape.step_name = current_step_;
+      shape.tool_name = tool_name;
+      footprint = tool->footprint(shape);
+      declared = true;
+    }
     account(tool_name, uint64_t(now_us() - started), elements, touched_fields(inputs, outputs), tool->shape,
-            fitness_of(*tool, inputs, outputs));
+            fitness_of(*tool, inputs, outputs), 0, false, 0, footprint, declared);
   };
 
   if (tool->shape == aperture::reduce) {
@@ -574,8 +591,11 @@ void script_host::run_program(const sol::table args) {
   const auto started = profile_ != nullptr ? now_us() : 0;
   dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
   if (profile_ != nullptr) {
+    // Временная память программы — контексты виртуальной машины, по одному на рабочий поток.
+    const size_t workers = pool_ == nullptr ? 1 : pool_->size() + 1;
     account(*program_name, uint64_t(now_us() - started), end > begin ? end - begin : 0,
-            touched_fields(inputs, outputs), program.shape(), fitness, 0, false, translation);
+            touched_fields(inputs, outputs), program.shape(), fitness, 0, false, translation,
+            script_footprint(program, workers), true);
   }
 }
 
@@ -804,6 +824,10 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   auto fitness = device_fitness::ready;
   size_t elements = 0;
   size_t by_fitness[device_fitness::count] = {};
+  // Пик очереди — НАИБОЛЬШАЯ временная таблица её вызовов, а не сумма: элементы исполняются по
+  // очереди, и таблица возвращается аллокатору до начала следующего.
+  size_t footprint = 0;
+  bool declared_footprint = true;
   std::vector<field_ref> inputs;
   std::vector<field_ref> outputs;
   if (profile_ != nullptr) {
@@ -817,6 +841,22 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
       fitness = std::max(fitness, call_fitness);
       by_fitness[call_fitness] += 1;
       elements += call.range_count();
+      if (call.tool != nullptr) {
+        if (call.tool->footprint == nullptr) {
+          declared_footprint = false;
+        } else {
+          tool_call shape;
+          shape.inputs = call.inputs;
+          shape.outputs = call.outputs;
+          shape.params = &call.params;
+          shape.seed = call.seed;
+          shape.range_begin = call.range_begin;
+          shape.range_end = call.range_end;
+          shape.step_name = current_step_;
+          shape.tool_name = call.label;
+          footprint = std::max(footprint, call.tool->footprint(shape));
+        }
+      }
       inputs.insert(inputs.end(), call.inputs.begin(), call.inputs.end());
       outputs.insert(outputs.end(), call.outputs.begin(), call.outputs.end());
     }
@@ -841,6 +881,8 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
       pending_translation_us_ = 0;
       record.queue_size = queue.calls.size();
       std::copy(std::begin(by_fitness), std::end(by_fitness), std::begin(record.queue_fitness));
+      record.footprint = footprint;
+      record.declared_footprint = declared_footprint;
       record.on_device = report.on_device;
       profile_->add(std::move(record));
     }
@@ -922,7 +964,9 @@ void script_host::account(std::string label,
                           const device_fitness::values fitness,
                           const size_t queue_size,
                           const bool on_device,
-                          const uint64_t translation_microseconds) {
+                          const uint64_t translation_microseconds,
+                          const size_t footprint,
+                          const bool declared_footprint) {
   if (profile_ == nullptr) {
     return;
   }
@@ -941,6 +985,8 @@ void script_host::account(std::string label,
   record.fitness = fitness;
   record.queue_size = queue_size;
   record.on_device = on_device;
+  record.footprint = footprint;
+  record.declared_footprint = declared_footprint;
   profile_->add(std::move(record));
 }
 

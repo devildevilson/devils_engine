@@ -64,8 +64,12 @@ float quintic(const float t) noexcept {
   return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
+// ФОРМУЛА ТА ЖЕ, ЧТО У GLSL `mix`, а не привычная `a + (b - a) * t`. Математически они равны, а
+// численно нет — и на четырёх октавах разница копится до ~3e-06, то есть до величины, которая уже
+// видна в сравнении путей. Совпадение здесь держится на том, что обе стороны считают ОДНИ И ТЕ ЖЕ
+// операции в одном порядке; вольность в записи это ломает.
 float lerp_f(const float a, const float b, const float t) noexcept {
-  return a + (b - a) * t;
+  return a * (1.0f - t) + b * t;
 }
 
 // Значение решётки, интерполированное трилинейно. В [-1, 1].
@@ -466,19 +470,19 @@ std::string noise_body(const uint32_t kind) {
 void add_noise_field_tools(tool_registry& registry) {
   registry.add(tool_description{
     .name = "noise_value", .shape = aperture::pointwise, .input_count = 1, .output_count = 1,
-    .body = tool_noise_value,
+    .body = tool_noise_value, .footprint = no_temporary_memory,
     .device_body = noise_body(0),
     .device_prelude = std::string(noise_prelude),
     .device_params = noise_params()});
   registry.add(tool_description{
     .name = "noise_perlin", .shape = aperture::pointwise, .input_count = 1, .output_count = 1,
-    .body = tool_noise_perlin,
+    .body = tool_noise_perlin, .footprint = no_temporary_memory,
     .device_body = noise_body(1),
     .device_prelude = std::string(noise_prelude),
     .device_params = noise_params()});
   registry.add(tool_description{
     .name = "noise_cellular", .shape = aperture::pointwise, .input_count = 1, .output_count = 1,
-    .body = tool_noise_cellular,
+    .body = tool_noise_cellular, .footprint = no_temporary_memory,
     .device_body = noise_body(2),
     .device_prelude = std::string(noise_prelude),
     .device_params = noise_params()});

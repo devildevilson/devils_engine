@@ -58,6 +58,19 @@ void require_position_field(const tool_call& call) {
   }
 }
 
+// ВРЕМЕННАЯ СТОИМОСТЬ ДИАГРАММЫ. Точки и таблицы CSR считаются точно, а сама диаграмма jc_voronoi —
+// ОЦЕНКОЙ: её память принадлежит чужой библиотеке, и точное число знает только она. Оценка взята по
+// её же документации — рёбер у диаграммы Вороного не больше `3n`, а узел ребра там держит две точки и
+// указатели, — и она ВЕРХНЯЯ: занижать стоимость памяти нельзя, а признаться в оценке можно.
+size_t diagram_footprint(const tool_call& call) {
+  const size_t sites = call.range_count();
+  const size_t points = sites * sizeof(jcv_point);
+  const size_t csr = (sites + 1) * sizeof(size_t) + sites * sizeof(uint32_t) * 8;
+  // ~3n рёбер, у каждого узел с двумя точками и связями; множитель взят с запасом.
+  const size_t diagram = sites * 3 * (sizeof(jcv_point) * 2 + sizeof(void*) * 4);
+  return points + csr + diagram;
+}
+
 std::shared_ptr<void> prepare_site_tree(const tool_call& call) {
   require_position_field(call);
 
@@ -394,6 +407,12 @@ void add_voronoi_tools(tool_registry& registry) {
     .name = "voronoi_label", .shape = aperture::gather,
     .input_count = 1, .output_count = 2, .optional_outputs = 1,
     .body = tool_voronoi_label, .prepare = prepare_site_tree,
+    // Подготовка строит kd-дерево сайтов: точка на сайт плюс узлы дерева. Сайтов на порядки меньше,
+    // чем клеток, поэтому величина маленькая — но НАЗВАННАЯ, а не подразумеваемая.
+    .footprint = [](const tool_call& call) {
+      const size_t sites = call.input(0).valid() ? call.input(0).count() : 0;
+      return sites * (sizeof(float) * 2 + sizeof(uint32_t) * 4);
+    },
     // УСТРОЙСТВЕННАЯ ФОРМА — ПЕРЕБОР, а не дерево, и это не лень. kd-дерево на устройство не
     // переносится (его строит подготовка на хосте), а перебор по списку сайтов там стоит ровно
     // столько, сколько сайтов: работа на элемент плотная, а именно плотность и окупает устройство.
@@ -434,10 +453,10 @@ void add_voronoi_tools(tool_registry& registry) {
   // числу сайтов, а не к размеру выходных буферов.
   registry.add(tool_description{.name = "voronoi_adjacency", .shape = aperture::scatter,
                                 .input_count = 1, .output_count = 2,
-                                .body = tool_voronoi_adjacency});
+                                .body = tool_voronoi_adjacency, .footprint = diagram_footprint});
   registry.add(tool_description{.name = "voronoi_polygons", .shape = aperture::scatter,
                                 .input_count = 1, .output_count = 4,
-                                .body = tool_voronoi_polygons});
+                                .body = tool_voronoi_polygons, .footprint = diagram_footprint});
 }
 
 void add_all_primitives(tool_registry& registry) {

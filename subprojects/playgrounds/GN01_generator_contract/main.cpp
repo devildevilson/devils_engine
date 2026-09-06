@@ -943,6 +943,49 @@ int run_bench(const options& opts) {
     measure("шум: noise_grid, " + std::to_string(threads) + " потоков", count, [&] {
       originator::dispatch(*tools.find("noise_grid"), {}, out, noise, 1, 0, count, "bench", &pool);
     });
+
+    // СОБСТВЕННЫЙ ШУМ ЯДРА рядом с FastNoise2, на том же поле и в том же числе потоков. Сравнение
+    // честное только по цене: значения у них РАЗНЫЕ и совпадать не обязаны — это своя реализация
+    // известного алгоритма, а не совместимая. Зато она умеет устройство, а FastNoise2 нет.
+    //
+    // Позиции здесь приходят полем, как того и требует контракт: шум ядра не знает ни про растр, ни
+    // про чанки, и решётку ему считает `position_grid`.
+    {
+      // Позиции приходят ПОЛЕМ: шум ядра не знает ни про растр, ни про чанки, и решётку ему считает
+      // `position_grid`. Здесь для этого заводится свой буфер — у стенда его нет, а брать чужой
+      // значило бы мерить заодно и чужую раскладку.
+      const std::vector<std::pair<std::string_view, std::string_view>> position_fields = {{"position", "v2"}};
+      auto position_layout =
+        originator::make_buffer_layout(originator::storage_kind::soa, position_fields, "positions");
+      originator::buffer positions("positions", std::move(position_layout),
+                                   originator::buffer_extent{opts.width, opts.width, 0});
+
+      const std::vector<originator::field_ref> position_out{
+        originator::field_ref{&positions, &positions, positions.find_field("position")}};
+      const std::vector<originator::field_ref> position_in{
+        originator::field_ref{&positions, nullptr, positions.find_field("position")}};
+
+      originator::parameters grid;
+      grid.set_number("cell_size", 1.0);
+      originator::dispatch(*tools.find("position_grid"), {}, position_out, grid, 1, 0, count, "bench", &pool);
+
+      originator::parameters own;
+      own.set_number("frequency", 5.0 / double(opts.width));
+      own.set_number("octaves", 4);
+
+      measure("шум: noise_perlin (свой), 1 поток", count, [&] {
+        originator::dispatch(*tools.find("noise_perlin"), position_in, out, own, 1, 0, count, "bench", nullptr);
+      });
+      measure("шум: noise_perlin (свой), " + std::to_string(threads) + " потоков", count, [&] {
+        originator::dispatch(*tools.find("noise_perlin"), position_in, out, own, 1, 0, count, "bench", &pool);
+      });
+      measure("шум: noise_value (свой), " + std::to_string(threads) + " потоков", count, [&] {
+        originator::dispatch(*tools.find("noise_value"), position_in, out, own, 1, 0, count, "bench", &pool);
+      });
+      measure("шум: noise_cellular (свой), " + std::to_string(threads) + " потоков", count, [&] {
+        originator::dispatch(*tools.find("noise_cellular"), position_in, out, own, 1, 0, count, "bench", &pool);
+      });
+    }
   }
 
   // Отдельные примитивы областей: gather-разметка и оба scatter'а.
@@ -1357,7 +1400,7 @@ int run_once(const options& opts) {
   const double milliseconds = run_and_measure(p, host);
 
   if (opts.profile) {
-    std::cout << "\n" << originator::format_profile(profile) << "\n";
+    std::cout << "\n" << originator::format_profile(profile, 8, p.total_byte_size()) << "\n";
   }
 
   std::cout << "GN01: пайплайн '" << p.name() << "', раскладка " << to_string(opts.layout)

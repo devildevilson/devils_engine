@@ -820,8 +820,12 @@ TEST_CASE("originator native noise computes the same field on both paths") {
   // пути дать нечем. Значит совпадение обязано держаться ТЕСТОМ, а не аккуратностью: расхождение здесь
   // означало бы, что мир зависит от того, где его посчитали.
   //
-  // Побитового равенства никто не обещает (§4.2), но обе стороны считают во `float32` одними и теми же
-  // операциями, поэтому расхождение обязано остаться на уровне последнего бита, а не алгоритма.
+  // ПОБИТОВОГО РАВЕНСТВА ЗДЕСЬ НЕТ, И ОБЕЩАТЬ ЕГО НЕЛЬЗЯ (§4.2): обе стороны считают во `float32`
+  // одними и теми же операциями, но драйвер вправе применять FMA и переставлять ассоциативность.
+  // Измерено: типичное расхождение — ОДИН последний бит, худшее около `3e-06` на накоплении четырёх
+  // октав, и около восьмой части поля сходится точно. Проверяется поэтому ПОРЯДОК величины, а не ноль:
+  // ноль здесь означал бы, что сравнение сравнивает не то (так уже было — копия буфера делила память
+  // с оригиналом, и «побитово» получалось само собой).
   const std::vector<field_pair> fields = {
     {"position", "v3"}, {"value", "v1"}, {"perlin", "v1"}, {"cellular", "v1"}};
   auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells");
@@ -885,6 +889,16 @@ TEST_CASE("originator native noise computes the same field on both paths") {
   for (const auto& name : {"value", "perlin", "cellular"}) {
     const auto worst = worst_difference(cells, device_cells, name);
     std::printf("  noise '%s': worst deviation %.3g\n", name, worst);
+    // Доля ТОЧНЫХ совпадений печатается рядом с худшим расхождением, потому что одно без другого
+    // вводит в заблуждение: «worst 3e-06» звучит как разные алгоритмы, а на деле восьмая часть поля
+    // сходится бит в бит, а остальное расходится последним битом.
+    const auto a = cells.field(cells.find_field(name));
+    const auto b = device_cells.field(device_cells.find_field(name));
+    size_t exact = 0;
+    for (size_t i = 0; i < grid_count; ++i) {
+      exact += size_t(a.get(i) == b.get(i));
+    }
+    std::printf("    (%.1f%% элементов совпали точно)\n", 100.0 * double(exact) / double(grid_count));
     CHECK(worst < 1.0e-5);
   }
 
@@ -903,4 +917,76 @@ TEST_CASE("originator native noise computes the same field on both paths") {
     CHECK(low >= -1.001);
     CHECK(high <= 1.001);
   }
+}
+
+TEST_CASE("originator counts into shared memory and agrees with the CPU count") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the histogram is not compared here");
+    return;
+  }
+
+  // СВЁРТКА ЧЕРЕЗ АТОМИКИ: узкое место у неё не двухстадийность, а КОНКУРЕНЦИЯ — миллион элементов
+  // бьётся за десятки счётчиков. Группа копит в разделяемой памяти, и в общий буфер уходит один
+  // атомик на корзину на группу.
+  //
+  // Проверяется здесь ДВА пути сразу: узкая гистограмма (влезает в разделяемую память) и широкая
+  // (не влезает, остаётся прямой атомик). Второй путь легко забыть, а ошибка в нём проявится только
+  // на большом числе корзин.
+  const auto measure_buckets = [&](const size_t buckets) {
+    const std::vector<field_pair> fields = {{"key", "ui1"}};
+    auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells");
+    originator::buffer cells("cells", std::move(layout), originator::buffer_extent{grid_width, grid_width, 0});
+
+    const std::vector<field_pair> bins = {{"total", "ui1"}};
+    auto bin_layout = originator::make_buffer_layout(originator::storage_kind::soa, bins, "histogram");
+    originator::buffer histogram("histogram", std::move(bin_layout), buckets);
+
+    auto key = cells.field(cells.find_field("key"));
+    for (size_t i = 0; i < grid_count; ++i) {
+      key.set(i, double((i * 7919) % buckets));
+    }
+
+    originator::computation_queue queue;
+    queue.name = "histogram";
+    queue.calls.push_back(tool_call("count_by", {readable(cells, "key")}, {writable(histogram, "total")}, {}));
+    queue.output.push_back(writable(histogram, "total"));
+
+    const auto check = originator::check_device_queue(queue);
+    REQUIRE_MESSAGE(check.allowed, check.message);
+
+    auto device_histogram = histogram;
+    run_on_cpu(queue);
+
+    painter::compute_context_config config;
+    config.app_name = "device_histogram_test";
+    painter::compute_context context(config);
+
+    originator::computation_queue device_copy = queue;
+    device_copy.calls.front().outputs.front() = writable(device_histogram, "total");
+    device_copy.output.front() = writable(device_histogram, "total");
+    originator::device_queue plan(context, device_copy);
+    const auto report = plan.run();
+
+    const auto cpu = histogram.field(histogram.find_field("total"));
+    const auto gpu = device_histogram.field(device_histogram.find_field("total"));
+    size_t differences = 0;
+    size_t total = 0;
+    for (size_t i = 0; i < buckets; ++i) {
+      differences += size_t(cpu.get(i) != gpu.get(i));
+      total += size_t(gpu.get(i));
+    }
+
+    std::printf("  histogram of %zu elements into %zu buckets: %.2f ms recorded\n", grid_count, buckets,
+                report.record_ms);
+    // ПОБИТОВО: счёт целый, и порядок прихода групп на него не влияет — сложение целых коммутативно.
+    CHECK(differences == 0);
+    // И посчитаны ВСЕ элементы: гистограмма, потерявшая половину, совпала бы с CPU только если бы обе
+    // теряли одинаково, а вот это уже проверяется суммой.
+    CHECK(total == grid_count);
+  };
+
+  // Узкая: влезает в разделяемую память группы.
+  measure_buckets(64);
+  // Широкая: не влезает, работает запасной путь с прямым атомиком.
+  measure_buckets(1024);
 }

@@ -33,6 +33,26 @@ size_t chunk_count_of(const size_t count) noexcept {
   return (count + scatter_chunk_size - 1) / scatter_chunk_size;
 }
 
+// ВРЕМЕННАЯ СТОИМОСТЬ ДВУХФАЗНОЙ СХЕМЫ: таблица «чанки x корзины», которой нет ни в одном объявлении
+// буферов. Считается по тому же правилу, по которому она и заводится, — включая потолок, после
+// которого инструмент честно уходит в один чанк вместо тихого разрастания памяти.
+//
+// `bytes_per_cell` у каждого инструмента свой: `group_by` держит счётчики и курсоры, `accumulate` —
+// плавающие частичные суммы, `count_by` — целые.
+template <size_t bytes_per_cell>
+size_t counter_table_footprint(const tool_call& call) {
+  if (call.outputs.empty() || !call.outputs.front().valid()) {
+    return 0;
+  }
+
+  const size_t bucket_count = call.outputs.front().count() > 1 ? call.outputs.front().count() - 1 : 1;
+  const size_t count = call.range_count();
+  const size_t chunks = chunk_count_of(count);
+  const bool table_fits = chunks != 0 && bucket_count != 0 && chunks <= maximum_counter_table / bucket_count;
+  const size_t effective_chunks = table_fits ? chunks : 1;
+  return effective_chunks * bucket_count * bytes_per_cell;
+}
+
 // Ключ корзины из значения поля. Отрицательное и выходящее за границы — ошибка данных, а не повод
 // молча положить элемент в нулевую корзину.
 size_t bucket_of(const double value, const size_t bucket_count, const tool_call& call, const size_t element) {
@@ -263,21 +283,53 @@ void tool_count_by(const tool_call& call, const size_t begin, const size_t end) 
 
 void tool_registry::add_scatter_tools() {
   add(tool_description{.name = "group_by", .shape = aperture::scatter, .input_count = 1, .output_count = 2,
-                       .body = tool_group_by});
+                       .body = tool_group_by, .footprint = counter_table_footprint<sizeof(size_t) * 2>});
   add(tool_description{.name = "accumulate", .shape = aperture::scatter, .input_count = 2, .output_count = 1,
-                       .body = tool_accumulate});
+                       .body = tool_accumulate, .footprint = counter_table_footprint<sizeof(double)>});
   add(tool_description{
     .name = "count_by", .shape = aperture::scatter, .input_count = 1, .output_count = 1,
-    .body = tool_count_by,
+    .body = tool_count_by, .footprint = counter_table_footprint<sizeof(uint64_t)>,
     // КЛЮЧ ВНЕ ДИАПАЗОНА: на хосте это громкая ошибка данных, на устройстве бросить нечем, и там
     // такой элемент пропускается. Расхождение бывает только у конфига, который на CPU уже падает, —
     // поэтому оно названо здесь, а не спрятано.
-    .device_body = "  uint bucket = uint(in_0_at(index));\n"
-                   "  if (bucket >= out_0_length()) return;\n"
-                   "  out_0_add(bucket, 1u);\n",
+    // УЗКОЕ МЕСТО СВЁРТКИ НА УСТРОЙСТВЕ — НЕ ДВУХСТАДИЙНОСТЬ, А КОНКУРЕНЦИЯ. Замер GN04 показал
+    // неожиданное: гистограмма стоила ДОРОЖЕ самой разметки (`7.43` против `4.65` мс), хотя работы в
+    // ней несравнимо меньше — один `atomicAdd` на пиксель против цикла по 64 сайтам. Причина в том,
+    // что четверть миллиона пикселей бьётся за 64 счётчика: атомики сериализуются на одной кэш-линии.
+    //
+    // Форма ответа известна давно и теперь сделана: группа копит в РАЗДЕЛЯЕМОЙ памяти, а в общий
+    // буфер уходит ОДИН атомик на корзину на группу. Число атомиков падает с «на элемент» до
+    // «на группу», то есть в размер группы раз.
+    //
+    // ПУТЕЙ ДВА, и выбор между ними УНИФОРМЕН по группе (зависит только от длины буфера, а не от
+    // данных): широкая гистограмма в разделяемую память не влезает, и там остаётся прежний прямой
+    // атомик. Барьер внутри такого ветвления законен именно потому, что условие одинаково у всей
+    // группы.
+    .device_body = "  uint bins = out_0_length();\n"
+                   "  if (bins <= 256u) {\n"
+                   "    for (uint i = gl_LocalInvocationID.x; i < bins; i += gl_WorkGroupSize.x) {\n"
+                   "      count_by_bins[i] = 0u;\n"
+                   "    }\n"
+                   "    barrier();\n"
+                   "    if (in_range) {\n"
+                   "      uint bucket = uint(in_0_at(index));\n"
+                   "      if (bucket < bins) atomicAdd(count_by_bins[bucket], 1u);\n"
+                   "    }\n"
+                   "    barrier();\n"
+                   "    for (uint i = gl_LocalInvocationID.x; i < bins; i += gl_WorkGroupSize.x) {\n"
+                   "      uint total = count_by_bins[i];\n"
+                   "      if (total != 0u) out_0_add(i, total);\n"
+                   "    }\n"
+                   "  } else if (in_range) {\n"
+                   "    uint bucket = uint(in_0_at(index));\n"
+                   "    if (bucket < bins) out_0_add(bucket, 1u);\n"
+                   "  }\n",
+    .device_prelude = "shared uint count_by_bins[256];\n",
     .device_params = {},
     // Приёмник — счётчик, то есть целое поле по природе.
     .device_integer_ready = true,
+    // Барьеры требуют ВСЕЙ группы: инвокация вне диапазона обязана дойти до них и ничего не записать.
+    .device_whole_group = true,
     // ТО САМОЕ ОБЪЯВЛЕНИЕ, которое пускает scatter в очередь.
     .order_free_writes = true});
 }

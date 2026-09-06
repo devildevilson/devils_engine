@@ -2478,7 +2478,7 @@ int run_once(options opts) {
                          0, opts.profile ? &profile : nullptr);
 
   if (opts.profile) {
-    std::cout << "\n" << originator::format_profile(profile) << "\n";
+    std::cout << "\n" << originator::format_profile(profile, 8, result.line->total_byte_size()) << "\n";
   }
   if (opts.report) {
     print_report(*result.line, opts, result.milliseconds);

@@ -161,7 +161,9 @@ private:
                const device_fitness::values fitness,
                const size_t queue_size = 0,
                const bool on_device = false,
-               const uint64_t translation_microseconds = 0);
+               const uint64_t translation_microseconds = 0,
+               const size_t footprint = 0,
+               const bool declared_footprint = false);
 
   // Собирает объявленный вызов из таблицы аргументов lua; счётчик объявлений трогают declare_*.
   queue_call make_tool_call(const std::string& tool_name, const sol::table& args);
