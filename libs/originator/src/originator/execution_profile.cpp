@@ -64,10 +64,12 @@ const std::vector<profile_step>& execution_profile::steps() const noexcept {
 
 bool device_representable(const std::span<const field_ref>& inputs,
                           const std::span<const field_ref>& outputs) noexcept {
+  // Узкий род представление ИМЕЕТ: на устройстве поле живёт расширенным (`device_storage_base`).
+  // Не представляется только то, у чего нет даже расширения.
   const auto representable = [](const std::span<const field_ref>& list) {
     for (const auto& binding : list) {
       if (!binding.valid()) continue;
-      if (device_type_name(binding.type().base).empty()) return false;
+      if (device_storage_base(binding.type().base) == field_base::count) return false;
     }
     return true;
   };
@@ -85,7 +87,26 @@ device_fitness::values fitness_of(const tool_description& tool,
   if (!device_representable(inputs, outputs)) {
     return device_fitness::narrow;
   }
-  return tool.device_body.empty() ? device_fitness::no_body : device_fitness::ready;
+  if (tool.device_body.empty()) {
+    return device_fitness::no_body;
+  }
+  // ТЕЛО ЕСТЬ, НО НЕ ДЛЯ ЭТОГО РОДА: написанное против `float`, оно годится над узким целым (оно
+  // точно во `float32`) и не годится над широким, пока инструмент не объявил себя кинд-агностичным.
+  // Упирается такой вызов опять в РОД, поэтому и класс тот же.
+  if (!tool.device_integer_ready) {
+    const auto wide_integer = [](const std::span<const field_ref>& list) {
+      for (const auto& binding : list) {
+        if (!binding.valid()) continue;
+        const auto base = binding.type().base;
+        if (base != field_base::v && !exact_in_float(base)) return true;
+      }
+      return false;
+    };
+    if (wide_integer(inputs) || wide_integer(outputs)) {
+      return device_fitness::narrow;
+    }
+  }
+  return device_fitness::ready;
 }
 
 std::vector<std::pair<std::string, size_t>> touched_fields(const std::span<const field_ref>& inputs,
@@ -258,7 +279,7 @@ std::string format_profile(const execution_profile& profile, const size_t top_ca
   static constexpr std::string_view fitness_notes[device_fitness::count] = {
     "апертура пускается, тело есть",
     "апертура пускается, тела нет — это работа «охват»",
-    "род поля не переносится (ub/us/sf/c) — это решение конфига",
+    "род поля не подходит вызову: широкое целое под телом против float — это решение конфига",
     "апертура не переносится по построению",
   };
   for (size_t i = 0; i < device_fitness::count; ++i) {
@@ -338,6 +359,30 @@ std::string format_profile(const execution_profile& profile, const size_t top_ca
   if (summary.translation_microseconds != 0) {
     text.append(std::format("\nПЕРЕВОД ds -> GLSL: {:.2f} мс за прогон (цена ПЕРВОГО чанка, дальше кэш)\n",
                             milliseconds(summary.translation_microseconds)));
+  }
+
+  // РАБОЧИЙ СПИСОК ОХВАТА: инструменты без тела, сложенные по имени. Порядок здесь и есть порядок
+  // работы — тело стоит писать тому, чья доля больше, а не тому, чьё имя первым пришло в голову.
+  {
+    std::vector<std::pair<std::string, uint64_t>> missing;
+    for (const auto& record : profile.records()) {
+      if (record.fitness != device_fitness::no_body) continue;
+      const auto found = std::find_if(missing.begin(), missing.end(),
+                                      [&](const auto& entry) { return entry.first == record.label; });
+      if (found != missing.end()) {
+        found->second += record.microseconds;
+        continue;
+      }
+      missing.emplace_back(record.label, record.microseconds);
+    }
+    if (!missing.empty()) {
+      std::sort(missing.begin(), missing.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+      text.append("\nЧЕГО НЕ ХВАТАЕТ — ИНСТРУМЕНТЫ БЕЗ УСТРОЙСТВЕННОГО ТЕЛА:\n");
+      for (size_t i = 0; i < missing.size() && i < top_calls; ++i) {
+        text.append(std::format("  {:9.2f} мс  {:5.1f}%  {}\n", milliseconds(missing[i].second),
+                                share(missing[i].second, summary.total_microseconds), missing[i].first));
+      }
+    }
   }
 
   text.append(std::format("\nСАМЫЕ ДОРОГИЕ ВЫЗОВЫ (топ {}):\n", top_calls));

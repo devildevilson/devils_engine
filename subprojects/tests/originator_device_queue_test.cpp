@@ -809,3 +809,98 @@ TEST_CASE("originator device bodies of the graph tools agree with the CPU ones")
   // И граница обязана быть содержательной: без единой границы сверка ничего не проверяет.
   CHECK(edges > 0);
 }
+
+TEST_CASE("originator native noise computes the same field on both paths") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the noise paths are not compared here");
+    return;
+  }
+
+  // СОБСТВЕННЫЙ ШУМ ДВИЖКА, написанный ДВАЖДЫ — на C++ и на GLSL, — потому что одной реализации на два
+  // пути дать нечем. Значит совпадение обязано держаться ТЕСТОМ, а не аккуратностью: расхождение здесь
+  // означало бы, что мир зависит от того, где его посчитали.
+  //
+  // Побитового равенства никто не обещает (§4.2), но обе стороны считают во `float32` одними и теми же
+  // операциями, поэтому расхождение обязано остаться на уровне последнего бита, а не алгоритма.
+  const std::vector<field_pair> fields = {
+    {"position", "v3"}, {"value", "v1"}, {"perlin", "v1"}, {"cellular", "v1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells");
+  originator::buffer cells("cells", std::move(layout), originator::buffer_extent{grid_width, grid_width, 0});
+
+  auto position = cells.field(cells.find_field("position"));
+  for (size_t i = 0; i < grid_count; ++i) {
+    position.set(i, double(i % grid_width) * 0.37, 0);
+    position.set(i, double(i / grid_width) * 0.29, 1);
+    position.set(i, double(i % 13) * 0.11, 2);
+  }
+
+  originator::parameters params;
+  params.set_number("frequency", 0.05);
+  params.set_number("octaves", 4);
+  params.set_number("lacunarity", 2.0);
+  params.set_number("gain", 0.5);
+  params.set_number("seed_offset", 17);
+
+  const auto build = [&](originator::buffer& target) {
+    originator::parameters grid;
+    grid.set_number("cell_size", 0.37);
+
+    originator::computation_queue queue;
+    queue.name = "noise";
+    // РЕШЁТКУ СТРОИТ САМО УСТРОЙСТВО: позиции приходят полем, и это поле — первый элемент очереди, а
+    // не привезённые с хоста байты. Иначе цепочка рвалась бы ровно там, где начинается работа.
+    queue.calls.push_back(tool_call("position_grid", {}, {writable(target, "position")}, grid));
+    queue.calls.push_back(tool_call("noise_value", {readable(target, "position")},
+                                    {writable(target, "value")}, params));
+    queue.calls.push_back(tool_call("noise_perlin", {readable(target, "position")},
+                                    {writable(target, "perlin")}, params));
+    queue.calls.push_back(tool_call("noise_cellular", {readable(target, "position")},
+                                    {writable(target, "cellular")}, params));
+    queue.output.push_back(writable(target, "value"));
+    queue.output.push_back(writable(target, "perlin"));
+    queue.output.push_back(writable(target, "cellular"));
+    return queue;
+  };
+
+  auto device_cells = cells;
+  const auto cpu_queue = build(cells);
+  const auto check = originator::check_device_queue(cpu_queue);
+  REQUIRE_MESSAGE(check.allowed, check.message);
+  run_on_cpu(cpu_queue);
+
+  painter::compute_context_config config;
+  config.app_name = "device_noise_test";
+  painter::compute_context context(config);
+  originator::device_queue plan(context, build(device_cells));
+  const auto report = plan.run();
+
+  // ЧИСЛО УСТРОЙСТВА рядом с ценой на CPU: свой шум существует ради того, чтобы очередь с шумом
+  // вообще могла уехать, и знать, во что это обходится с обеих сторон, надо сразу.
+  const auto cpu_start = std::chrono::steady_clock::now();
+  run_on_cpu(cpu_queue);
+  const auto cpu_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_start).count();
+  std::printf("\n  noise on %zu elements: cpu %.2f ms (one thread), device %.2f ms recorded + %.2f ms submitted\n",
+              grid_count, cpu_ms, report.record_ms, report.submit_ms);
+
+  for (const auto& name : {"value", "perlin", "cellular"}) {
+    const auto worst = worst_difference(cells, device_cells, name);
+    std::printf("  noise '%s': worst deviation %.3g\n", name, worst);
+    CHECK(worst < 1.0e-5);
+  }
+
+  // И поле обязано быть НАСТОЯЩИМ полем, а не константой: совпадение двух нулей прошло бы проверку
+  // выше и не значило бы ничего.
+  for (const auto& name : {"value", "perlin", "cellular"}) {
+    const auto accessor = cells.field(cells.find_field(name));
+    double low = 1.0e30;
+    double high = -1.0e30;
+    for (size_t i = 0; i < grid_count; ++i) {
+      low = std::min(low, accessor.get(i));
+      high = std::max(high, accessor.get(i));
+    }
+    CHECK(high - low > 0.2);
+    // Октавы нормируются, поэтому значение остаётся в объявленном диапазоне у всех трёх.
+    CHECK(low >= -1.001);
+    CHECK(high <= 1.001);
+  }
+}

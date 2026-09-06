@@ -116,6 +116,10 @@ private:
   struct call_plan;
 
   device_report execute(const bool single_submission);
+  // Преобразование узкого поля в расширенную копию устройства и обратно. Идёт теми же аксессорами,
+  // что и весь CPU-путь, поэтому зажим и округление у двух путей одни и те же.
+  std::vector<std::byte> widen(const field_slot& slot) const;
+  void narrow_back(const field_slot& slot) const;
   void write_push(const queue_call& call, call_plan& plan) const;
 
   painter::compute_context* context_ = nullptr;

@@ -164,7 +164,8 @@ struct translator {
   std::string field(const std::string_view& name, const tavl::token& token) const {
     for (size_t i = 0; i < inputs.size(); ++i) {
       if (inputs[i].name != name) continue;
-      const auto type = device_type_name(inputs[i].base);
+      // Читается тот род, в котором поле ЛЕЖИТ на устройстве: у `ub1` это `uint`, а не байт.
+      const auto type = device_type_name(device_storage_base(inputs[i].base));
       return type == "float" ? std::format("in_{}_at(index)", i)
                              : std::format("float(in_{}_at(index))", i);
     }
@@ -712,15 +713,18 @@ translation translate_to_glsl(const std::string_view& name,
     utils::error{}("originator script '{}': {} input fields, at most {} are supported", name, inputs.size(),
                    max_script_inputs);
   }
-  if (device_type_name(output.base).empty()) {
-    utils::error{}("originator script '{}': output field '{}' has storage kind '{}', which a shader buffer has no "
-                   "type for; the queue takes the 32-bit kinds v, ui and i",
+  // РОД ПОЛЯ БОЛЬШЕ НЕ ОТКАЗ: узкое поле живёт на устройстве расширенным (`device_storage_base`), и
+  // перевод обязан видеть тот же род, что объявит план, — иначе аксессор шейдера читал бы поле не
+  // своим типом. Отказ остаётся только у рода, у которого нет представления вообще.
+  if (device_storage_base(output.base) == field_base::count) {
+    utils::error{}("originator script '{}': output field '{}' has storage kind '{}', which has no device "
+                   "representation at all",
                    name, output.name, to_string(output.base));
   }
   for (const auto& field : inputs) {
-    if (!device_type_name(field.base).empty()) continue;
-    utils::error{}("originator script '{}': input field '{}' has storage kind '{}', which a shader buffer has no "
-                   "type for; the queue takes the 32-bit kinds v, ui and i",
+    if (device_storage_base(field.base) != field_base::count) continue;
+    utils::error{}("originator script '{}': input field '{}' has storage kind '{}', which has no device "
+                   "representation at all",
                    name, field.name, to_string(field.base));
   }
   for (const auto& field : inputs) {
@@ -774,12 +778,20 @@ translation translate_to_glsl(const std::string_view& name,
   const auto numeric = kind == script_program::result_kind::predicate
                          ? std::format("(({}) ? 1.0 : 0.0)", expression)
                          : std::format("({})", expression);
-  if (output.base == field_base::v) {
-    stored = numeric;
-  } else if (output.base == field_base::ui) {
-    stored = std::format("uint(clamp({}, 0.0, 4294967295.0))", numeric);
+  // ЗАЖИМ ПО ИСХОДНОМУ РОДУ, а запись — в расширенный: `ub1`, ставший `uint`, принял бы 300, а на
+  // хосте то же значение стало бы 255. У поля из `resident` скачивания не будет вовсе, поэтому
+  // зажимать обязан шейдер.
+  const auto range = device_store_range(output.base);
+  const auto clamped = range.bounded
+                         ? std::format("clamp({}, {:.1f}, {:.1f})", numeric, range.minimum, range.maximum)
+                         : numeric;
+  const auto stored_base = device_storage_base(output.base);
+  if (stored_base == field_base::v) {
+    stored = clamped;
+  } else if (stored_base == field_base::ui) {
+    stored = std::format("uint({})", clamped);
   } else {
-    stored = std::format("int(clamp({}, -2147483648.0, 2147483647.0))", numeric);
+    stored = std::format("int({})", clamped);
   }
 
   // ШЕЙДЕР НЕСЁТ СВОЁ ПРОИСХОЖДЕНИЕ. Заголовок-комментарий отвечает на вопрос «как именно перевод
@@ -820,11 +832,11 @@ translation translate_to_glsl(const std::string_view& name,
   shape.reserve(inputs.size() + 1);
   for (const auto& binding : inputs) {
     device_binding declared;
-    declared.base = binding.base;
+    declared.base = device_storage_base(binding.base);
     shape.push_back(declared);
   }
   device_binding written;
-  written.base = output.base;
+  written.base = device_storage_base(output.base);
   written.writable = true;
   shape.push_back(written);
 

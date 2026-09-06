@@ -53,6 +53,50 @@ const std::string& translated_form::refusal() const noexcept {
   return refusal_;
 }
 
+field_base::values device_storage_base(const field_base::values base) noexcept {
+  switch (base) {
+    case field_base::v:
+    case field_base::sf:
+    case field_base::c: return field_base::v;
+    case field_base::ui:
+    case field_base::us:
+    case field_base::ub: return field_base::ui;
+    case field_base::i:
+    case field_base::is:
+    case field_base::ib: return field_base::i;
+    default: return field_base::count;
+  }
+}
+
+device_value_range device_store_range(const field_base::values base) noexcept {
+  // Числа те же, что в `store_component`, и повторены НАРОЧНО: две записи одного значения дали бы два
+  // разных поля, а заметно это стало бы только на краю диапазона.
+  switch (base) {
+    case field_base::ui: return {0.0, 4294967295.0, true};
+    case field_base::us: return {0.0, 65535.0, true};
+    case field_base::ub: return {0.0, 255.0, true};
+    case field_base::i: return {-2147483648.0, 2147483647.0, true};
+    case field_base::is: return {-32768.0, 32767.0, true};
+    case field_base::ib: return {-128.0, 127.0, true};
+    case field_base::c: return {0.0, 1.0, true};
+    // `v` не ограничен, а `sf` не зажимается и на хосте: `float_to_half` переполнение отдаёт
+    // бесконечностью, и зажимать здесь значило бы разойтись с CPU.
+    default: return {};
+  }
+}
+
+bool exact_in_float(const field_base::values base) noexcept {
+  switch (base) {
+    case field_base::ub:
+    case field_base::us:
+    case field_base::ib:
+    case field_base::is:
+    case field_base::sf:
+    case field_base::c: return true;
+    default: return false;
+  }
+}
+
 std::string_view device_type_name(const field_base::values base) noexcept {
   switch (base) {
     case field_base::v: return "float";
@@ -185,7 +229,8 @@ void emit_output(std::string& text, const size_t index, const uint32_t binding, 
 std::string build_device_shader(const std::span<const device_binding>& bindings,
                                 const std::span<const device_param>& params,
                                 const std::string_view& body,
-                                const uint32_t group_size) {
+                                const uint32_t group_size,
+                                const std::string_view& prelude) {
   if (bindings.empty()) {
     utils::error{}("originator: a device form with no bindings computes nothing");
   }
@@ -223,7 +268,21 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
     (shape.writable ? declared_outputs : declared_inputs) += 1;
   }
   text.append(std::format("#define ORIGINATOR_INPUTS {}\n", declared_inputs));
-  text.append(std::format("#define ORIGINATOR_OUTPUTS {}\n\n", declared_outputs));
+  text.append(std::format("#define ORIGINATOR_OUTPUTS {}\n", declared_outputs));
+
+  // СКОЛЬКО КОМПОНЕНТ У ПРИВЯЗКИ — тоже определением препроцессора, и по той же причине: тело,
+  // работающее и над плоскостью, и над объёмом, обязано СПРОСИТЬ, а не полагаться на то, что аксессор
+  // с компонентой вообще объявлен (у однокомпонентного поля его нет).
+  {
+    size_t counted_inputs = 0;
+    size_t counted_outputs = 0;
+    for (const auto& shape : bindings) {
+      const auto slot = shape.writable ? counted_outputs++ : counted_inputs++;
+      text.append(std::format("#define ORIGINATOR_{}_{}_COMPONENTS {}\n", shape.writable ? "OUT" : "IN", slot,
+                              shape.components));
+    }
+  }
+  text.push_back('\n');
 
   size_t inputs = 0;
   size_t outputs = 0;
@@ -237,6 +296,13 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
     } else {
       emit_input(text, inputs++, uint32_t(i), shape);
     }
+  }
+
+  // ФУНКЦИИ ТЕЛА идут после привязок: преамбула вправе пользоваться и аксессорами, и push-константой,
+  // а объявить их внутри `main` нельзя.
+  if (!prelude.empty()) {
+    text.append(prelude);
+    text.push_back('\n');
   }
 
   text.append("void main() {\n");

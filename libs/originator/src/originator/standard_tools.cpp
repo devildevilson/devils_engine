@@ -560,6 +560,10 @@ void tool_label_colour(const tool_call& call, const size_t begin, const size_t e
 // а бесконечность во float32 представима точно и ведёт себя в `clamp` ровно как отсутствие границы.
 
 void tool_registry::add_standard_tools() {
+  // Собственный шум ядра ставится вместе со стандартным набором: внешних зависимостей у него нет, а
+  // устройственные тела есть — в отличие от обвязки FastNoise2, которая живёт отдельной целью.
+  add_noise_field_tools(*this);
+
   // Именованная инициализация намеренно: набор полей описания инструмента будет расти, и
   // позиционная запись ломалась бы на каждом новом поле.
   add(tool_description{
@@ -570,10 +574,35 @@ void tool_registry::add_standard_tools() {
     .device_body = "  for (uint c = 0u; c < out_0_components(); ++c) out_0_set(index, c, args.value);\n",
     .device_params = {{"value", 0.0}},
     .device_integer_ready = true});
-  add(tool_description{.name = "position_grid", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
-                       .body = tool_position_grid});
+  add(tool_description{
+    .name = "position_grid", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
+    .body = tool_position_grid,
+    // Форма приходит ОБЩЕЙ ШАПКОЙ (`extent_x`, `extent_y`), потому что она объявлена буфером, а не
+    // параметром: второго способа назвать её нет ни на одном из путей. Начало координат — параметром,
+    // и по той же причине, по которой его нет у тела на CPU: инструмент не знает про чанки, ключ
+    // переводит в смещение тело шага.
+    //
+    // Третья компонента пишется только если поле её имеет: у однокомпонентного и двухкомпонентного
+    // поля аксессора с индексом 2 просто нет, поэтому спрашивается объявление, а не угадывается.
+    .device_body = "  uint x = index % args.extent_x;\n"
+                   "  uint y = (index / args.extent_x) % max(args.extent_y, 1u);\n"
+                   "  out_0_set(index, 0u, args.origin_x + float(x) * args.cell_size);\n"
+                   "  out_0_set(index, 1u, args.origin_y + float(y) * args.cell_size);\n"
+                   "#if ORIGINATOR_OUT_0_COMPONENTS >= 3\n"
+                   "  uint plane = args.extent_x * max(args.extent_y, 1u);\n"
+                   "  uint z = plane == 0u ? 0u : index / plane;\n"
+                   "  out_0_set(index, 2u, args.origin_z + float(z) * args.cell_size);\n"
+                   "#endif\n",
+    .device_params = {{"cell_size", 1.0}, {"origin_x", 0.0}, {"origin_y", 0.0}, {"origin_z", 0.0}}});
   add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise});
-  add(tool_description{.name = "index", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_index});
+  add(tool_description{
+    .name = "index", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_index,
+    // Номер элемента — целое, и поле под него объявляют целым; тело написано против `float`, поэтому
+    // точность держится до 2^24 элементов. Дальше номер обязан ехать целым родом, и это цена, которую
+    // объявляет `device_integer_ready`.
+    .device_body = "  out_0_set(index, float(index) * args.scale + args.offset);\n",
+    .device_params = {{"scale", 1.0}, {"offset", 0.0}},
+    .device_integer_ready = true});
   add(tool_description{
     .name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap,
     // `component` в устройственную форму не входит: многокомпонентное поле в очередь не пускается
@@ -590,7 +619,19 @@ void tool_registry::add_standard_tools() {
                       {"min", -std::numeric_limits<double>::infinity(), "lower"},
                       {"max", std::numeric_limits<double>::infinity(), "upper"},
                       {"absolute", 0.0}}});
-  add(tool_description{.name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify});
+  add(tool_description{
+    .name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify,
+    // Ветвление переведено ТЕРНАРНИКАМИ в том же порядке, в каком стоят проверки на CPU: порядок
+    // здесь и есть правило, а не оформление — первая сработавшая проверка решает.
+    .device_body = "  float height = in_0_at(index);\n"
+                   "  float moisture = in_1_at(index);\n"
+                   "  float wet_class = moisture < args.wet ? 2.0 : 3.0;\n"
+                   "  float land_class = moisture < args.dry ? 1.0 : wet_class;\n"
+                   "  out_0_set(index, height < args.sea_level ? 0.0 : land_class);\n",
+    .device_params = {{"sea_level", 0.5}, {"dry", 0.35}, {"wet", 0.65}},
+    // Класс — маленькое целое, и поле под него объявляют узким (`ub1`). Тело написано против `float`,
+    // и над узким родом это точно: до 2^24 float32 представляет целые без потерь.
+    .device_integer_ready = true});
   add(tool_description{
     .name = "blend", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_blend,
     .device_body = "  float value = args.weight_first * in_0_at(index) + args.weight_second * in_1_at(index) + args.offset;\n"
@@ -598,12 +639,28 @@ void tool_registry::add_standard_tools() {
     .device_params = {{"first", 1.0, "weight_first"}, {"second", 1.0, "weight_second"}, {"offset", 0.0},
                       {"min", -std::numeric_limits<double>::infinity(), "lower"},
                       {"max", std::numeric_limits<double>::infinity(), "upper"}}});
-  add(tool_description{.name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay});
+  add(tool_description{
+    .name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay,
+    // Отрицательное расстояние — метка «недостигнуто», а не расстояние; растить от неё экспоненту
+    // нельзя, иначе дальше всех влияло бы сильнее всех. Зажим тот же, что на CPU.
+    .device_body = "  float distance = max(0.0, in_0_at(index));\n"
+                   "  out_0_set(index, args.offset + args.amplitude * exp(-distance / args.width));\n",
+    .device_params = {{"width", 1.0}, {"amplitude", 1.0}, {"offset", 0.0}}});
   add(tool_description{
     .name = "modulate", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_modulate,
     .device_body = "  out_0_set(index, args.scale * in_0_at(index) * in_1_at(index) + args.offset);\n",
     .device_params = {{"scale", 1.0}, {"offset", 0.0}}});
-  add(tool_description{.name = "ratio", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_ratio});
+  add(tool_description{
+    .name = "ratio", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_ratio,
+    // Знак знаменателя СОХРАНЯЕТСЯ при подъёме до минимума — иначе у отрицательной суммы весов
+    // результат менял бы знак ровно там, где она мала. Обязательность `minimum_divisor` проверяет
+    // тело на CPU; у устройственной формы значение по умолчанию бессмысленно, поэтому здесь стоит
+    // то же, что подставил бы CPU, и вызов без параметра до устройства просто не доходит.
+    .device_body = "  float divisor = in_1_at(index);\n"
+                   "  float lifted = divisor < 0.0 ? -args.minimum_divisor : args.minimum_divisor;\n"
+                   "  float safe = abs(divisor) < args.minimum_divisor ? lifted : divisor;\n"
+                   "  out_0_set(index, args.scale * in_0_at(index) / safe + args.offset);\n",
+    .device_params = {{"scale", 1.0}, {"offset", 0.0}, {"minimum_divisor", 1.0e-9}}});
   add(tool_description{
     .name = "maximum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_maximum,
     .device_body = "  out_0_set(index, max(in_0_at(index), in_1_at(index)));\n",

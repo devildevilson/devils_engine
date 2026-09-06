@@ -817,20 +817,69 @@ void tool_registry::add_graph_tools() {
                        .body = tool_sphere_points});
   add(tool_description{.name = "sphere_adjacency", .shape = aperture::scatter, .input_count = 1, .output_count = 2,
                        .body = tool_sphere_adjacency, .prepare = prepare_adjacency});
-  add(tool_description{.name = "graph_blur", .shape = aperture::gather, .input_count = 3, .output_count = 1,
-                       .body = tool_graph_blur});
+  add(tool_description{
+    .name = "graph_blur", .shape = aperture::gather, .input_count = 3, .output_count = 1,
+    .body = tool_graph_blur,
+    // ГРАФ НА УСТРОЙСТВЕ — ЭТО ТРИ БУФЕРА И ОДИН ЦИКЛ, и больше ничего: смещения, дуги, значения.
+    // Окно растра здесь неприменимо (у сферы нет плоскости), поэтому именно эта форма и переносится.
+    //
+    // Занятость волны при этом НЕРАВНОМЕРНА, в отличие от окна: у решётки Фибоначчи степень доходит
+    // до 24 при средних шести, и соседние инвокации ждут самую длинную. Это названная цена, а не
+    // недосмотр: замерить её стоит на настоящем CSR, а не предполагать.
+    .device_body = "  uint first = uint(in_0_at(index));\n"
+                   "  uint last = uint(in_0_at(index + 1u));\n"
+                   "  float sum = args.self_weight * in_2_at(index);\n"
+                   "  float weight = args.self_weight;\n"
+                   "  for (uint k = first; k < last; ++k) {\n"
+                   "    sum += args.neighbour_weight * in_2_at(uint(in_1_at(k)));\n"
+                   "    weight += args.neighbour_weight;\n"
+                   "  }\n"
+                   "  out_0_set(index, weight > 0.0 ? sum / weight : in_2_at(index));\n",
+    .device_params = {{"self_weight", 1.0}, {"neighbour_weight", 1.0}},
+    // Смещения и дуги — целые поля (`ui1`/`us1`), а тело написано против `float`: у CSR миллиона
+    // клеток смещения доходят до миллионов, то есть остаются точными во float32 (предел 2^24), но
+    // объявить это обязан инструмент.
+    .device_integer_ready = true});
   add(tool_description{.name = "graph_flood", .shape = aperture::sequential, .input_count = 5, .output_count = 2,
                        .body = tool_graph_flood});
-  add(tool_description{.name = "graph_frontier", .shape = aperture::gather, .input_count = 3, .output_count = 1,
-                       .body = tool_graph_frontier});
+  add(tool_description{
+    .name = "graph_frontier", .shape = aperture::gather, .input_count = 3, .output_count = 1,
+    .body = tool_graph_frontier,
+    // Досрочный выход из цикла на устройстве обходится дешевле, чем кажется: волна всё равно ждёт
+    // самого долгого соседа, но лишних чтений памяти не делает.
+    .device_body = "  float own = in_2_at(index);\n"
+                   "  float frontier = 0.0;\n"
+                   "  if (own != args.ignore) {\n"
+                   "    uint first = uint(in_0_at(index));\n"
+                   "    uint last = uint(in_0_at(index + 1u));\n"
+                   "    for (uint k = first; k < last; ++k) {\n"
+                   "      float other = in_2_at(uint(in_1_at(k)));\n"
+                   "      if (other != own && other != args.ignore) { frontier = 1.0; break; }\n"
+                   "    }\n"
+                   "  }\n"
+                   "  out_0_set(index, frontier);\n",
+    .device_params = {{"ignore", -1.0}},
+    .device_integer_ready = true});
   add(tool_description{.name = "poisson_seeds", .shape = aperture::sequential, .input_count = 3, .output_count = 1,
                        .body = tool_poisson_seeds});
   add(tool_description{.name = "graph_vote", .shape = aperture::gather, .input_count = 5, .output_count = 1,
                        .body = tool_graph_vote});
   add(tool_description{.name = "graph_slope", .shape = aperture::gather, .input_count = 3, .output_count = 1,
                        .body = tool_graph_slope});
-  add(tool_description{.name = "lookup", .shape = aperture::gather, .input_count = 2, .output_count = 1,
-                       .body = tool_lookup});
+  add(tool_description{
+    .name = "lookup", .shape = aperture::gather, .input_count = 2, .output_count = 1,
+    .body = tool_lookup,
+    // Косвенность как данные: индекс лежит в поле, значение берётся из ДРУГОГО буфера. Смещение
+    // существует потому, что метки считаются с единицы, а элементы буфера групп с нуля; молча
+    // вычитать единицу нельзя — не всякое поле индексов является меткой.
+    //
+    // Проверка диапазона обязательна и здесь: у шейдера выход за границу буфера не отказ, а
+    // неопределённое поведение, то есть молча прочитанное чужое значение.
+    .device_body = "  int raw = int(in_0_at(index)) + int(args.offset);\n"
+                   "  bool inside = raw >= 0 && uint(raw) < in_1_length();\n"
+                   "  out_0_set(index, inside ? in_1_at(uint(raw)) : args.missing);\n",
+    .device_params = {{"offset", 0.0}, {"missing", 0.0}},
+    .device_integer_ready = true});
   add(tool_description{.name = "connected_components", .shape = aperture::sequential, .input_count = 3,
                        .output_count = 1, .body = tool_connected_components});
   add(tool_description{.name = "label_adjacency", .shape = aperture::scatter, .input_count = 3, .output_count = 2,

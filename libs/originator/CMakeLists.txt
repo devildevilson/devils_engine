@@ -18,6 +18,7 @@ add_library(devils_originator
   src/originator/pipeline.cpp
   src/originator/computation_queue.cpp
   src/originator/execution_profile.cpp
+  src/originator/noise_field.cpp
   src/originator/device_form.cpp
   include/devils_engine/originator/common.h
   include/devils_engine/originator/buffer.h

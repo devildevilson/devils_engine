@@ -42,27 +42,30 @@ std::string field_name_of(const field_ref& field) {
   return std::format("{}.{}", field.buffer_name(), field.field_name());
 }
 
-// Род поля, у которого на устройстве есть представление. Узкие роды существуют ради КОМПАКТНОГО
-// хранения на CPU, а считать в них никто и не собирался (§3.2), поэтому ограничение почти не задевает
-// того, для чего они заведены.
+// Годен ли род поля к переносу. Ограничения на РОД больше нет: узкое поле живёт на устройстве
+// расширенным (`device_storage_base`), а преобразование на границе делают те же аксессоры, что и на
+// хосте. Остаётся только форма: число компонент, которое имеет представление вообще.
 bool device_field_kind(const field_type type) noexcept {
   // Число КОМПОНЕНТ ограничения не ставит: в раскладке `soa` они лежат подряд внутри элемента,
-  // поэтому поле читается тем же буфером, только аксессором с компонентой. Ограничение — на РОД: у
-  // узких родов нет типизированного буфера шейдера, и заведены они ради компактного хранения на
-  // хосте, а не ради счёта (§3.2).
+  // поэтому поле читается тем же буфером, только аксессором с компонентой.
   return type.components >= 1 && type.components <= max_field_components &&
-         (type.base == field_base::v || type.base == field_base::ui || type.base == field_base::i);
+         device_storage_base(type.base) != field_base::count;
 }
 
 std::string_view refuse_field(const field_ref&) noexcept {
-  return "the queue takes the 32-bit kinds v, ui and i on a device; the narrow kinds exist for compact "
-         "storage on the host, and computing in them was never the point";
+  return "the field kind has no device representation at all, not even a widened one";
 }
 
 // ОТКУДА У ВЫЗОВА ТЕЛО. Ровно два источника, и оба контролируемые: у нативного инструмента оно
 // написано заранее и лежит в библиотеке, у чужого тела — это перевод программы `devils_script`.
 const std::string& body_of(const queue_call& call) noexcept {
   return call.tool != nullptr ? call.tool->device_body : call.device.body();
+}
+
+// Функции тела. У переведённой программы их нет: перевод укладывается в одно выражение.
+const std::string& prelude_of(const queue_call& call) noexcept {
+  static const std::string none;
+  return call.tool != nullptr ? call.tool->device_prelude : none;
 }
 
 const std::vector<device_param>& params_of(const queue_call& call) noexcept {
@@ -190,7 +193,12 @@ struct device_queue::field_slot {
   painter::compute_context::buffer_id device_buffer = painter::compute_context::invalid_id;
   painter::compute_context::image_id device_image = painter::compute_context::invalid_id;
   painter::compute_context::buffer_id staging = painter::compute_context::invalid_id;
+  // Байты НА УСТРОЙСТВЕ, а не на хосте: узкое поле живёт там расширенным, поэтому у байтового поля
+  // это вчетверо больше хостового размера.
   size_t byte_size = 0;
+  // Род, в котором поле лежит на устройстве. Совпадает с хостовым у 32-битных родов; у остальных —
+  // расширенный, и тогда передача идёт с преобразованием, а не memcpy.
+  field_base::values device_base = field_base::v;
 };
 
 struct device_queue::call_plan {
@@ -271,7 +279,14 @@ device_check check_device_queue(const computation_queue& queue) {
       // ТЕЛО НАТИВНОГО ИНСТРУМЕНТА ПИШЕТСЯ ПРОТИВ `float`, если инструмент не объявил обратного: его
       // писали один раз на все будущие привязки. Прежде текст объявлял `float data[]` у ЛЮБОГО поля,
       // и вызов над целым полем молча читал биты — теперь это отказ.
-      if (native && !call.tool->device_integer_ready && binding.type().base != field_base::v) {
+      //
+      // НО У УЗКОГО ЦЕЛОГО ОТКАЗЫВАТЬ НЕ ЗА ЧТО, и флага для этого не нужно. Опасность перегона через
+      // `float32` ровно одна — он точен лишь до 2^24, — а `ub`, `us`, `ib`, `is` целиком помещаются в
+      // 16 бит, то есть представляются точно ВСЕГДА. Значит тело, написанное против `float`, над таким
+      // полем считает то же самое по построению, и решает это РОД ПРИВЯЗКИ, а не объявление
+      // инструмента: у широких `ui`/`i` объявление по-прежнему обязательно.
+      if (native && !call.tool->device_integer_ready && !exact_in_float(binding.type().base) &&
+          binding.type().base != field_base::v) {
         return std::format("step '{}': queue element {} ('{}') binds '{}' of kind '{}', but the device body of a "
                            "native tool is written against float — it is written once for every future binding, "
                            "so it cannot know the kind. Reading that field as float would take its BITS",
@@ -366,8 +381,14 @@ device_queue::device_queue(painter::compute_context& context, const computation_
   for (const auto& entry : fields) {
     field_slot slot;
     slot.field = entry.field;
-    slot.byte_size = entry.field.count() * entry.field.type().byte_size();
     slot.residence = entry.sampled ? device_residence::in_image : device_residence::in_buffer;
+    // КАРТИНКА ВСЕГДА ПЛАВАЮЩАЯ: и фильтруемая выборка, и storage-образ объявлены `r32f`, потому что
+    // фильтр — единственное, ради чего род ресурса вообще менялся, а фильтровать целые бессмысленно.
+    // Раньше сюда мог попасть `ui1`, и его биты копировались в r32f как есть: молча читалось не то.
+    slot.device_base = slot.residence == device_residence::in_image
+                         ? field_base::v
+                         : device_storage_base(entry.field.type().base);
+    slot.byte_size = entry.field.count() * entry.field.type().components * sizeof(uint32_t);
 
     if (slot.residence == device_residence::in_image) {
       const auto extent = entry.field.extent();
@@ -425,13 +446,18 @@ device_queue::device_queue(painter::compute_context& context, const computation_
     const auto bind = [&](const field_ref& binding, const bool writes, const bool by_filter) {
       const auto& slot = slots_[slot_of(binding)];
       device_binding declared;
-      declared.base = binding.type().base;
+      // Род ОБЪЯВЛЯЕТСЯ ТОТ, В КОТОРОМ ПОЛЕ ЛЕЖИТ НА УСТРОЙСТВЕ, а не хостовый: аксессор шейдера
+      // типизирован по нему, и расширенная копия обязана читаться своим типом.
+      declared.base = slot.device_base;
       declared.components = binding.type().components;
       declared.residence = slot.residence;
       declared.access = by_filter ? device_access::filtered : device_access::plain;
       declared.writable = writes;
       declared.accumulates = writes && accumulates && slot.residence == device_residence::in_buffer;
-      declared.converting = call.tool != nullptr && call.tool->device_integer_ready;
+      // Переводящие перегрузки нужны и узкому полю: его расширенная копия целая, а тело написано
+      // против `float`. Точность при этом не страдает — см. `exact_in_float`.
+      declared.converting = call.tool != nullptr &&
+                            (call.tool->device_integer_ready || exact_in_float(binding.type().base));
       shape.push_back(declared);
 
       if (slot.residence == device_residence::in_image) {
@@ -453,7 +479,7 @@ device_queue::device_queue(painter::compute_context& context, const computation_
 
     // 3. ТЕКСТ СОБИРАЕТСЯ ЗДЕСЬ, потому что только здесь известен выведенный род каждого поля. Тот же
     //    текст на тех же привязках даёт ту же программу — кэш контекста ключуется по нему.
-    const auto source = build_device_shader(shape, params, body_of(call));
+    const auto source = build_device_shader(shape, params, body_of(call), 64, prelude_of(call));
     const uint32_t push_size = uint32_t(sizeof(device_call_header) + params.size() * sizeof(float));
 
     call_plan plan;
@@ -575,6 +601,43 @@ device_report device_queue::run_step_by_step() {
   return execute(false);
 }
 
+// РАСШИРЕНИЕ И СУЖЕНИЕ идут через те же аксессоры, что и весь CPU-путь: `get` отдаёт канонический
+// double, `set` кладёт его по правилам своего рода — вместе с зажимом и округлением. Поэтому
+// расхождения между путями здесь не может быть по построению, а не по внимательности.
+//
+// Буфер заводится на вызов: преобразование случается только у узких полей и только на границе
+// очереди, то есть считанное число раз против миллионов элементов внутри.
+std::vector<std::byte> device_queue::widen(const field_slot& slot) const {
+  const auto accessor = slot.field.read();
+  const auto type = slot.field.type();
+  const size_t stride = field_type{slot.device_base, 1}.component_byte_size();
+
+  std::vector<std::byte> bytes(slot.byte_size);
+  size_t at = 0;
+  for (size_t i = 0; i < slot.field.count(); ++i) {
+    for (uint32_t component = 0; component < type.components; ++component, at += stride) {
+      store_component(bytes.data() + at, slot.device_base, accessor.get(i, component));
+    }
+  }
+  return bytes;
+}
+
+void device_queue::narrow_back(const field_slot& slot) const {
+  const auto accessor = slot.field.write();
+  const auto type = slot.field.type();
+  const size_t stride = field_type{slot.device_base, 1}.component_byte_size();
+
+  std::vector<std::byte> bytes(slot.byte_size);
+  context_->read(slot.staging, bytes.data(), slot.byte_size);
+
+  size_t at = 0;
+  for (size_t i = 0; i < slot.field.count(); ++i) {
+    for (uint32_t component = 0; component < type.components; ++component, at += stride) {
+      accessor.set(i, load_component(bytes.data() + at, slot.device_base), component);
+    }
+  }
+}
+
 device_report device_queue::execute(const bool single_submission) {
   device_report report;
   report.calls = plans_.size();
@@ -583,12 +646,17 @@ device_report device_queue::execute(const bool single_submission) {
   report.download_bytes = download_bytes_;
   report.images = image_count();
 
-  // Хостовые байты поля лежат подряд: раскладка `soa` проверена планом, поэтому передача — это
-  // memcpy, а не сборка со страйдом.
+  // Хостовые байты поля лежат подряд: раскладка `soa` проверена планом, поэтому у совпадающего рода
+  // передача — это memcpy, а не сборка со страйдом. У расширенного рода идёт ПРЕОБРАЗОВАНИЕ теми же
+  // аксессорами, что и на CPU: значение читается в канонический double и кладётся в 32-битный род.
   for (const auto index : upload_slots_) {
     const auto& slot = slots_[index];
     const auto accessor = slot.field.read();
-    context_->write(slot.staging, accessor.data(), slot.byte_size);
+    if (slot.device_base == slot.field.type().base) {
+      context_->write(slot.staging, accessor.data(), slot.byte_size);
+      continue;
+    }
+    context_->write(slot.staging, widen(slot).data(), slot.byte_size);
   }
 
   const auto record_start = std::chrono::steady_clock::now();
@@ -664,7 +732,11 @@ device_report device_queue::execute(const bool single_submission) {
       utils::error{}("originator step '{}': '{}' is named in output but bound for reading",
                      queue_.name, field_name_of(slot.field));
     }
-    context_->read(slot.staging, accessor.data(), slot.byte_size);
+    if (slot.device_base == slot.field.type().base) {
+      context_->read(slot.staging, accessor.data(), slot.byte_size);
+      continue;
+    }
+    narrow_back(slot);
   }
 
   report.record_ms =
