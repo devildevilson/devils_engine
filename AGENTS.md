@@ -4,6 +4,50 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- THE TRANSLATOR'S SECOND HALF, AND THE LIBRARY'S DOCUMENTATION PASS (2026-09-06). `505/505` project
+  tests, `originator_translate_test` 10/10 (4 of them new). `libs/originator` only.
+  RANDOMNESS ON THE DEVICE IS A DECLARED SECOND STREAM, NOT A COPY OF THE CPU ONE. `chance`, `random`,
+  `rndmix`, `rndmix1` now translate: the run seed rides in the SHARED PUSH HEADER (`device_call_header`
+  gained `seed`, folded 64 -> 32 by `fold_seed`), the per-call-site salt is DERIVED FROM THE ORDER OF
+  TRANSLATION, and the hash is the engine's own `utils::shared::prng2`. What is kept is the property
+  that mattered — the value is a function of (seed, element, call site) and so does not depend on how
+  the work was split — and what is NOT kept is bit equality with the CPU: ds generates its salt in the
+  EMITTER at compile time, so it is not in the AST at all, and its PRNG state is 64-bit. The engine
+  hash is written out in the shader preamble because a compute program has no `#include`, and a test
+  checks the copy against `utils::shared::prng2` BITWISE (it also checks `rndmix`, which hashes the
+  VALUE and therefore does match a host formula exactly).
+  BRANCH BLOCKS ARE NESTED TERNARIES, BUT THEY ARE TRANSLATED FORWARD. `select`, `sequence`, `switch`
+  and `random` are now translated, and the ORDER is the trap: translation is not a pure function — it
+  numbers push-constant arguments and randomness salts as it goes, so sub-expressions are emitted in
+  explicit forward order and only the TEXT is assembled backwards. Equality became `abs(a-b) < 1e-6`,
+  because that is what ds's `raweqd` computes; a bitwise `==` would have disagreed exactly at the
+  border where the rule decides. Two divergences are declared rather than hidden: a `switch` with no
+  matching case yields zero (ds pushes nothing there, i.e. undefined), and `random`'s last branch is
+  unconditional (`pick` is below the full weight sum by construction).
+  `ctx_save`/`ctx_set` BECAME SHADER LOCALS, AND THE OLD REFUSAL BECAME A NARROWER ONE. The expression
+  stays an expression; everything with a name (saved slots, overridden arguments, `random` weights, the
+  `switch` subject) lives in a PRELUDE before the store. That is exactly why a write from INSIDE a
+  branch is refused: a local is computed before the branch is chosen, so the write would happen even
+  when the branch is not taken. The translator has no dominance proof, so the border is drawn by
+  SYNTAX and said out loud, rather than guessed.
+  MEASURED WHERE MEASUREMENT WAS POSSIBLE: `select`/`sequence`/`switch`/`ctx_save`/`ctx_set` agree with
+  the CPU path BITWISE on integer programs (4096 elements each), weights 1:3 gave the heavy branch
+  0.7539, and device `chance` matches the host formula on all 4096 elements. NB found along the way: in
+  a NUMBER-typed ds program a bare comparison cannot be a `condition` at all (the expected type leaks
+  into it and bool does not convert), so conditions written as comparisons only compile in a PREDICATE
+  program — the tests are split accordingly, and that is a ds property, not a translator one.
+  DOCUMENTATION PASS OVER THE WHOLE LIBRARY, on the author's rule: every file carries a block after the
+  includes and before the namespace (what it is, what to watch for, implementation specifics), long
+  rationale moved THERE from individual declarations, and in-body comments cut back to an algorithm
+  description above a function plus short implementation notes. Two comments had already drifted off
+  their declarations (`parse_field_type` in `common.h`, `remap` in `standard_tools.cpp`) and were found
+  by this pass. GENERATED GLSL IS NOW ENGLISH — it leaves the project (glslc, dumps, debuggers) — while
+  the library's own comments stay Russian. README rewritten as a technical reference (1232 -> 751
+  lines): working notes dropped, decisions collapsed into one-line facts, and a new `libs/originator/
+  AGENTS.md` holds what an AGENT needs instead — a question -> file map, twelve invariants, recipes for
+  the typical edits (new tool, device form, new translator construct, new push header field), the test
+  matrix and the known traps.
+
 - LEARNING, GRAPHS AND BACKTRACKING FOR THE CONSTRAINT SOLVER (2026-09-05). `501/501` project tests,
   GN05's own `19/19`. Three additions to `libs/originator/.../constraint_tools.cpp` and three modes in
   `subprojects/playgrounds/GN05_constraint_collapse`.

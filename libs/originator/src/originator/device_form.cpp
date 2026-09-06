@@ -4,6 +4,20 @@
 
 #include "devils_engine/utils/core.h"
 
+// Сборка текста вычислительного шейдера: преамбула случайности, привязки с типизированными
+// аксессорами, свёртка индекса и тело.
+//
+// ОДИН СПОСОБ ОБРАТИТЬСЯ К ПОЛЮ НА ВСЕ ИНСТРУМЕНТЫ И ВСЕ ПЕРЕВОДЫ. Аксессор типизирован по
+// ВЫВЕДЕННОМУ роду поля, поэтому `float[]` над сырым `uint32` здесь не выражается; у картинки тот же
+// аксессор сворачивает линейный индекс в координату по форме из общей шапки.
+//
+// СВЁРТКА ЧИСЛА ГРУПП В ДВЕ ОСИ — часть соглашения, а не деталь: Vulkan гарантирует лишь 65535 групп
+// по X, то есть 4.2 млн элементов при группе 64. Контекст раскладывает группы по осям, а шейдер
+// собирает индекс обратно, и оба конца этого соглашения живут в одном месте.
+//
+// ХЕШ ВЫПИСАН ТЕКСТОМ, потому что у вычислительной программы нет `#include`: правка идёт в
+// `utils/shared.h` первой, а тест сверяет оба пути побитово.
+
 namespace devils_engine {
 namespace originator {
 
@@ -49,6 +63,39 @@ std::string_view device_type_name(const field_base::values base) noexcept {
 }
 
 namespace {
+// Хеш движка (`utils::shared::prng2`), выписанный текстом: вычислительная программа компилируется из
+// ОДНОГО целого текста, `#include` у неё нет. Копия здесь — вынужденная, поэтому правка идёт в
+// `utils/shared.h` первой, а тест сверяет оба пути побитово (`originator_translate_test`).
+constexpr std::string_view random_preamble = R"(uint originator_prng2(uint s0, uint s1) {
+  uint t = s1 ^ s0;
+  uint n = ((s0 << 26) | (s0 >> 6)) ^ t ^ (t << 9);
+  n = n * 0x9E3779BBu;
+  return ((n << 5) | (n >> 27)) * 5u;
+}
+
+float originator_normalize(uint state) {
+  return uintBitsToFloat((0x7fu << 23) | (state >> 9)) - 1.0;
+}
+
+// A value in [0, 1) for element `at` at call site `site`. The offsets keep the arguments away from
+// zero, which is the one input this hash maps to itself.
+float originator_chance(uint at, uint site) {
+  uint state = originator_prng2(args.seed + 0x9E3779B9u, at + 0x85EBCA6Bu);
+  return originator_normalize(originator_prng2(state + 0xC2B2AE35u, site + 0x27D4EB2Fu));
+}
+
+// Hash of the VALUE, not of the element: the same argument gives the same result in every invocation
+// and in every run, which is what makes it usable as stable per-value noise.
+float originator_mix1(float v) {
+  return originator_normalize(originator_prng2(floatBitsToUint(v) + 0x9E3779B9u, 0x85EBCA6Bu));
+}
+
+float originator_mix2(float a, float b) {
+  return originator_normalize(originator_prng2(floatBitsToUint(a) + 0x9E3779B9u, floatBitsToUint(b) + 0x85EBCA6Bu));
+}
+
+)";
+
 // Свёртка линейного индекса в координату картинки. Форма приезжает ОБЩЕЙ ШАПКОЙ, потому что она
 // объявлена буфером (`extent`), и второго способа её назвать нет ни на одном из путей.
 constexpr std::string_view to_coordinate = "ivec2(int(at % args.extent_x), int(at / args.extent_x))";
@@ -155,11 +202,17 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
   // Шапка идёт ПЕРВОЙ, потому что аксессоры картинки сворачивают индекс по её полям: объявление,
   // которым пользуются, обязано стоять раньше того, кто им пользуется.
   text.append("layout(push_constant) uniform originator_call {\n");
-  text.append("  uint count; uint begin; uint extent_x; uint extent_y;\n");
+  text.append("  uint count; uint begin; uint extent_x; uint extent_y; uint seed;\n");
   for (const auto& param : params) {
     text.append(std::format("  float {};\n", param.shader_name()));
   }
   text.append("} args;\n\n");
+
+  // СЛУЧАЙНОСТЬ ОДНА НА ВСЕ ТЕЛА, и объявлена она здесь по той же причине, по какой здесь собираются
+  // привязки: второй способ получить случайное число разъехался бы с первым молча. Зерно приходит
+  // общей шапкой, поэтому значение — функция от (зерно вызова, элемент, место вызова) и больше ни от
+  // чего: разбиение работы по инвокациям на него не влияет.
+  text.append(random_preamble);
 
   // СКОЛЬКО ПРИВЯЗОК У ЭТОГО ВЫЗОВА — доступно телу как определение препроцессора. Нужно там, где у
   // инструмента есть НЕОБЯЗАТЕЛЬНЫЙ выход: непривязанного выхода в шейдере нет вовсе, поэтому тело

@@ -1,3 +1,4 @@
+#include <bit>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -8,6 +9,7 @@
 #include "devils_engine/originator/script_program.h"
 #include "devils_engine/originator/script_translate.h"
 #include "devils_engine/painter/compute_context.h"
+#include "devils_engine/utils/shared.h"
 
 using namespace devils_engine;
 
@@ -405,4 +407,345 @@ TEST_CASE("originator names a refused device form instead of silently having non
   const originator::translated_form nothing;
   CHECK_FALSE(nothing.declared());
   CHECK(nothing.refusal().empty());
+}
+
+namespace {
+// ВТОРАЯ ПОЛОВИНА СЛОВАРЯ: ветвления, локали и случайность. Проверяется она иначе, чем арифметика:
+// у ветвлений сверка с CPU остаётся ПОБИТОВОЙ (они детерминированы и целочисленны), а у случайности
+// сверять пути нельзя вовсе — соль места вызова у `ds` живёт в скомпилированном контейнере, и
+// устройство считает СВОЙ поток. Поэтому случайность сверяется с формулой на хосте, а не с `ds`.
+constexpr size_t small_count = 4096;
+
+// Поля с маленьким диапазоном: у `switch` каждая ветка обязана кому-то достаться, иначе сверка с CPU
+// упёрлась бы в не определённое у `ds` поведение не совпавшего `switch`.
+originator::buffer make_small() {
+  const std::vector<field_pair> fields = {{"a", "i1"}, {"b", "i1"}, {"out", "i1"}, {"value", "v1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "small");
+  originator::buffer cells("small", std::move(layout), small_count);
+
+  auto a = cells.field(cells.find_field("a"));
+  auto b = cells.field(cells.find_field("b"));
+  for (size_t i = 0; i < small_count; ++i) {
+    a.set(i, double(i % 3));
+    b.set(i, double(i % 5));
+  }
+  return cells;
+}
+
+std::vector<originator::translated_field> small_inputs() {
+  return {originator::translated_field{"a", originator::field_base::i},
+          originator::translated_field{"b", originator::field_base::i}};
+}
+
+// Прогон переведённой программы на устройстве. Входы кладутся буферами В ОБЪЯВЛЕННОМ ПОРЯДКЕ, выход
+// возвращается словами: как их читать, решает род выходного поля.
+std::vector<uint32_t> run_on_device(painter::compute_context& ctx,
+                                    const originator::translation& translated,
+                                    const std::span<const std::vector<int32_t>>& inputs,
+                                    const std::span<const std::byte>& push,
+                                    const size_t count) {
+  const size_t byte_size = count * sizeof(uint32_t);
+  const auto program = ctx.create_program("case", translated.source, uint32_t(inputs.size() + 1),
+                                          uint32_t(push.size()));
+  const auto staging = ctx.create_buffer(byte_size, true);
+
+  std::vector<painter::compute_context::buffer_id> bound;
+  bound.reserve(inputs.size() + 1);
+  for (const auto& input : inputs) {
+    const auto device_buffer = ctx.create_buffer(byte_size, false);
+    ctx.write(staging, input.data(), byte_size);
+    ctx.copy(staging, device_buffer, byte_size);
+    bound.push_back(device_buffer);
+  }
+  bound.push_back(ctx.create_buffer(byte_size, false));
+
+  ctx.dispatch(program, bound, push.data(), push.size(), count, translated.group_size);
+
+  std::vector<uint32_t> result(count, 0xffffffffu);
+  ctx.copy(bound.back(), staging, byte_size);
+  ctx.read(staging, result.data(), byte_size);
+  return result;
+}
+
+// Значения полей `a` и `b` в том виде, в каком их принимает устройство.
+std::vector<std::vector<int32_t>> small_host(const originator::buffer& cells) {
+  std::vector<std::vector<int32_t>> host(2, std::vector<int32_t>(small_count));
+  const auto a = cells.field(cells.find_field("a"));
+  const auto b = cells.field(cells.find_field("b"));
+  for (size_t i = 0; i < small_count; ++i) {
+    host[0][i] = int32_t(a.get(i));
+    host[1][i] = int32_t(b.get(i));
+  }
+  return host;
+}
+} // namespace
+
+TEST_CASE("originator translates branch blocks, locals and randomness") {
+  const auto inputs = small_inputs();
+  const originator::translated_field output{"out", originator::field_base::i};
+  const auto number = originator::script_program::result_kind::number;
+  const auto predicate = originator::script_program::result_kind::predicate;
+
+  const auto translate = [&](const std::string_view& source, const originator::script_program::result_kind kind) {
+    return originator::translate_to_glsl("case", source, inputs, output, kind);
+  };
+
+  // `select`: первое истинное условие, последний блок — иначе-ветка. Тернарники вложены В ТОМ ЖЕ
+  // порядке, в каком написаны условия. Программа предикатная не случайно: у `ds` ожидаемый тип
+  // протекает в условие, поэтому сравнение условием живёт только там, где сама программа возвращает
+  // истину/ложь, а числовая программа пишет условия константами или через `value_or`.
+  const auto selected = translate("{ select = { { condition = a < 1, a < 2 }, { b < 3 } } }", predicate);
+  CHECK(selected.source.find(" ? ") != std::string::npos);
+  CHECK(selected.source.find(" : ") != std::string::npos);
+
+  // `sequence`: сходится по И у предикатной программы и складывается у числовой — тот же накопитель,
+  // что у `ds`. Оборванная цепочка отдаёт единицу накопителя, а не ноль.
+  const auto sequenced = translate("{ sequence = { { condition = a < 2, b < 3 } } }", predicate);
+  CHECK(sequenced.source.find("&&") != std::string::npos);
+  CHECK(sequenced.source.find(": true") != std::string::npos);
+
+  // Равенство переводится СРАВНЕНИЕМ С ДОПУСКОМ — тем же, каким его считает `ds`: побитовое `==`
+  // разошлось бы с ним ровно на границе правила.
+  const auto equality = translate("{ value_or = { a == 0, 1, 2 } }", number);
+  CHECK(equality.source.find("abs(") != std::string::npos);
+  CHECK(equality.source.find("0.000001") != std::string::npos);
+
+  // `switch`: сравниваемое значение считается ОДИН раз и живёт локалью.
+  const auto switched =
+    translate("{ switch = { value = a, { value = 0, 10 }, { value = 1, 20 }, { value = 2, 30 } } }", number);
+  CHECK(switched.form.body().find("float tmp_0 = ") != std::string::npos);
+
+  // `random`: веса считаются все и до выбора, `chance` умножается на их сумму.
+  const auto chosen = translate("{ random = { { weight = 1, 5 }, { weight = 3, 7 } } }", number);
+  CHECK(chosen.form.body().find("originator_chance(index, 0u)") != std::string::npos);
+
+  // `ctx_save` — ОПЕРАТОР: он объявляет локаль и не является слагаемым блока.
+  const auto stored = translate("{ ctx_save = { t = a + b }, ctx:saved:t * 2 }", number);
+  CHECK(stored.form.body().find("float saved_t = ") != std::string::npos);
+  CHECK(stored.form.body().find("out_0_set(index, int(clamp(((saved_t * float(2)))") != std::string::npos);
+
+  // `ctx_set` перекрывает аргумент локалью, и чтение ПОСЛЕ него видит локаль, а не push-константу.
+  // Аргумент, который программа только устанавливает, в push-константу поэтому и не попадает.
+  const auto overridden = translate("{ ctx_set = { k = a * 3 }, ctx:arg:k + 1 }", number);
+  CHECK(overridden.arguments.empty());
+  CHECK(overridden.form.body().find("float set_k = ") != std::string::npos);
+
+  // Соль у каждого места вызова СВОЯ и растёт по порядку обхода: два `chance` в одной программе —
+  // два разных потока, а не одно и то же число дважды.
+  const auto twice = translate("{ random = { { weight = 1, 0 }, { weight = 1, 1 } }, chance }", number);
+  CHECK(twice.form.body().find("originator_chance(index, 0u)") != std::string::npos);
+  CHECK(twice.form.body().find("originator_chance(index, 1u)") != std::string::npos);
+
+  // ЧТО ОТКАЗЫВАЕТСЯ, И ПОЧЕМУ ИМЕННО ЭТО. Локаль поднимается в преамбулу и считается до выбора
+  // ветки, поэтому запись изнутри ветки состоялась бы и тогда, когда ветка не выбрана.
+  CHECK_THROWS_AS(translate("{ value_or = { a > 0, ctx_save = { t = 1 }, 0 } }", number), std::runtime_error);
+  // Слот, который на этом пути ещё не записан, — чтение неинициализированной локали.
+  CHECK_THROWS_AS(translate("{ ctx:saved:missing + 1 }", number), std::runtime_error);
+  // У `select` последний блок это иначе-ветка: без неё шейдеру нечего вернуть.
+  CHECK_THROWS_AS(translate("{ select = { { condition = a == 0, 1 } } }", number), std::runtime_error);
+  CHECK_THROWS_AS(translate("{ sequence = { { 1 } } }", number), std::runtime_error);
+  CHECK_THROWS_AS(translate("{ switch = { { value = 0, 1 } } }", number), std::runtime_error);
+  CHECK_THROWS_AS(translate("{ random = { { 5 } } }", number), std::runtime_error);
+  // `chance` это значение, а не вызов: написанное рядом число выглядело бы порогом, которым не является.
+  CHECK_THROWS_AS(translate("{ chance = 50 }", number), std::runtime_error);
+}
+
+TEST_CASE("originator branch blocks agree with the CPU path bit for bit") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the two paths are not compared here");
+    return;
+  }
+
+  auto cells = make_small();
+  const auto host = small_host(cells);
+  const std::vector<std::string> names = {"a", "b"};
+  const auto inputs = small_inputs();
+  const originator::translated_field output{"out", originator::field_base::i};
+
+  painter::compute_context_config config;
+  config.app_name = "translate_branch_test";
+  painter::compute_context ctx(config);
+
+  // Сверка идёт по ЦЕЛЫМ, и только поэтому она побитовая: ветвление — это ВЫБОР, а не арифметика,
+  // поэтому расхождение здесь означало бы, что пути выбрали РАЗНЫЕ ветки, то есть ошибку перевода.
+  // Случайности среди них нет намеренно: её потоки у CPU и устройства разные по построению.
+  const auto agrees = [&](const std::string_view& source, const originator::script_program::result_kind kind) {
+    originator::parameters params;
+    params.set_number("k", 0.0);
+    const auto program = originator::script_program::compile("case", source, names, kind);
+    const std::vector<originator::field_ref> program_inputs{readable(cells, "a"), readable(cells, "b")};
+    const std::vector<originator::field_ref> program_outputs{writable(cells, "out")};
+    originator::dispatch_script(*program, program_inputs, program_outputs, params, 7, 0, small_count, "branch",
+                                nullptr);
+
+    std::vector<int32_t> cpu(small_count);
+    const auto out = cells.field(cells.find_field("out"));
+    for (size_t i = 0; i < small_count; ++i) {
+      cpu[i] = int32_t(out.get(i));
+    }
+
+    const auto translated = originator::translate_to_glsl("case", source, inputs, output, kind);
+    const auto push = make_push(uint32_t(small_count), translated, params);
+    const auto gpu = run_on_device(ctx, translated, host, push, small_count);
+
+    size_t differences = 0;
+    for (size_t i = 0; i < small_count; ++i) {
+      differences += size_t(std::bit_cast<int32_t>(gpu[i]) != cpu[i]);
+    }
+    if (differences != 0) {
+      MESSAGE("'" << source << "': " << differences << " of " << small_count << " differ");
+    }
+    return differences == 0;
+  };
+
+  const auto number = originator::script_program::result_kind::number;
+  const auto predicate = originator::script_program::result_kind::predicate;
+
+  CHECK(agrees("{ select = { { condition = a < 1, a < 2 }, { b < 3 } } }", predicate));
+  CHECK(agrees("{ sequence = { { condition = a < 2, b < 3 }, { condition = b < 4, a < 2 } } }", predicate));
+  CHECK(agrees("{ switch = { value = a, { value = 0, 10 }, { value = 1, 20 }, { value = 2, 30 } } }", number));
+  CHECK(agrees("{ ctx_save = { t = a + b }, ctx:saved:t * 2 }", number));
+  // `ctx_set` пишет в слот АРГУМЕНТА, и чтение после него видит записанное — на обоих путях.
+  CHECK(agrees("{ ctx_set = { k = a * 3 }, ctx:arg:k + 1 }", number));
+  // Вложенные ветвления: соли и аргументы обязаны нумероваться в порядке ТЕКСТА, а не в порядке
+  // сборки тернарников.
+  CHECK(agrees("{ select = { { condition = a < 1, select = { { condition = b < 1, a < 3 }, { b < 3 } } }, "
+               "{ b < 2 } } }", predicate));
+}
+
+TEST_CASE("originator randomness on the device is a function of seed, element and call site") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: device randomness is not checked here");
+    return;
+  }
+
+  auto cells = make_small();
+  const auto host = small_host(cells);
+  const auto inputs = small_inputs();
+  const originator::translated_field output{"value", originator::field_base::v};
+
+  painter::compute_context_config config;
+  config.app_name = "translate_random_test";
+  painter::compute_context ctx(config);
+
+  const auto translated = originator::translate_to_glsl("noise", "{ chance }", inputs, output,
+                                                        originator::script_program::result_kind::number);
+
+  const auto run_with = [&](const uint32_t seed) {
+    std::vector<std::byte> push(sizeof(originator::device_call_header));
+    originator::device_call_header header;
+    header.count = uint32_t(small_count);
+    header.extent_x = uint32_t(small_count);
+    header.extent_y = 1;
+    header.seed = seed;
+    std::memcpy(push.data(), &header, sizeof(header));
+    return run_on_device(ctx, translated, host, push, small_count);
+  };
+
+  const auto first = run_with(originator::fold_seed(11));
+  const auto again = run_with(originator::fold_seed(11));
+  const auto other = run_with(originator::fold_seed(12));
+
+  // ОДНО ЗЕРНО — ОДИН МИР, побитово: значение выведено из (зерно, элемент, место вызова) и больше ни
+  // из чего, поэтому разбиение работы по инвокациям на него не влияет.
+  CHECK(first == again);
+
+  size_t changed = 0;
+  for (size_t i = 0; i < small_count; ++i) {
+    changed += size_t(first[i] != other[i]);
+  }
+  CHECK(changed > small_count / 2);
+
+  // И ЭТО ТОТ ЖЕ ХЕШ, ЧТО У ДВИЖКА. Текст `prng2` выписан в преамбуле шейдера, потому что у
+  // вычислительной программы нет `#include`, — значит копия обязана сверяться, иначе она разъедется
+  // с оригиналом молча.
+  size_t mismatches = 0;
+  for (size_t i = 0; i < small_count; ++i) {
+    const uint32_t seed = originator::fold_seed(11);
+    const auto state = utils::shared::prng2(seed + 0x9E3779B9u, uint32_t(i) + 0x85EBCA6Bu);
+    const auto expected = utils::shared::prng_normalize(utils::shared::prng2(state + 0xC2B2AE35u, 0x27D4EB2Fu));
+    mismatches += size_t(std::bit_cast<float>(first[i]) != expected);
+  }
+  CHECK(mismatches == 0);
+
+  // `rndmix` — хеш САМИХ ЗНАЧЕНИЙ: он не зависит ни от зерна, ни от элемента, поэтому одно и то же
+  // число даёт одно и то же значение везде. Проверяется той же формулой на хосте.
+  const auto mixed = originator::translate_to_glsl("mixed", "{ rndmix = { a, b } }", inputs, output,
+                                                   originator::script_program::result_kind::number);
+  {
+    std::vector<std::byte> push(sizeof(originator::device_call_header));
+    originator::device_call_header header;
+    header.count = uint32_t(small_count);
+    header.extent_x = uint32_t(small_count);
+    header.extent_y = 1;
+    header.seed = originator::fold_seed(11);
+    std::memcpy(push.data(), &header, sizeof(header));
+
+    const auto result = run_on_device(ctx, mixed, host, push, small_count);
+    size_t mixes = 0;
+    for (size_t i = 0; i < small_count; ++i) {
+      const auto first_bits = std::bit_cast<uint32_t>(float(host[0][i])) + 0x9E3779B9u;
+      const auto second_bits = std::bit_cast<uint32_t>(float(host[1][i])) + 0x85EBCA6Bu;
+      const auto expected = utils::shared::prng_normalize(utils::shared::prng2(first_bits, second_bits));
+      mixes += size_t(std::bit_cast<float>(result[i]) != expected);
+    }
+    CHECK(mixes == 0);
+  }
+
+  // Значение лежит в [0, 1) и заполняет отрезок: хеш, который вернул бы константу, прошёл бы обе
+  // проверки выше и не прошёл бы эту.
+  size_t buckets[4] = {0, 0, 0, 0};
+  for (size_t i = 0; i < small_count; ++i) {
+    const auto value = std::bit_cast<float>(first[i]);
+    REQUIRE(value >= 0.0f);
+    REQUIRE(value < 1.0f);
+    buckets[size_t(value * 4.0f)] += 1;
+  }
+  for (const auto count : buckets) {
+    CHECK(count > small_count / 8);
+  }
+}
+
+TEST_CASE("originator weighted choice follows the declared weights") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the weighted choice is not checked here");
+    return;
+  }
+
+  auto cells = make_small();
+  const auto host = small_host(cells);
+  const auto inputs = small_inputs();
+  const originator::translated_field output{"out", originator::field_base::i};
+
+  painter::compute_context_config config;
+  config.app_name = "translate_weight_test";
+  painter::compute_context ctx(config);
+
+  // Веса 1 и 3: доля второй ветки обязана быть около трёх четвертей. Проверяется именно ДОЛЯ, потому
+  // что вес — это предпочтение при выборе, а не обещанное число попаданий.
+  const auto translated = originator::translate_to_glsl(
+    "weighted", "{ random = { { weight = 1, 0 }, { weight = 3, 1 } } }", inputs, output,
+    originator::script_program::result_kind::number);
+
+  std::vector<std::byte> push(sizeof(originator::device_call_header));
+  originator::device_call_header header;
+  header.count = uint32_t(small_count);
+  header.extent_x = uint32_t(small_count);
+  header.extent_y = 1;
+  header.seed = originator::fold_seed(29);
+  std::memcpy(push.data(), &header, sizeof(header));
+
+  const auto result = run_on_device(ctx, translated, host, push, small_count);
+
+  size_t heavy = 0;
+  for (size_t i = 0; i < small_count; ++i) {
+    const auto value = std::bit_cast<int32_t>(result[i]);
+    REQUIRE((value == 0 || value == 1));
+    heavy += size_t(value == 1);
+  }
+
+  const double share = double(heavy) / double(small_count);
+  MESSAGE("weights 1:3 gave the heavy branch " << share);
+  CHECK(share > 0.70);
+  CHECK(share < 0.80);
 }
