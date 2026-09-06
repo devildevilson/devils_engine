@@ -28,15 +28,52 @@ recorded here only after it is reproduced by an executable test or directly obse
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| Complete project suite | not run after adding NET-08C; focused networking set is the verification scope |
-| `devils_engine::network_gns` adapter | NET-08A/B/C complete; focused networking set 75/75 in Debug and Release |
+| Complete project suite | not run after adding SESSION-01; focused networking set is the verification scope |
+| Focused networking set | 81/81 in Debug and Release, including real localhost UDP |
+| `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
 | NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
-| Session handshake, reconnect recovery and peer authority | not started |
+| SESSION-01 strict compatibility/identity/recovery primitives | neutral slice complete; 6/6 cases, 76/76 assertions pass in Debug and Release |
+| Session wire handshake and automatic transport reconnect | not started; next multi-process laboratory work |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## SESSION-01 — strict compatibility, identity and recovery, 2026-09-06
+
+The first session-layer slice now lives in `libs/network/include/devils_engine/network/session.h`. It remains
+transport- and project-neutral: no GNS type, file enumeration, wire codec, credential format or gameplay object
+enters the library.
+
+- `try_make_session_content_root` hashes product/version and complete resolved core/project/mod file bytes with
+  canonical names and explicit mod load order. Invalid names, ambiguous mod positions and noncanonical entry
+  order are refusals which leave the previous output untouched. The root is strict compatibility metadata,
+  not authentication.
+- `session_compatibility` separately names handshake/protocol, state schema, intent schema and numeric profile,
+  giving a precise early refusal. Only a compatible peer reaches the injected identity verifier; its logical
+  principal is independent of the current transport connection.
+- Membership fixes session, logical local/authority peer, principal and authority epoch. Authority message
+  stamps reject the wrong session/authority and both stale and unexpectedly future epochs. A fresh GNS peer ID
+  after reconnect is deliberately absent from this identity.
+- A recovery plan names checkpoint tick/root and target tick/root. `recover_session` preflights every required
+  bundle before restore, checks the session/principal/authority epoch, restores and replays in detached staging
+  with presentation suppressed, then calls one `noexcept` publish only after both roots match.
+- The causal test carries a PRNG cursor, entity counter, timeline remainder and tick. Removing the PRNG cursor
+  from the checkpoint is detected at the checkpoint root before replay and leaves the live state untouched.
+  A missing middle tick is likewise refused before restore. The successful path publishes exactly the same
+  causal state as uninterrupted ticks while preserving presentation state.
+- The existing real `tile_frontier` proof was rerun in both configurations. Its actor snapshot includes the ECS,
+  actor seeds, tick/game time, food-spawn sequence and authored scheduler/config values; after load it remains
+  byte-identical for 120 ticks, and one/four-worker runs match for 45 ticks. Its `utils::timelines_causal_state`
+  is currently restored beside the actor packet rather than inside it. Therefore a future network checkpoint
+  envelope must compose both owners; sending `actor_world_slice::save()` alone would omit the clock remainder.
+  The pacing test independently gives identical checkpoint bytes for one coarse and 100 fragmented frames.
+
+Debug and Release verification passes **6/6 cases, 76/76 assertions**. The complete focused networking set,
+including the existing real localhost UDP cases, passes **81/81** in both configurations. No sanitizer or
+whole-project run was performed. Wire framing, challenge/response, credential lifecycle, automatic GNS
+reconnect and replay across a real new connection remain the next integration layer.
 
 ## NET-08C — common simulation/state proof over GNS, 2026-09-06
 

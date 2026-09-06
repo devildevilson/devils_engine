@@ -247,6 +247,50 @@ Entity IDs, ECS enumeration/dirty tracking, component declarations, interest,
 ownership, visibility, quantization, wire serialization and correction remain
 project/session policy rather than properties of these templates.
 
+## Implemented slice: strict session compatibility and reconnect recovery
+
+`try_make_session_content_root` computes SHA-256 over one canonical manifest:
+product/version and the complete bytes of every resolved core, project and mod
+file. Entries arrive in strict `(domain, load_order, package, path)` order;
+filesystem enumeration order is therefore erased while mod precedence remains
+part of the identity. Names must be canonical relative names. The root is
+prepared before connecting and only its fixed-size value belongs in a
+handshake. It proves exact content compatibility under SHA-256's collision
+assumption; it does not authenticate the remote peer.
+
+`session_compatibility` keeps handshake/protocol, state schema, intent schema
+and numeric profile versions beside that strict content root. This duplication
+is diagnostic: incompatibility is refused by its first precise reason rather
+than reported only as a different opaque hash. `evaluate_session_handshake`
+invokes a project-supplied authenticator only after compatibility succeeds.
+The returned principal is a logical authenticated identity; a `gns_peer` is
+never promoted into one. Steam identity, certificates, offline credentials and
+reconnect tokens remain injected policies.
+
+`session_membership` binds a logical local peer and principal to one session,
+authority peer and authority epoch. Authority messages carry the session,
+logical authority and epoch and are rejected as wrong-session, wrong-authority,
+stale or unexpectedly future. A transport reconnect creates a new transport
+peer but does not change these logical facts. Authority migration still needs
+its own election/epoch publication protocol.
+
+`recover_session` accepts a complete checkpoint at committed tick `K`, every
+sealed bundle `K+1..N` (including explicit empty ticks) and expected roots at
+`K` and `N`. The whole history is preflighted before restore, replay runs with
+presentation suppressed in a caller-owned detached candidate, and one
+`noexcept` publish occurs only after both roots match. This makes checkpoint
+completeness observable: PRNG cursors, entity counters, timeline/scheduler
+remainders and every other cause of tick `K+1` must live in the checkpoint.
+Derived caches and presentation do not; they are rebuilt or retained at the
+transactional publish boundary.
+
+The neutral slice defines no wire codec, challenge-response exchange, token
+issuer/storage, automatic socket reconnect, checkpoint compression or download
+scheduler. Those belong to the session implementation above an opaque
+transport. A content root is not a substitute for authenticated encrypted
+transport, and a reconnect credential is not trusted until the injected
+authenticator accepts it.
+
 ## Prepared storage and hot-path ownership
 
 Preparation is explicit; a runtime budget is not a claim that a generic payload

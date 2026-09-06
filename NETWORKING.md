@@ -1154,19 +1154,52 @@ acceptable initially and should be optimized only after measurement.
 
 Before the first simulation tick, peers compare at least:
 
-- protocol major/minor;
-- full project state schema fingerprint;
-- ordered content/module fingerprint;
-- gameplay rules/configuration digest;
+- handshake and protocol versions;
+- one strict SHA-256 content root over product/version and the complete bytes of every resolved core, project
+  and mod file in canonical `(domain, mod load order, package, relative path)` order;
+- full project state and intent schema fingerprints;
 - simulation tick quantum;
 - numeric/determinism profile and fixed scales if used;
 - RNG algorithm version;
 - entity ID layout/version bits;
 - authoritative component/section versions;
-- mod list/order and server policy relevant to causal behavior.
+- server policy relevant to causal behavior.
 
-Cosmetic content has a separate optional digest. A schema/content mismatch is rejected before simulation; a
-live network session does not migrate causal schema in place.
+The current policy is deliberately exact: presentation resources are included too, so two participants either
+have the same resolved game installation or do not join the same session. A dedicated server may carry a
+package-produced verified manifest for presentation files it does not load, but the packaging step must have
+verified those bytes; merely copying a claimed digest is not proof of installation contents. If cosmetic
+divergence is allowed later, it must be a new explicit policy rather than silently weakening this root.
+
+The manifest is hashed once at content/package validation, not reread during every connection. The fixed root
+is compatibility evidence, not authentication: the peer identity still comes from an authenticated credential
+over an encrypted transport. A schema/content mismatch is rejected before simulation; a live network session
+does not migrate causal schema in place.
+
+## Tick isolation and reconnect recovery
+
+A checkpoint at `K` is the committed causal state **after** tick `K`. Joining or reconnecting at `N` needs that
+checkpoint plus one canonically sealed bundle for every tick `K+1..N`, including explicit empty ticks. This is
+sufficient exactly when the checkpoint contains every value which can change tick `K+1`: PRNG stream state or
+counter-based seed domain, entity/command counters, timeline remainder, scheduler and pipeline cursors,
+authoritative configuration, sequence watermarks and delayed causal work. Wall time, render interpolation,
+audio/UI events and rebuildable caches are not causal state.
+
+Recovery is a transaction: validate the session/principal/authority epoch, preflight the complete bundle range,
+restore into a detached candidate, verify the checkpoint root, replay with presentation suppressed, verify the
+target root, then publish once. A missing bundle or wrong root never partially replaces the live world. Testing
+must restore from multiple checkpoint positions and compare against an uninterrupted run; deliberately omitting
+each suspicious counter/cursor is the audit which proves that it belongs to the schema.
+
+Sending only the full intent history from tick zero can reconstruct a deterministic lockstep game, but join time
+then grows with session age. Regular complete checkpoints bound both retained log size and fast-forward time.
+Replication baselines do not replace these checkpoints: a baseline may contain only externally visible state,
+whereas recovery needs the complete causal state that determines the next tick.
+
+The current `tile_frontier` resume proof already restores `actor_world_slice::save()` and
+`utils::timelines_causal_state` together and then stays byte-identical. They are nevertheless two owners today.
+The network checkpoint document must compose both sections; the actor packet alone contains game time but not
+the timeline's rational remainder/rate state.
 
 ## Security and hostile input
 
@@ -1220,7 +1253,8 @@ NET-00 contract (complete)
             -> NET-06 in-memory delivery laboratory (complete)
                  -> NET-07 replication baselines
                       -> NET-08 selected real-transport adapter
-                           -> NET-LAB-01 multi-process loopback/LAN
+                           -> SESSION-01 compatibility/identity/reconnect recovery
+                                -> NET-LAB-01 multi-process loopback/LAN
                                 -> NET-LAB-02 compatible cross-build exchange
                                      -> SERVER-01 headless authority
                                           -> TF-NET-01 online authoritative float stand
@@ -1559,6 +1593,22 @@ Implementation is split into independently verified slices:
   digest, stale/duplicate state frames and independent prepared lane capacity. Results are recorded in
   `NETWORKING_STATUS.md`. This closes the transport adapter; handshake, peer/session identity and reconnect
   recovery remain higher session-layer work.
+
+### SESSION-01 — compatibility, identity and reconnect recovery (`M`, neutral slice complete)
+
+- Hash one canonical exact-content manifest covering product/version and every resolved core/project/mod byte.
+- Compare protocol, content, state/intent schema and numeric-profile identity before authentication/simulation.
+- Obtain a logical principal only from an injected authenticator; never treat a transport handle as identity.
+- Bind session, logical peer, principal, authority peer and authority epoch independently of a connection.
+- Recover transactionally from complete checkpoint `K` plus every sealed bundle `K+1..N`, checking roots at
+  both ends before one `noexcept` publish.
+- Refuse old/future authority epochs, wrong session/principal/authority, incomplete history and checkpoint or
+  target divergence without mutating the live world.
+
+The neutral API and deterministic tests are implemented in `network/session.h` and `network_session_test`.
+Still above this slice: the bounded wire codec and multi-message challenge/response, credential issuer/storage,
+automatic GNS reconnection and a real multi-process authority/follower exchange. Those are exercised next in
+NET-LAB-01 rather than hidden inside the transport adapter.
 
 ### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 
