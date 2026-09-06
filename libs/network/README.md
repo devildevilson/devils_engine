@@ -291,12 +291,63 @@ remainders and every other cause of tick `K+1` must live in the checkpoint.
 Derived caches and presentation do not; they are rebuilt or retained at the
 transactional publish boundary.
 
-The neutral slice defines no wire codec, challenge-response exchange, token
-issuer/storage, automatic socket reconnect, checkpoint compression or download
-scheduler. Those belong to the session implementation above an opaque
-transport. A content root is not a substitute for authenticated encrypted
-transport, and a reconnect credential is not trusted until the injected
-authenticator accepts it.
+The compatibility/recovery slice itself defines no token issuer/storage,
+automatic socket reconnect, checkpoint compression or download scheduler. A
+content root is not a substitute for authenticated encrypted transport, and a
+reconnect credential is not trusted until the injected authenticator accepts it.
+
+## Implemented slice: session handshake wire format and ordered exchange
+
+`session_wire.h` is the frozen handshake format. Unlike the rest of the library
+it is not templated on integer widths: two installations must agree on exact
+bytes, so session, peer, epoch and tick travel as fixed 64-bit values and a
+project maps its own types onto them. The envelope is magic, envelope version,
+message type, a reserved byte which must be zero, and a payload length which
+must account for the whole buffer; a shorter or longer buffer is a refusal, not
+a prefix parsed with the remainder ignored.
+
+The budgets (`session_wire_max_payload_bytes`, `..._max_credential_bytes`,
+`..._max_challenge_bytes`) are declared by the library because they are
+protocol, not machine policy: a limit derived from local memory would let two
+installations disagree about what is a legal message. Encoders write into
+prepared capacity and never grow their buffer, so a message which does not fit
+its budget is a fault instead of a reallocation. Absent optionals must be
+encoded as zero, presence flags accept only zero or one, and refusal reasons
+must be named nonzero values — otherwise two encoders could produce different
+bytes for one logical message.
+
+Five messages form the exchange: `client_hello`, `authority_challenge`,
+`client_response`, `session_accepted` and `session_refused`. Challenge and
+credential bytes stay opaque; decoded spans point into the caller's received
+buffer and must be copied to outlive it. `session_refusal_reason` is a stable
+wire numbering rather than a reuse of `session_handshake_status`, and separates
+wire-level faults (malformed, unexpected, no capacity) from one named
+compatibility field.
+
+`session_transcript` hashes the exact bytes of the hello and the challenge with
+explicit length prefixes. It is what makes challenge/response more than
+decoration: both roles derive the same value from the same two messages, so a
+credential recorded from another exchange or another peer's nonce cannot be
+replayed into this one. The library does not decide how a credential uses the
+transcript — only that both sides agree on it.
+
+`authority_handshake` and `client_handshake` are ordered state machines over
+decoded messages. Compatibility is answered at the hello, before a challenge is
+issued or a credential is examined; identity is answered at the response. A
+message which does not belong to the current phase is refused as
+`unexpected_message` instead of being applied out of order, and any refusal is
+terminal: a peer cannot retry a rejected credential or renegotiate
+compatibility on one connection. Every refusal fills the reply buffer with one
+`session_refused`, so a caller always has exactly one thing to send and one
+place to stop. A returned status describes the decode, not the decision:
+malformed input returns its wire status, while a well-formed refusal returns
+`ok` and reports itself through `phase()`/`refusal()`.
+
+Nonces are caller-supplied: the library carries them but owns no randomness
+policy and must not be given a repeated authority nonce. Neither role touches a
+socket, a simulation or a tick, and neither issues, stores or renews a
+credential. Automatic transport reconnect and a real new-connection recovery
+exchange remain the next slice.
 
 ## Prepared storage and hot-path ownership
 

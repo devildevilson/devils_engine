@@ -9,6 +9,7 @@
 #include "sequence_window.h"
 #include "session.h"
 #include "state_schema.h"
+#include "session_wire.h"
 #include "state_digest.h"
 #include "tick_journal.h"
 

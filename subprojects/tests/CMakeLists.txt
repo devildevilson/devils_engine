@@ -88,6 +88,9 @@ target_link_libraries(network_hot_path_test PRIVATE devils_engine::network)
 devils_add_doctest(network_session_test network_session_test.cpp)
 target_link_libraries(network_session_test PRIVATE devils_engine::network)
 
+devils_add_doctest(network_session_wire_test network_session_wire_test.cpp)
+target_link_libraries(network_session_wire_test PRIVATE devils_engine::network)
+
 if (TARGET devils_engine::network_gns)
   devils_add_doctest(network_gns_transport_test network_gns_transport_test.cpp)
   target_link_libraries(network_gns_transport_test PRIVATE devils_engine::network_gns)

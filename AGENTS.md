@@ -4,6 +4,33 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- SESSION-02: THE HANDSHAKE BECOMES BYTES, AND A SECOND TOOLCHAIN (2026-09-06).
+  `network/session_wire.h` freezes the handshake format and deliberately DROPS width neutrality: two
+  installations must agree on exact bytes, so session/peer/epoch/tick are fixed 64-bit and a project maps
+  its own ids onto them. Envelope = magic, version, type, reserved-must-be-zero, exact payload length; a
+  declared length which does not account for the whole buffer is refused in BOTH directions, never a prefix
+  with an ignored remainder. BUDGETS ARE DECLARED BY THE LIBRARY, not derived from the machine — a local
+  limit would make two installations disagree about what is a legal message. Encoders write into prepared
+  capacity and never grow. CANONICAL FORM IS ENFORCED ON DECODE, not just produced on encode (zeroed absent
+  optionals, boolean presence flags, named nonzero refusal reasons), because otherwise two encoders could
+  produce different bytes for one logical message. `session_transcript` hashes the exact hello and challenge
+  bytes with length prefixes — that is what makes challenge/response more than decoration: a credential
+  recorded from another exchange is refused as identity_rejected because the transcripts differ (proven).
+  Both roles are ORDERED state machines: compatibility at the hello BEFORE any challenge or credential check
+  (all six fields give their own reason, policy counters stay zero), identity at the response, everything
+  else `unexpected_message`, and a refusal is TERMINAL — a refused client ignores the challenge that arrives
+  afterwards. A returned status describes the DECODE, not the DECISION. Nonces are caller-supplied; the
+  library owns no randomness policy. `9/9` cases, `329/329` assertions; focused set `121/121` in GCC Debug
+  and Release. NOT included: credential issuer/storage, automatic GNS reconnect, multi-process execution.
+  SECOND TOOLCHAIN: building with Clang 22.1.8 found THREE defects GCC accepts, all of which would also
+  block a Windows/MSVC build — `stack_pool.h` overrides laxer than their `noexcept` pure virtual base,
+  `offsetof(T, T::obj)` with a qualified member designator, and (open, upstream) a static devils_script
+  template calling non-static `raise_error`. Also `libs/visage`/`libs/bindings` hardcode
+  `${FETCHCONTENT_BASE_DIR}/nuklear-src` instead of `${nuklear_SOURCE_DIR}`. With libc++ finally installed
+  the native-float corpus is UNCHANGED (`77e13886…`, first_difference=none) — expected, not reassuring: on
+  Linux both standard libraries call the same glibc libm, so that axis CANNOT produce a difference. Only a
+  non-glibc platform can answer the cross-libm question.
+
 - GENERAL SERIALIZATION AND COMPOSITE ACTOR CHECKPOINTS (2026-09-06).
   Canonical byte codec/adapters now live in `utils/serialization.h`; section composition moved from
   `network/state_schema.h` to `utils/state_schema.h` (network names remain aliases). Generic

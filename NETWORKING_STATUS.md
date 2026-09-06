@@ -28,13 +28,16 @@ recorded here only after it is reproduced by an executable test or directly obse
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| Complete project suite | not run after adding SESSION-01; focused networking set is the verification scope |
-| Focused networking set | 81/81 in Debug and Release, including real localhost UDP |
+| SESSION-02 handshake wire format and ordered exchange | complete; 9/9 cases, 329/329 assertions in Debug and Release |
+| Complete project suite | not run after adding SESSION-01/02; focused networking set is the verification scope |
+| Focused networking set | 121/121 in GCC Debug and Release, including real localhost UDP |
+| Second toolchain (Clang + libc++) | networking/serialization set passes; three portability defects fixed, `devils_script` one open |
 | `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
 | NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
 | SESSION-01 strict compatibility/identity/recovery primitives | neutral slice complete; 6/6 cases, 76/76 assertions pass in Debug and Release |
-| Session wire handshake and automatic transport reconnect | not started; next multi-process laboratory work |
+| Session wire handshake and challenge/response | complete as a neutral slice; see SESSION-02 below |
+| Credential issuer/storage and automatic transport reconnect | not started; next multi-process laboratory work |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
@@ -74,6 +77,74 @@ Debug and Release verification passes **6/6 cases, 76/76 assertions**. The compl
 including the existing real localhost UDP cases, passes **81/81** in both configurations. No sanitizer or
 whole-project run was performed. Wire framing, challenge/response, credential lifecycle, automatic GNS
 reconnect and replay across a real new connection remain the next integration layer.
+
+## SESSION-02 — handshake wire format and ordered exchange, 2026-09-06
+
+`libs/network/include/devils_engine/network/session_wire.h` freezes the handshake format above the neutral
+SESSION-01 primitives. It is the first part of the library which deliberately abandons width neutrality: two
+installations must agree on exact bytes, so session, peer, epoch and tick travel as fixed 64-bit values and a
+project maps its own identifiers onto them. No socket, file, gameplay object or credential format enters it.
+
+- The envelope is magic, envelope version, message type, a reserved byte which must be zero, and a payload
+  length which must account for the whole buffer. A shorter buffer is `truncated`, a longer one is
+  `trailing_bytes`; no prefix is ever accepted with a remainder ignored. Every truncated prefix of a valid
+  hello is refused, and a buffer above the declared budget is refused before parsing.
+- Budgets are declared by the library, not derived from the machine. A limit taken from local memory would let
+  two installations disagree about what is a legal message, and the larger side would be refused with no useful
+  reason. Encoders write into prepared capacity and never grow: an unprepared buffer returns `buffer_too_small`
+  with capacity still zero.
+- Canonical encoding is enforced on decode, not merely produced on encode. An absent optional must be zero, a
+  presence flag accepts only zero or one, an anchor without a session is not a legal claim, and a refusal reason
+  must be a named nonzero value. Otherwise two encoders could produce different bytes for one logical message.
+- `session_transcript` hashes the exact bytes of the hello and the challenge with explicit length prefixes.
+  This is what makes challenge/response more than decoration: the test records a complete exchange, replays its
+  credential against an authority whose nonce differs, and the refusal is `identity_rejected` because the two
+  transcripts differ. Length prefixing also keeps two split messages from hashing like one whole message.
+- `authority_handshake`/`client_handshake` are ordered state machines over decoded messages. Compatibility is
+  answered at the hello: each of the six fields produces its own refusal reason, and the policy is asked for
+  neither a challenge nor a credential check (both counters stay zero). Identity is answered at the response.
+  Out-of-order and repeated messages are `unexpected_message`, and a refusal is terminal — after being refused,
+  a client ignores the challenge which arrives afterwards and cannot restart the exchange.
+- A returned status describes the decode, not the decision: malformed input returns its wire status, while a
+  well-formed compatibility/identity/ordering refusal returns `ok` and reports itself through `phase()`/
+  `refusal()`. Both roles fill the reply buffer with exactly one `session_refused`, so a caller always has one
+  thing to send and one place to stop.
+- Nonces are caller-supplied. The library carries them and owns no randomness policy; a repeated authority
+  nonce is a caller fault. The reconnect claim (`resumed_session` plus an optional proven anchor) is carried to
+  the authority and observed there, and a granted session which differs from the claimed one refuses with
+  `unknown_session` instead of silently rejoining a different session.
+
+`network_session_wire_test` passes **9/9 cases, 329/329 assertions** in Debug and Release, and 9/9 under
+Clang as well. The whole focused set is **121/121** in GCC Debug and Release. SESSION-02 adds no credential
+issuer/storage, no automatic GNS reconnect, no multi-process execution and no transport binding: the exchange
+is proven in-process over byte buffers, which is exactly what NET-LAB-01 then carries over a real connection.
+
+## Toolchain matrix — GCC/libstdc++ and Clang/libc++, 2026-09-06
+
+The verification matrix now has a second toolchain. Building the focused set with Clang 22.1.8 found three
+portability defects which GCC 16.2.1 accepts; all three would also have blocked a Windows/MSVC build, which is
+the platform the cross-libm work needs next.
+
+| Defect | Nature | Status |
+| --- | --- | --- |
+| `utils/thread/stack_pool.h`, four `execute() const override` | overriding function laxer than the `noexcept` pure virtual base | fixed by adding `noexcept` |
+| `aesthetics/common.h`, `offsetof(class_container<T>, class_container<T>::obj)` | qualified member designator is a GCC extension | fixed to the unqualified member |
+| `devils_script` v1.2.1 `system_templates.h:1101` | static `get_user_function_type()` calls non-static `raise_error`; the error does not depend on the template parameters, so Clang diagnoses it at parse time | open, belongs upstream (`~/git/cpp/devils_script`); a temporary stub was used only to look for further defects behind it and has been reverted, so a Clang build of any `devils_script` consumer still fails here |
+
+`libs/visage/CMakeLists.txt` and `libs/bindings/CMakeLists.txt` hardcode `${FETCHCONTENT_BASE_DIR}/nuklear-src`
+instead of `${nuklear_SOURCE_DIR}`. That is not a compiler defect, but it breaks any build tree which reuses
+fetched sources through `FETCHCONTENT_SOURCE_DIR_*`.
+
+With libc++ actually installed, the native-float micro-corpus is unchanged: GCC/libstdc++ and Clang/**libc++**
+both produce 21,505 bytes hashing to `77e13886fa5dd6706add0856195b81e18738d9750f75cc7410bc7f69b74e66e6`, with
+`first_difference=none`. This is the expected result rather than evidence of portability: on Linux both standard
+libraries call the same glibc `libm`, so the standard-library axis cannot produce a transition difference. The
+corpus therefore still says nothing about a different `libm` implementation; only a non-glibc platform can.
+
+Verification scope: GCC Debug and Release focused set 121/121 each, measured after reverting the temporary
+`devils_script` stub. Clang Debug networking/serialization set 105/105 plus the new 9/9; Clang builds of the
+`tile_frontier` smokes need the upstream `devils_script` fix first, and a Clang Release configuration was not
+built. No sanitizer, no whole-project suite.
 
 ## NET-08C — common simulation/state proof over GNS, 2026-09-06
 

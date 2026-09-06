@@ -1196,10 +1196,12 @@ then grows with session age. Regular complete checkpoints bound both retained lo
 Replication baselines do not replace these checkpoints: a baseline may contain only externally visible state,
 whereas recovery needs the complete causal state that determines the next tick.
 
-The current `tile_frontier` resume proof already restores `actor_world_slice::save()` and
-`utils::timelines_causal_state` together and then stays byte-identical. They are nevertheless two owners today.
-The network checkpoint document must compose both sections; the actor packet alone contains game time but not
-the timeline's rational remainder/rate state.
+This gap is now closed in the project. `tile_frontier/core/actor_checkpoint.h` replaced
+`actor_world_slice::save/load` with one composite causal document whose three sections are the timeline, the
+ECS world and the actor's private counters, and tick/game time live only in the timeline section. A network
+checkpoint envelope therefore carries one document instead of composing two owners, and the earlier failure
+mode — an actor packet which contains game time but not the timeline's rational remainder — is no longer
+representable.
 
 ## Security and hostile input
 
@@ -1254,6 +1256,7 @@ NET-00 contract (complete)
                  -> NET-07 replication baselines
                       -> NET-08 selected real-transport adapter
                            -> SESSION-01 compatibility/identity/reconnect recovery
+                                -> SESSION-02 handshake wire format + challenge/response
                                 -> NET-LAB-01 multi-process loopback/LAN
                                 -> NET-LAB-02 compatible cross-build exchange
                                      -> SERVER-01 headless authority
@@ -1606,9 +1609,27 @@ Implementation is split into independently verified slices:
   target divergence without mutating the live world.
 
 The neutral API and deterministic tests are implemented in `network/session.h` and `network_session_test`.
-Still above this slice: the bounded wire codec and multi-message challenge/response, credential issuer/storage,
-automatic GNS reconnection and a real multi-process authority/follower exchange. Those are exercised next in
-NET-LAB-01 rather than hidden inside the transport adapter.
+The bounded wire codec and multi-message challenge/response are now SESSION-02 below. Still above both slices:
+credential issuer/storage, automatic GNS reconnection and a real multi-process authority/follower exchange.
+Those are exercised in NET-LAB-01 rather than hidden inside the transport adapter.
+
+### SESSION-02 — handshake wire format and ordered exchange (`M`, complete 2026-09-06)
+
+- Freeze one envelope: magic, envelope version, message type, reserved byte, exact payload length. Refuse a
+  buffer whose declared length does not account for all of it, in either direction.
+- Declare the payload/credential/challenge budgets in the library. A budget derived from the local machine
+  would make two installations disagree about what is a legal message.
+- Encode into prepared capacity only; never grow a session buffer.
+- Enforce canonical encoding on decode: zeroed absent optionals, boolean presence flags, named nonzero refusal
+  reasons. Two encoders must not be able to produce different bytes for one logical message.
+- Bind the credential to a transcript over the exact hello and challenge bytes, so a credential recorded from
+  another exchange cannot be replayed into this one.
+- Order the exchange in both roles: compatibility at the hello before any challenge or credential, identity at
+  the response, `unexpected_message` for anything else, and a terminal refusal which cannot be retried on one
+  connection.
+
+Done with `network/session_wire.h` and `network_session_wire_test`. Wire framing does not imply a transport:
+the exchange is proven over byte buffers, and NET-LAB-01 carries it over a real connection.
 
 ### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 
