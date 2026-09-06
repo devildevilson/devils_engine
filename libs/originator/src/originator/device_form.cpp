@@ -241,6 +241,15 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
     }
   }
 
+  // ПРЕДЕЛ PUSH-КОНСТАНТЫ ПРОВЕРЯЕТСЯ ЗДЕСЬ, потому что здесь она и объявляется, — один раз на все
+  // тела и все переводы. Превышение это ошибка объявления, а не свойство машины: `device_push_limit`
+  // выбран так, что помещается везде.
+  if (params.size() > device_param_limit) {
+    utils::error{}("originator: a device form declares {} parameters, and {} bytes of push constant hold "
+                   "a header plus {}",
+                   params.size(), device_push_limit, device_param_limit);
+  }
+
   std::string text;
   text.append("#version 450\n\n");
   text.append(std::format("layout(local_size_x = {}) in;\n\n", group_size));
@@ -249,6 +258,7 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
   // которым пользуются, обязано стоять раньше того, кто им пользуется.
   text.append("layout(push_constant) uniform originator_call {\n");
   text.append("  uint count; uint begin; uint extent_x; uint extent_y; uint seed;\n");
+  text.append("  uint raw_seed_lo; uint raw_seed_hi;\n");
   for (const auto& param : params) {
     text.append(std::format("  float {};\n", param.shader_name()));
   }

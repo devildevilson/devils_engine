@@ -935,6 +935,15 @@ translation translate_to_glsl(const std::string_view& name,
     params.push_back(device_param{argument, 0.0, std::format("arg_{}", argument)});
   }
 
+  // ПРЕДЕЛ PUSH-КОНСТАНТЫ у перевода упирается в число аргументов программы, и это ОТКАЗ, а не
+  // ошибка: очередь остаётся на CPU и считает то же самое. Сказано здесь, а не общей проверкой
+  // сборщика, потому что причина у перевода СВОЯ — столько-то `ctx:arg:`, — и она называется.
+  if (params.size() > device_param_limit) {
+    utils::error{}("originator script '{}': {} arguments do not fit the push constant; {} bytes hold a "
+                   "header plus {}",
+                   name, params.size(), device_push_limit, device_param_limit);
+  }
+
   // Форма ВЫДАЁТСЯ здесь и только здесь: чужое тело попадает на устройство ровно как переведённая
   // программа `devils_script`, и никак иначе. Локали идут перед записью — в них живут сохранённые
   // слоты, перекрытые аргументы и веса ветвлений.

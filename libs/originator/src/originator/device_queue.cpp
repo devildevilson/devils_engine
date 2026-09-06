@@ -526,6 +526,8 @@ void device_queue::write_push(const queue_call& call, call_plan& plan) const {
   // Зерно ВЫЗОВА, а не шага: у вызова оно уже посчитано (`hash(зерно пайплайна, имя шага)` либо
   // названное в lua), и устройство обязано взять то же самое число, что взял бы CPU.
   header.seed = fold_seed(call.seed);
+  header.raw_seed_lo = uint32_t(call.seed);
+  header.raw_seed_hi = uint32_t(call.seed >> 32);
   std::memcpy(plan.push.data(), &header, sizeof(header));
 
   for (size_t p = 0; p < params.size(); ++p) {

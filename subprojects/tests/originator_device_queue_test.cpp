@@ -243,15 +243,18 @@ TEST_CASE("originator device queue refuses what does not go to a device, and say
     originator::parameters params;
     params.set_number("width", 1.0);
 
-    // `value_noise` устройственной формы не объявляет: у площадки на CPU он есть, а на устройстве
-    // нет, и это законный ответ, а не дефект. Инструмент здесь важен только тем, что тела у него нет.
-    const std::vector<field_pair> plain = {{"height", "v1"}};
+    // `sphere_points` устройственной формы не объявляет и НЕ ОБЪЯВИТ, и это измеренный отказ: угол
+    // спирали Фибоначчи берётся от дробной части `i * φ`, от которой во `float32` остаётся четыре
+    // бита (на миллионе точек угол расходится на 0.9955 оборота). Инструмент здесь важен только тем,
+    // что тела у него нет, и выбран такой, у которого оно не появится завтра — прежде здесь стоял
+    // `classify`, потом `value_noise`, и оба со временем тело получили.
+    const std::vector<field_pair> plain = {{"height", "v3"}};
     auto layout = originator::make_buffer_layout(originator::storage_kind::soa, plain, "cells");
     originator::buffer other("cells", std::move(layout), grid_count);
 
     originator::computation_queue queue;
     queue.name = "bodiless";
-    queue.calls.push_back(tool_call("value_noise", {}, {writable(other, "height")}, params));
+    queue.calls.push_back(tool_call("sphere_points", {}, {writable(other, "height")}, params));
     queue.output.push_back(writable(other, "height"));
 
     const auto check = originator::check_device_queue(queue);
@@ -1176,4 +1179,272 @@ TEST_CASE("originator rebuilds a polyline on the device and measures the same di
 
   compare("euclidean");
   compare("chebyshev");
+}
+
+// ЗАНЯТОСТЬ ВОЛНЫ НА НЕРАВНОМЕРНОМ CSR — названный пробел замера (§5 п.5). Растровое окно
+// сбалансировано по построению: у каждого элемента соседей поровну. У графа соседства это не так —
+// в GN02 степень доходит до 24 при средних шести, — а волна идёт со скоростью САМОЙ ДЛИННОЙ полосы
+// в ней. Вопрос был «сколько это стоит», и ответить на него можно только замером.
+//
+// СРАВНИВАЮТСЯ ДВА ГРАФА С ОДИНАКОВОЙ РАБОТОЙ: то же число узлов и ТО ЖЕ ЧИСЛО ДУГ, разложенных
+// ровно и неровно. Без равенства суммы дуг замер сравнивал бы «больше работы» с «меньше работы» и не
+// говорил бы ничего о занятости.
+TEST_CASE("originator measures what an unbalanced CSR costs a wave") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: CSR occupancy is not measured here");
+    return;
+  }
+
+  constexpr size_t nodes = 262144;
+  constexpr size_t average_degree = 6;
+  constexpr size_t total_arcs = nodes * average_degree;
+
+  // Раскладка степеней. Сумма дуг ВО ВСЕХ ТРЁХ ОДНА И ТА ЖЕ, иначе замер сравнивал бы «больше
+  // работы» с «меньше работы» и про занятость не говорил бы ничего.
+  //
+  // Раскладок именно три, потому что «неровный» — это НЕ ОДНА раскладка, а две противоположные, и
+  // ответ у них разный:
+  //   even      — у каждого узла шесть соседей (растровое окно, эталон);
+  //   clustered — узлы со степенью 24 лежат ПОДРЯД: почти все волны идут по одним тройкам, немногие
+  //               целиком по двадцатичетвёркам. Так всплески и лежат в настоящем графе — сгущения
+  //               вокруг особых точек;
+  //   spread    — те же узлы разбросаны РАВНОМЕРНО: в каждую волну попадает хотя бы один, и вся
+  //               волна идёт по самому длинному. Это худший случай, и он же показывает ПОТОЛОК цены.
+  enum class layout { even, clustered, spread };
+  constexpr size_t heavy_degree = 24;
+  constexpr size_t light_degree = 3;
+  // Сколько узлов обязано стать тяжёлыми, чтобы сумма дуг совпала с ровной раскладкой.
+  constexpr size_t heavy_nodes = nodes * (average_degree - light_degree) / (heavy_degree - light_degree);
+
+  const auto degrees_of = [&](const layout kind) {
+    std::vector<size_t> degrees(nodes, average_degree);
+    if (kind == layout::even) return degrees;
+    std::fill(degrees.begin(), degrees.end(), light_degree);
+    if (kind == layout::clustered) {
+      for (size_t i = 0; i < heavy_nodes; ++i) degrees[i] = heavy_degree;
+    } else {
+      // Ровно `heavy_nodes` позиций, разложенных без остатка по всему диапазону.
+      for (size_t i = 0; i < nodes; ++i) {
+        if ((i * heavy_nodes) / nodes != ((i + 1) * heavy_nodes) / nodes) degrees[i] = heavy_degree;
+      }
+    }
+    // ОСТАТОК ЦЕЛОЧИСЛЕННОГО ДЕЛЕНИЯ кладётся на последний узел: равенство суммы дуг — условие, при
+    // котором замер вообще что-то значит, и «почти совпало» здесь не годится.
+    size_t placed = 0;
+    for (const auto d : degrees) placed += d;
+    degrees.back() += total_arcs - placed;
+    return degrees;
+  };
+
+  // ЦЕНА ОДНОГО ПРОХОДА БЕРЁТСЯ НАКЛОНОМ, а не полным кругом. Полный круг здесь почти целиком
+  // ПЕРЕДАЧА: буфер дуг это шесть мегабайт, и на его фоне разница диспатчей утонула бы — первый
+  // вариант этого замера так и показал «неровность не стоит ничего», померив не ту величину.
+  // Поэтому очередь гоняется с ОДНИМ проходом и с девятью: передача у них одинакова по построению
+  // (те же буферы, те же границы), и разность, делённая на восемь, — это цена ровно одного прохода.
+  constexpr size_t long_passes = 81;
+
+  const auto measure = [&](const layout kind, const size_t passes) {
+    const auto degrees = degrees_of(kind);
+    size_t arcs_used = 0;
+    for (const auto d : degrees) arcs_used += d;
+    REQUIRE(arcs_used == total_arcs);
+
+    const std::vector<field_pair> offset_fields = {{"start", "ui1"}};
+    auto offsets_layout = originator::make_buffer_layout(originator::storage_kind::soa, offset_fields, "offsets");
+    originator::buffer offsets("offsets", std::move(offsets_layout), nodes + 1);
+
+    const std::vector<field_pair> arc_fields = {{"node", "ui1"}};
+    auto arcs_layout = originator::make_buffer_layout(originator::storage_kind::soa, arc_fields, "arcs");
+    originator::buffer arcs("arcs", std::move(arcs_layout), total_arcs);
+
+    const std::vector<field_pair> value_fields = {{"value", "v1"}, {"blurred", "v1"}};
+    auto cells_layout = originator::make_buffer_layout(originator::storage_kind::soa, value_fields, "cells");
+    originator::buffer cells("cells", std::move(cells_layout), nodes);
+
+    auto start = offsets.field(offsets.find_field("start"));
+    auto arc = arcs.field(arcs.find_field("node"));
+    auto value = cells.field(cells.find_field("value"));
+    size_t at = 0;
+    for (size_t i = 0; i < nodes; ++i) {
+      start.set(i, double(at));
+      for (size_t k = 0; k < degrees[i]; ++k) {
+        arc.set(at + k, double((i + k + 1) % nodes));
+      }
+      at += degrees[i];
+      value.set(i, std::sin(double(i) * 0.01));
+    }
+    start.set(nodes, double(at));
+
+    originator::parameters blur;
+    blur.set_number("self_weight", 1.0);
+    blur.set_number("neighbour_weight", 0.5);
+
+    originator::computation_queue queue;
+    queue.name = "csr_occupancy";
+    // Проходы чередуют поля туда-обратно: оба остаются РЕЗИДЕНТНЫМИ, наружу уезжает только
+    // последнее, поэтому передача от числа проходов не зависит — а без этого наклон мерил бы не то.
+    for (size_t pass = 0; pass < passes; ++pass) {
+      const bool forward = (pass % 2) == 0;
+      auto call = originator::queue_call{
+        .label = "blur",
+        .inputs = {readable(offsets, "start"), readable(arcs, "node"),
+                   readable(cells, forward ? "value" : "blurred")},
+        .outputs = {writable(cells, forward ? "blurred" : "value")},
+        .params = blur,
+        .tool = registry().find("graph_blur")};
+      // Диапазон вызова объявляется: у графа он не выводится из формы буфера смещений, у которого на
+      // один элемент больше, чем узлов.
+      call.range_end = nodes;
+      queue.calls.push_back(std::move(call));
+    }
+    queue.output.push_back(writable(cells, (passes % 2) == 1 ? "blurred" : "value"));
+
+    const auto check = originator::check_device_queue(queue);
+    REQUIRE_MESSAGE(check.allowed, check.message);
+
+    painter::compute_context_config config;
+    config.app_name = "csr_occupancy";
+    painter::compute_context context(config);
+    originator::device_queue plan(context, queue);
+
+    // Лучшее из пяти: меряется цена РАСКЛАДКИ, а не то, чем в этот момент занята машина.
+    double best = 1e30;
+    originator::device_report last;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+      last = plan.run();
+      best = std::min(best, last.submit_ms);
+    }
+    // ПРОВЕРКА, КОТОРАЯ ПАДАЕТ, ЕСЛИ ПРОХОДЫ НЕ СЧИТАЛИСЬ. Без неё «81 проход стоит столько же,
+    // сколько один» читалось бы как вывод замера, а означать могло бы, что диспатчей не было.
+    const auto out = cells.field(cells.find_field((passes % 2) == 1 ? "blurred" : "value"));
+    double sharpness = 0.0;
+    for (size_t i = 1; i < nodes; ++i) sharpness += std::abs(out.get(i) - out.get(i - 1));
+    // Проходы обязаны СЧИТАТЬ: поле после них не константа. Первый вариант этого замера показывал
+    // «81 проход стоит столько же, сколько один» — и это было правдой, потому что диапазон вызова не
+    // был объявлен и не считался НИ ОДИН. Замер без такой проверки уверенно печатает числа ни о чём.
+    CHECK(sharpness > 0.0);
+    CHECK(last.calls == passes);
+    CHECK(last.barriers == passes - 1);
+    return best;
+  };
+
+  const auto pass_cost = [&](const layout kind, double& one, double& many) {
+    one = measure(kind, 1);
+    many = measure(kind, long_passes);
+    return (many - one) / double(long_passes - 1);
+  };
+
+  double even_one = 0.0, even_many = 0.0, clustered_one = 0.0, clustered_many = 0.0;
+  double spread_one = 0.0, spread_many = 0.0;
+  const auto even = pass_cost(layout::even, even_one, even_many);
+  const auto clustered = pass_cost(layout::clustered, clustered_one, clustered_many);
+  const auto spread = pass_cost(layout::spread, spread_one, spread_many);
+  MESSAGE("round trip: even " << even_one << " -> " << even_many << " ms, clustered "
+                              << clustered_one << " -> " << clustered_many << " ms, spread "
+                              << spread_one << " -> " << spread_many << " ms");
+
+  MESSAGE("CSR " << nodes << " nodes, " << total_arcs << " arcs, " << heavy_nodes
+                 << " of degree 24; one pass costs: even " << even << " ms, clustered " << clustered
+                 << " ms (" << (clustered / even) << ":1), spread " << spread << " ms ("
+                 << (spread / even) << ":1)");
+
+  // Утверждается только то, что замер ИЗМЕРИЛ: все три раскладки посчитались. Числа отношений —
+  // вывод замера, и зашивать их в проверку значило бы объявить свойство МАШИНЫ свойством библиотеки.
+  CHECK(even_many > even_one);
+  CHECK(clustered_many > clustered_one);
+  CHECK(spread_many > spread_one);
+}
+
+// ШЕСТИДЕСЯТИЧЕТЫРЁХБИТНЫЙ ХЕШ В ШЕЙДЕРЕ. `value_noise` берёт решётку splitmix64, а 64-битных целых
+// в GLSL нет — они собираются из пары `uint` через `umulExtended`. Проверяется не «шум похож»:
+// значение решётки это 24 бита, а 24 бита точны во `float32`, поэтому у ОДНОЙ октавы пути обязаны
+// совпасть ПОБИТОВО. Похожесть здесь ничего не значила бы — другой хеш даёт другое поле, и на глаз
+// это тот же шум.
+TEST_CASE("originator reproduces the 64-bit lattice hash on the device") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the 64-bit hash is not compared here");
+    return;
+  }
+
+  const std::vector<field_pair> fields = {{"noise", "v1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "raster");
+  originator::buffer raster("raster", std::move(layout),
+                            originator::buffer_extent{grid_width, grid_width, 0});
+
+  const auto build = [&](originator::buffer& target, const double octaves, const double frequency) {
+    originator::parameters noise;
+    noise.set_number("frequency", frequency);
+    noise.set_number("lacunarity", 2.0);
+    noise.set_number("gain", 0.5);
+    noise.set_number("amplitude", 1.0);
+    noise.set_number("offset", 0.0);
+    noise.set_number("octaves", octaves);
+    noise.set_number("salt", 7.0);
+
+    originator::computation_queue queue;
+    queue.name = "value_noise";
+    auto call = tool_call("value_noise", {}, {writable(target, "noise")}, noise);
+    call.seed = 0x0123456789abcdefull;
+    queue.calls.push_back(std::move(call));
+    queue.output.push_back(writable(target, "noise"));
+    return queue;
+  };
+
+  painter::compute_context_config config;
+  config.app_name = "value_noise_test";
+  painter::compute_context context(config);
+
+  // ЧАСТОТА РОВНО 1: тогда координата выборки — ЦЕЛОЕ, дробная часть ноль, интерполяция вырождается,
+  // и значение поля РАВНО значению решётки. Это и есть проверка ХЕША в чистом виде: между 64-битным
+  // splitmix и результатом не остаётся ни одной плавающей операции, которой драйвер мог бы
+  // распорядиться по-своему. Расхождение здесь означало бы РАЗНЫЙ ХЕШ — а на глаз другой хеш
+  // выглядит тем же самым шумом.
+  {
+    auto cpu = raster;
+    auto gpu = raster;
+    const auto queue = build(cpu, 1.0, 1.0);
+    const auto check = originator::check_device_queue(queue);
+    REQUIRE_MESSAGE(check.allowed, check.message);
+    run_on_cpu(queue);
+    originator::device_queue plan(context, build(gpu, 1.0, 1.0));
+    plan.run();
+
+    const auto host = cpu.field(cpu.find_field("noise"));
+    const auto device = gpu.field(gpu.find_field("noise"));
+    size_t differences = 0;
+    for (size_t i = 0; i < grid_count; ++i) {
+      differences += size_t(host.get(i) != device.get(i));
+    }
+    MESSAGE("value_noise lattice (frequency 1): " << differences << " of " << grid_count << " differ");
+    CHECK(differences == 0);
+    // И решётка не константа, иначе совпадение выше не проверяло бы ничего.
+    double roughness = 0.0;
+    for (size_t i = 1; i < grid_count; ++i) roughness += std::abs(host.get(i) - host.get(i - 1));
+    CHECK(roughness > 0.0);
+  }
+
+  // ОДНА ОКТАВА С ИНТЕРПОЛЯЦИЕЙ: значения решётки те же и точные, а вот три плавающих операции между
+  // ними драйвер вправе свернуть по-своему. Здесь обещается ОДИН ULP, а не побитовость — §4.2.
+  {
+    auto cpu = raster;
+    auto gpu = raster;
+    run_on_cpu(build(cpu, 1.0, 0.031));
+    originator::device_queue plan(context, build(gpu, 1.0, 0.031));
+    plan.run();
+    const auto worst = worst_difference(cpu, gpu, "noise");
+    MESSAGE("value_noise one octave, interpolated: worst deviation " << worst);
+    CHECK(worst < 1.0e-6);
+  }
+
+  // ЧЕТЫРЕ ОКТАВЫ: сумма плавающих, здесь обещается близость, а не побитовость — §4.2.
+  {
+    auto cpu = raster;
+    auto gpu = raster;
+    run_on_cpu(build(cpu, 4.0, 0.031));
+    originator::device_queue plan(context, build(gpu, 4.0, 0.031));
+    plan.run();
+    const auto worst = worst_difference(cpu, gpu, "noise");
+    MESSAGE("value_noise four octaves: worst deviation " << worst);
+    CHECK(worst < 1.0e-6);
+  }
 }

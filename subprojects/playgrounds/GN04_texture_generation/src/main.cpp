@@ -53,6 +53,9 @@ struct options {
   uint64_t seed = 20260904;
   bool verify = false;
   std::string dump;
+  // Каталог дискового кэша SPIR-V. Пусто => компиляция каждый прогон, и именно так меряется ХОЛОДНЫЙ
+  // случай: кэш нельзя мерить, не умея его выключить.
+  std::string shader_cache;
 };
 
 fs::path resource_root() {
@@ -95,6 +98,8 @@ options parse_options(const int argc, const char** argv) {
       result.sites = std::stoul(std::string(argument.substr(8)));
     } else if (starts_with(argument, "--seed=")) {
       result.seed = std::stoull(std::string(argument.substr(7)));
+    } else if (starts_with(argument, "--shader-cache=")) {
+      result.shader_cache = std::string(argument.substr(15));
     } else if (starts_with(argument, "--dump=")) {
       result.dump = std::string(argument.substr(7));
     } else if (argument == "--help" || argument == "-h") {
@@ -238,6 +243,8 @@ void print_plan(const originator::device_queue& plan, const originator::device_r
 int run_once(const options& opts) {
   painter::compute_context_config config;
   config.app_name = "GN04";
+  config.shader_cache_directory = opts.shader_cache;
+  const auto context_start = std::chrono::steady_clock::now();
   painter::compute_context ctx(config);
   originator::device_executor executor(ctx);
 
@@ -252,6 +259,14 @@ int run_once(const options& opts) {
   print_plan(*executor.last_plan(), executor.last_report());
   std::cout << "  запись " << executor.last_report().record_ms << " мс, отправка "
             << executor.last_report().submit_ms << " мс, весь пайплайн " << outcome.wall_ms << " мс\n";
+  // ЦЕНА ПОЛУЧЕНИЯ ШЕЙДЕРОВ, а не только их исполнения. Меряется от создания контекста до конца
+  // первого прогона: холодный путь платит здесь подъём glslang плюс компиляцию каждой программы,
+  // тёплый — только чтение файлов. Печатается всегда, потому что число без второго прогона рядом
+  // ничего не значит, а с ним — говорит, работает кэш или нет.
+  std::cout << "  до первого результата " << milliseconds_since(context_start) << " мс, программ "
+            << ctx.compiled_programs()
+            << (opts.shader_cache.empty() ? " (дисковый кэш выключен)" : " (дисковый кэш включён)")
+            << "\n";
 
   // ВТОРОЙ ПЛАН из ТЕХ ЖЕ вызовов и с другой границей. Он НЕ исполняется: вся передача выведена уже
   // при составлении, поэтому сравнивать надо именно ПЛАНЫ.

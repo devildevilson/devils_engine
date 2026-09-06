@@ -182,6 +182,96 @@ void tool_value_noise(const tool_call& call, const size_t begin, const size_t en
   }
 }
 
+// ТОТ ЖЕ ШУМ НА УСТРОЙСТВЕ, и «тот же» здесь означает ТОТ ЖЕ ХЕШ, а не похожий. Хеш решётки у этого
+// инструмента ШЕСТИДЕСЯТИЧЕТЫРЁХБИТНЫЙ (splitmix64), а в шейдере 64-битных целых нет — они собираются
+// из пары `uint` через `umulExtended`. Иначе тело считало бы ДРУГОЕ ПОЛЕ, и «инструмент уехал на
+// устройство» означало бы «мир сменился».
+//
+// Значение решётки — 24 бита (`hash >> 40`), а 24 бита точны во `float32`, поэтому решётка совпадает
+// ПОБИТОВО. Расходятся только интерполяция и сумма октав, то есть §4.2 и ничего сверх него.
+//
+// Зерно приходит СЫРЫМ (`raw_seed_lo`/`raw_seed_hi`): свёрнутого 32-битного хватает переводу `ds` и
+// собственному шуму ядра, но не этому — свёртка необратима.
+//
+// ОГРАНИЧЕНИЕ, НАЗВАННОЕ ВСЛУХ: `salt` едет параметром, то есть `float`, и точен до 2^24. Соли в
+// конфигах — небольшие числа, а параметр шире push-константа не несёт.
+const std::string value_noise_device_prelude = R"(
+uvec2 vn_add64(const uvec2 a, const uvec2 b) {
+  const uint lo = a.x + b.x;
+  return uvec2(lo, a.y + b.y + (lo < a.x ? 1u : 0u));
+}
+
+uvec2 vn_shr64(const uvec2 a, const uint n) {
+  return uvec2((a.x >> n) | (a.y << (32u - n)), a.y >> n);
+}
+
+uvec2 vn_mul64(const uvec2 a, const uvec2 b) {
+  uint hi = 0u;
+  uint lo = 0u;
+  umulExtended(a.x, b.x, hi, lo);
+  return uvec2(lo, hi + a.x * b.y + a.y * b.x);
+}
+
+// splitmix64, слово в слово как `hash_u64` на хосте.
+uvec2 vn_hash64(uvec2 x) {
+  x = vn_add64(x, uvec2(0x7f4a7c15u, 0x9e3779b9u));
+  x = vn_mul64(x ^ vn_shr64(x, 30u), uvec2(0x1ce4e5b9u, 0xbf58476du));
+  x = vn_mul64(x ^ vn_shr64(x, 27u), uvec2(0x133111ebu, 0x94d049bbu));
+  return x ^ vn_shr64(x, 31u);
+}
+
+float vn_lattice(const int x, const int y, const uvec2 seed) {
+  const uvec2 key = uvec2(uint(x), uint(y)) ^ seed;
+  return float(vn_hash64(key).y >> 8) * (1.0 / 16777216.0);
+}
+
+float vn_smooth(const float t) { return t * t * (3.0 - 2.0 * t); }
+
+float vn_value(const float x, const float y, const uvec2 seed) {
+  const float fx = floor(x);
+  const float fy = floor(y);
+  const int ix = int(fx);
+  const int iy = int(fy);
+  const float tx = vn_smooth(x - fx);
+  const float ty = vn_smooth(y - fy);
+
+  const float v00 = vn_lattice(ix, iy, seed);
+  const float v10 = vn_lattice(ix + 1, iy, seed);
+  const float v01 = vn_lattice(ix, iy + 1, seed);
+  const float v11 = vn_lattice(ix + 1, iy + 1, seed);
+
+  const float a = v00 + (v10 - v00) * tx;
+  const float b = v01 + (v11 - v01) * tx;
+  return a + (b - a) * ty;
+}
+)";
+
+const std::string value_noise_device_body = R"(
+  const uvec2 call_seed = uvec2(args.raw_seed_lo, args.raw_seed_hi) ^ uvec2(uint(int(args.salt)), 0u);
+  const uvec2 base_seed = vn_hash64(call_seed);
+
+  const float x = float(index % args.extent_x);
+  const float y = float(index / args.extent_x);
+
+  float value = 0.0;
+  float amplitude = 1.0;
+  float normalization = 0.0;
+  float frequency = args.frequency;
+  const int octaves = clamp(int(args.octaves), 1, 16);
+  for (int octave = 0; octave < octaves; ++octave) {
+    uint step_hi = 0u;
+    uint step_lo = 0u;
+    umulExtended(uint(octave), 0x9e3779b9u, step_hi, step_lo);
+    const uvec2 seed = vn_add64(base_seed, uvec2(step_lo, step_hi));
+    value += amplitude * vn_value(x * frequency, y * frequency, seed);
+    normalization += amplitude;
+    amplitude *= args.gain;
+    frequency *= args.lacunarity;
+  }
+
+  out_0_set(index, args.offset + args.amplitude * (value / normalization));
+)";
+
 // index: порядковый номер элемента как значение поля.
 //
 // Выглядит бессмысленно, пока не понадобится заливка, которая несёт не признак «здесь граница», а
@@ -594,7 +684,13 @@ void tool_registry::add_standard_tools() {
                    "  out_0_set(index, 2u, args.origin_z + float(z) * args.cell_size);\n"
                    "#endif\n",
     .device_params = {{"cell_size", 1.0}, {"origin_x", 0.0}, {"origin_y", 0.0}, {"origin_z", 0.0}}});
-  add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise, .footprint = no_temporary_memory});
+  add(tool_description{
+    .name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
+    .body = tool_value_noise, .footprint = no_temporary_memory,
+    .device_body = value_noise_device_body,
+    .device_prelude = value_noise_device_prelude,
+    .device_params = {{"frequency", 0.01}, {"lacunarity", 2.0}, {"gain", 0.5}, {"amplitude", 1.0},
+                      {"offset", 0.0}, {"octaves", 4.0}, {"salt", 0.0}}});
   add(tool_description{
     .name = "index", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_index, .footprint = no_temporary_memory,
     // Номер элемента — целое, и поле под него объявляют целым; тело написано против `float`, поэтому

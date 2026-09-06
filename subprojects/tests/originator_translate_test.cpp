@@ -1,5 +1,6 @@
 #include <bit>
 #include <cstring>
+#include <format>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -842,4 +843,44 @@ TEST_CASE("originator keeps integer leaves integer, and that shows above 2^24") 
   }
   // И на устройстве теперь тоже: целое сравнение не склеивает соседей.
   CHECK(gpu_equal == 0);
+}
+
+// ПРЕДЕЛ PUSH-КОНСТАНТЫ ОБЪЯВЛЕН БИБЛИОТЕКОЙ, а не спрошен у устройства: `maxPushConstantsSize` у
+// разных машин разный, и вызов, зажатый по нему, у автора собрался бы, а у игрока отказал. Проверяется
+// именно ГРАНИЦА с обеих сторон — предел, который никогда не срабатывает, ничего не обещает.
+TEST_CASE("originator declares its own push-constant budget instead of asking the device") {
+  const auto inputs = classify_inputs();
+  const originator::translated_field output{"biome", originator::field_base::i};
+  const auto kind = originator::script_program::result_kind::number;
+
+  // Шапка плюс параметры по одному float — ровно то соглашение, по которому байты и выкладываются.
+  CHECK(originator::device_push_limit == 128);
+  CHECK(originator::device_param_limit ==
+        (originator::device_push_limit - sizeof(originator::device_call_header)) / sizeof(float));
+
+  const auto program_with = [](const size_t arguments) {
+    std::string source = "{ height";
+    for (size_t i = 0; i < arguments; ++i) source.append(std::format(" + ctx:arg:a{}", i));
+    source.append(" }");
+    return source;
+  };
+
+  const auto fits = originator::translate_to_glsl("fits", program_with(originator::device_param_limit),
+                                                  inputs, output, kind);
+  CHECK(fits.form.params().size() == originator::device_param_limit);
+  CHECK(sizeof(originator::device_call_header) + fits.form.params().size() * sizeof(float) ==
+        originator::device_push_limit);
+
+  // Одним больше — ОТКАЗ, а не ошибка: очередь остаётся на CPU и считает то же самое.
+  CHECK_THROWS_AS(originator::translate_to_glsl("over", program_with(originator::device_param_limit + 1),
+                                                inputs, output, kind),
+                  std::runtime_error);
+
+  // Тот же предел стоит и на нативном теле — сборщик текста один на переводы и на инструменты.
+  std::vector<originator::device_binding> shape(2);
+  shape[1].writable = true;
+  const std::vector<originator::device_param> too_many(originator::device_param_limit + 1,
+                                                       originator::device_param{"p", 0.0, "p"});
+  CHECK_THROWS_AS(originator::build_device_shader(shape, too_many, "  out_0_set(index, 0.0);\n", 64),
+                  std::runtime_error);
 }
