@@ -13,16 +13,16 @@ namespace utils = devils_engine::utils;
 
 namespace {
 
-net::session_nonce nonce_of(const std::uint8_t seed) {
+net::session_nonce nonce_of(const uint8_t seed) {
   net::session_nonce value{};
-  for (std::size_t i = 0; i < value.size(); ++i)
-    value[i] = std::byte(std::uint8_t(seed * 31u + i));
+  for (size_t i = 0; i < value.size(); ++i)
+    value[i] = std::byte(uint8_t(seed * 31u + i));
   return value;
 }
 
-utils::digest digest_of(const std::uint8_t seed) {
+utils::digest digest_of(const uint8_t seed) {
   utils::digest value{};
-  for (std::size_t i = 0; i < value.size(); ++i) value[i] = std::uint8_t(seed + i);
+  for (size_t i = 0; i < value.size(); ++i) value[i] = uint8_t(seed + i);
   return value;
 }
 
@@ -36,9 +36,9 @@ std::vector<std::byte> prepared() {
   return buffer;
 }
 
-std::vector<std::byte> blob(const std::size_t size, const std::uint8_t seed) {
+std::vector<std::byte> blob(const size_t size, const uint8_t seed) {
   std::vector<std::byte> value(size);
-  for (std::size_t i = 0; i < size; ++i) value[i] = std::byte(std::uint8_t(seed + i * 7u));
+  for (size_t i = 0; i < size; ++i) value[i] = std::byte(uint8_t(seed + i * 7u));
   return value;
 }
 
@@ -54,8 +54,8 @@ struct authority_policy {
   unsigned challenges = 0;
   unsigned admits = 0;
   utils::digest seen_transcript{};
-  std::optional<std::uint64_t> seen_resumed_session;
-  std::optional<net::recovery_anchor<std::uint64_t, utils::digest>> seen_anchor;
+  std::optional<uint64_t> seen_resumed_session;
+  std::optional<net::recovery_anchor<uint64_t, utils::digest>> seen_anchor;
 
   bool issue_challenge(const net::client_hello&, std::vector<std::byte>& out) {
     ++challenges;
@@ -74,7 +74,7 @@ struct authority_policy {
     if (admit_reason != net::session_refusal_reason::none) return admit_reason;
     if (response.credential.size() != transcript.size())
       return net::session_refusal_reason::identity_rejected;
-    for (std::size_t i = 0; i < transcript.size(); ++i) {
+    for (size_t i = 0; i < transcript.size(); ++i) {
       if (response.credential[i] != std::byte(transcript[i]))
         return net::session_refusal_reason::identity_rejected;
     }
@@ -152,14 +152,14 @@ TEST_CASE("network session wire round-trips every handshake message") {
 
   SUBCASE("client response carrying a resumed session and proven anchor") {
     const auto credential = blob(net::session_wire_max_credential_bytes, 33);
-    const net::recovery_anchor<std::uint64_t, utils::digest> anchor{77, digest_of(9)};
-    const net::client_response sent{credential, std::optional<std::uint64_t>(555), anchor};
+    const net::recovery_anchor<uint64_t, utils::digest> anchor{77, digest_of(9)};
+    const net::client_response sent{credential, std::optional<uint64_t>(555), anchor};
     REQUIRE(net::try_encode(sent, buffer) == net::session_wire_status::ok);
     net::session_wire_message envelope;
     REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
     net::client_response decoded;
     REQUIRE(net::try_decode(envelope.payload, decoded) == net::session_wire_status::ok);
-    CHECK(decoded.resumed_session == std::optional<std::uint64_t>(555));
+    CHECK(decoded.resumed_session == std::optional<uint64_t>(555));
     REQUIRE(decoded.confirmed.has_value());
     CHECK(*decoded.confirmed == anchor);
   }
@@ -197,7 +197,7 @@ TEST_CASE("network session wire refuses every malformed envelope") {
   net::session_wire_message envelope;
 
   SUBCASE("every truncated prefix") {
-    for (std::size_t size = 0; size < good.size(); ++size) {
+    for (size_t size = 0; size < good.size(); ++size) {
       const auto status = net::try_peek_session_message(std::span(good).first(size), envelope);
       CHECK(status != net::session_wire_status::ok);
     }
@@ -224,7 +224,7 @@ TEST_CASE("network session wire refuses every malformed envelope") {
   }
 
   SUBCASE("unknown and zero message type") {
-    for (const std::uint8_t type : {std::uint8_t(0), std::uint8_t(6), std::uint8_t(255)}) {
+    for (const uint8_t type : {uint8_t(0), uint8_t(6), uint8_t(255)}) {
       auto broken = good;
       broken[6] = std::byte(type);
       CHECK(net::try_peek_session_message(broken, envelope) ==
@@ -241,11 +241,11 @@ TEST_CASE("network session wire refuses every malformed envelope") {
 
   SUBCASE("declared length must match the buffer exactly") {
     auto shorter = good;
-    shorter[8] = std::byte(std::uint8_t(good.size() - net::session_wire_header_bytes - 1));
+    shorter[8] = std::byte(uint8_t(good.size() - net::session_wire_header_bytes - 1));
     CHECK(net::try_peek_session_message(shorter, envelope) ==
           net::session_wire_status::trailing_bytes);
     auto longer = good;
-    longer[8] = std::byte(std::uint8_t(good.size() - net::session_wire_header_bytes + 1));
+    longer[8] = std::byte(uint8_t(good.size() - net::session_wire_header_bytes + 1));
     CHECK(net::try_peek_session_message(longer, envelope) == net::session_wire_status::truncated);
     auto absurd = good;
     absurd[9] = std::byte(0xff);
@@ -268,7 +268,7 @@ TEST_CASE("network session wire refuses noncanonical and oversized payload field
     REQUIRE(net::try_encode(sent, buffer) == net::session_wire_status::ok);
     net::session_wire_message envelope;
     REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
-    const std::size_t session_at = net::session_wire_header_bytes + 4 + credential.size() + 1;
+    const size_t session_at = net::session_wire_header_bytes + 4 + credential.size() + 1;
     net::client_response decoded;
 
     auto forged = buffer;
@@ -289,7 +289,7 @@ TEST_CASE("network session wire refuses noncanonical and oversized payload field
 
   SUBCASE("an anchor without a session is not a legal claim") {
     const auto credential = blob(4, 1);
-    const net::recovery_anchor<std::uint64_t, utils::digest> anchor{5, digest_of(1)};
+    const net::recovery_anchor<uint64_t, utils::digest> anchor{5, digest_of(1)};
     const net::client_response sent{credential, std::nullopt, anchor};
     CHECK(net::try_encode(sent, buffer) == net::session_wire_status::invalid_field);
   }
@@ -302,7 +302,7 @@ TEST_CASE("network session wire refuses noncanonical and oversized payload field
     net::session_wire_message envelope;
     REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
     net::session_refused decoded;
-    for (const std::uint8_t reason : {std::uint8_t(0), std::uint8_t(12), std::uint8_t(255)}) {
+    for (const uint8_t reason : {uint8_t(0), uint8_t(12), uint8_t(255)}) {
       auto forged = buffer;
       forged[net::session_wire_header_bytes] = std::byte(reason);
       net::session_wire_message forged_envelope;
@@ -566,13 +566,13 @@ TEST_CASE("network session handshake refuses out-of-order and repeated messages"
 }
 
 TEST_CASE("network session handshake carries a reconnect claim to the authority") {
-  const net::recovery_anchor<std::uint64_t, utils::digest> anchor{64, digest_of(7)};
+  const net::recovery_anchor<uint64_t, utils::digest> anchor{64, digest_of(7)};
   auto to_authority = prepared(), to_client = prepared();
 
   SUBCASE("the authority observes the claim and may grant the same session") {
     net::authority_handshake authority(compatibility(), nonce_of(1));
     net::client_handshake client(compatibility(), nonce_of(2),
-                                 std::optional<std::uint64_t>(9001), anchor);
+                                 std::optional<uint64_t>(9001), anchor);
     authority_policy authority_side;
     client_policy client_side;
 
@@ -582,7 +582,7 @@ TEST_CASE("network session handshake carries a reconnect claim to the authority"
     REQUIRE(client.consume(to_client, to_authority, client_side) == net::session_wire_status::ok);
     REQUIRE(authority.consume(to_authority, to_client, authority_side) ==
             net::session_wire_status::ok);
-    CHECK(authority_side.seen_resumed_session == std::optional<std::uint64_t>(9001));
+    CHECK(authority_side.seen_resumed_session == std::optional<uint64_t>(9001));
     REQUIRE(authority_side.seen_anchor.has_value());
     CHECK(*authority_side.seen_anchor == anchor);
     REQUIRE(client.consume(to_client, to_authority, client_side) == net::session_wire_status::ok);
@@ -593,7 +593,7 @@ TEST_CASE("network session handshake carries a reconnect claim to the authority"
   SUBCASE("a different granted session refuses instead of silently rejoining") {
     net::authority_handshake authority(compatibility(), nonce_of(1));
     net::client_handshake client(compatibility(), nonce_of(2),
-                                 std::optional<std::uint64_t>(4242), anchor);
+                                 std::optional<uint64_t>(4242), anchor);
     authority_policy authority_side;
     client_policy client_side;
 

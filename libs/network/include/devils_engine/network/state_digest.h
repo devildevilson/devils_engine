@@ -52,7 +52,7 @@ private:
 // requested after a mismatch.
 class buffered_murmur64_state_hasher {
 public:
-  using digest_type = std::uint64_t;
+  using digest_type = uint64_t;
 
   void update(const std::span<const std::byte> input) {
     if (input.empty()) return;
@@ -75,18 +75,18 @@ class canonical_digest_sink {
 public:
   using digest_type = typename Hasher::digest_type;
 
-  void u32(const std::uint32_t value) {
+  void u32(const uint32_t value) {
     std::array<std::byte, 4> bytes{};
     for (unsigned i = 0; i < bytes.size(); ++i) {
-      bytes[i] = std::byte(std::uint8_t(value >> (i * 8)));
+      bytes[i] = std::byte(uint8_t(value >> (i * 8)));
     }
     hasher_.update(bytes);
   }
 
-  void u64(const std::uint64_t value) {
+  void u64(const uint64_t value) {
     std::array<std::byte, 8> bytes{};
     for (unsigned i = 0; i < bytes.size(); ++i) {
-      bytes[i] = std::byte(std::uint8_t(value >> (i * 8)));
+      bytes[i] = std::byte(uint8_t(value >> (i * 8)));
     }
     hasher_.update(bytes);
   }
@@ -105,9 +105,9 @@ private:
 
 template <class Digest>
 struct state_section_digest {
-  std::uint32_t id = 0;
-  std::uint32_t version = 0;
-  std::uint64_t canonical_size = 0;
+  uint32_t id = 0;
+  uint32_t version = 0;
+  uint64_t canonical_size = 0;
   Digest root{};
 
   bool operator==(const state_section_digest&) const = default;
@@ -121,14 +121,14 @@ struct state_digest_report {
   bool operator==(const state_digest_report&) const = default;
 };
 
-enum class state_digest_comparison_status : std::uint8_t {
+enum class state_digest_comparison_status : uint8_t {
   matched,
   root_only_mismatch,
   section_set_mismatch,
   section_mismatch
 };
 
-enum class state_digest_build_status : std::uint8_t {
+enum class state_digest_build_status : uint8_t {
   built,
   capacity_exceeded,
   invalid_document
@@ -142,7 +142,7 @@ enum class state_digest_build_status : std::uint8_t {
 template <class Schema>
 [[nodiscard]] state_digest_build_status try_murmur64_digest(
   const std::span<const std::byte> bytes,
-  state_digest_report<std::uint64_t>& output) {
+  state_digest_report<uint64_t>& output) {
   state_reader reader{bytes};
   const auto magic = reader.u32();
   const auto format = reader.u32();
@@ -152,14 +152,14 @@ template <class Schema>
       fingerprint != Schema::schema_fingerprint() || count != Schema::section_count)
     return state_digest_build_status::invalid_document;
   if (count > output.sections.capacity()) return state_digest_build_status::capacity_exceeded;
-  std::uint32_t previous = 0;
-  for (std::uint32_t i = 0; i < count; ++i) {
+  uint32_t previous = 0;
+  for (uint32_t i = 0; i < count; ++i) {
     const auto id = reader.u32();
     const auto version = reader.u32();
     const auto size = reader.u64();
     if (!reader.good() || (i != 0 && id <= previous) || version == 0 ||
         size > reader.size() - reader.position()) return state_digest_build_status::invalid_document;
-    reader.take(std::size_t(size));
+    reader.take(size_t(size));
     previous = id;
   }
   if (reader.position() != reader.size()) return state_digest_build_status::invalid_document;
@@ -171,14 +171,14 @@ template <class Schema>
   reader = state_reader{bytes};
   reader.take(16);
   output.sections.clear();
-  for (std::uint32_t i = 0; i < count; ++i) {
+  for (uint32_t i = 0; i < count; ++i) {
     const auto start = reader.position();
     const auto id = reader.u32();
     const auto version = reader.u32();
     const auto size = reader.u64();
-    reader.take(std::size_t(size));
+    reader.take(size_t(size));
     const auto frame = bytes.subspan(start, reader.position() - start);
-    output.sections.push_back({id, version, std::uint64_t(frame.size()), hash(frame)});
+    output.sections.push_back({id, version, uint64_t(frame.size()), hash(frame)});
   }
   output.root = hash(bytes);
   return state_digest_build_status::built;
@@ -186,7 +186,7 @@ template <class Schema>
 
 struct state_digest_comparison {
   state_digest_comparison_status status = state_digest_comparison_status::matched;
-  std::uint32_t section_id = 0;
+  uint32_t section_id = 0;
 
   constexpr bool matched() const noexcept {
     return status == state_digest_comparison_status::matched;
@@ -207,17 +207,17 @@ template <class Schema, state_digest_hasher Hasher, class Host>
   canonical_digest_sink<Hasher> full;
   const bool emitted = Schema::emit_canonical(
     host, full,
-    [&result](const std::uint32_t id, const std::uint32_t version,
+    [&result](const uint32_t id, const uint32_t version,
               const std::span<const std::byte> payload) {
       canonical_digest_sink<Hasher> section;
       section.u32(id);
       section.u32(version);
-      section.u64(std::uint64_t(payload.size()));
+      section.u64(uint64_t(payload.size()));
       section.bytes(payload);
       result.sections.push_back({
         id,
         version,
-        std::uint64_t(16) + std::uint64_t(payload.size()),
+        uint64_t(16) + uint64_t(payload.size()),
         section.finish(),
       });
     });
@@ -235,8 +235,8 @@ template <std::equality_comparable Digest>
   const state_digest_report<Digest>& actual) noexcept {
   if (expected.root == actual.root) return {};
 
-  std::size_t expected_index = 0;
-  std::size_t actual_index = 0;
+  size_t expected_index = 0;
+  size_t actual_index = 0;
   while (expected_index < expected.sections.size() &&
          actual_index < actual.sections.size()) {
     const auto& expected_section = expected.sections[expected_index];

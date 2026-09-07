@@ -17,7 +17,7 @@ struct gns_receive_budget {
 } // namespace detail
 
 namespace {
-enum class slot_state : std::uint8_t { free,
+enum class slot_state : uint8_t { free,
                                        in_flight,
                                        released };
 struct send_pool;
@@ -38,12 +38,12 @@ struct send_pool {
   std::vector<std::byte> bytes;
   gns_lane_config config;
   // Only the transport's owner accesses these counters.
-  std::size_t retained_count = 0;
-  std::size_t retained_bytes = 0;
+  size_t retained_count = 0;
+  size_t retained_bytes = 0;
 };
 
 void release_send_payload(SteamNetworkingMessage_t* message) noexcept {
-  auto* slot = reinterpret_cast<send_slot*>(std::uintptr_t(message->m_nUserData));
+  auto* slot = reinterpret_cast<send_slot*>(uintptr_t(message->m_nUserData));
   auto keep_alive = std::move(slot->owner);
   // This must be the last slot access: the owner may reuse it immediately.
   slot->state.store(slot_state::released, std::memory_order_release);
@@ -51,7 +51,7 @@ void release_send_payload(SteamNetworkingMessage_t* message) noexcept {
 
 std::atomic_uint64_t next_peer_generation{1};
 
-std::uint64_t new_generation() {
+uint64_t new_generation() {
   const auto value = next_peer_generation.fetch_add(1, std::memory_order_relaxed);
   if (value == 0 || value == UINT64_MAX) utils::error{}("network GNS peer generation exhausted");
   return value;
@@ -63,7 +63,7 @@ void reclaim(send_pool& pool, send_slot& slot) {
   slot.state.store(slot_state::free, std::memory_order_relaxed);
 }
 
-constexpr std::size_t max_creation_options = 64;
+constexpr size_t max_creation_options = 64;
 bool valid_options(const std::span<const SteamNetworkingConfigValue_t> options) {
   return options.size() <= max_creation_options &&
          std::ranges::none_of(options, [](const auto& option) {
@@ -81,7 +81,7 @@ struct gns_dispatcher::impl {
 thread_local gns_dispatcher* gns_dispatcher::active_ = nullptr;
 
 gns_dispatcher::gns_dispatcher(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
-                               const std::size_t capacity)
+                               const size_t capacity)
   : impl_(std::make_unique<impl>(sockets, utils, std::vector<gns_transport*>(capacity))) {
   if (capacity == 0) devils_engine::utils::error{}("network GNS dispatcher capacity must be positive");
 }
@@ -134,26 +134,26 @@ void gns_received_message::reset() noexcept {
 
 std::span<const std::byte> gns_received_message::payload() const noexcept {
   if (!message_) return {};
-  return {static_cast<const std::byte*>(message_->m_pData), std::size_t(message_->m_cbSize)};
+  return {static_cast<const std::byte*>(message_->m_pData), size_t(message_->m_cbSize)};
 }
-std::uint16_t gns_received_message::lane() const noexcept {
+uint16_t gns_received_message::lane() const noexcept {
   return message_ ? message_->m_idxLane : 0;
 }
-std::int64_t gns_received_message::message_number() const noexcept {
+int64_t gns_received_message::message_number() const noexcept {
   return message_ ? message_->m_nMessageNumber : 0;
 }
 
 struct gns_transport::impl {
   struct connection {
     HSteamNetConnection handle = k_HSteamNetConnection_Invalid;
-    std::uint64_t generation = 0;
+    uint64_t generation = 0;
     ESteamNetworkingConnectionState reported = k_ESteamNetworkingConnectionState_None;
     HSteamListenSocket listener = k_HSteamListenSocket_Invalid;
     bool needs_accept = false;
   };
   struct listener {
     HSteamListenSocket handle = k_HSteamListenSocket_Invalid;
-    std::uint64_t generation = 0;
+    uint64_t generation = 0;
   };
 
   impl(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
@@ -162,24 +162,24 @@ struct gns_transport::impl {
     if (config.peers == 0 || config.peers >= UINT32_MAX || config.listeners >= UINT32_MAX ||
         lanes.empty() || lanes.size() > 255 ||
         config.receive_leases == 0 || config.max_receive_bytes == 0 ||
-        config.max_receive_bytes > std::size_t(INT32_MAX) || config.backend_receive_messages <= 0 ||
-        config.backend_receive_bytes <= 0 || std::size_t(config.backend_receive_bytes) <= config.max_receive_bytes)
+        config.max_receive_bytes > size_t(INT32_MAX) || config.backend_receive_messages <= 0 ||
+        config.backend_receive_bytes <= 0 || size_t(config.backend_receive_bytes) <= config.max_receive_bytes)
       devils_engine::utils::error{}("network GNS invalid receive/peer/lane configuration");
-    if (lanes.size() > std::numeric_limits<std::size_t>::max() / config.peers)
+    if (lanes.size() > std::numeric_limits<size_t>::max() / config.peers)
       devils_engine::utils::error{}("network GNS connection table size overflow");
-    std::size_t total_bytes = 0;
+    size_t total_bytes = 0;
     for (const auto& lane : lanes) {
       if (lane.send_slots == 0 || lane.max_payload_bytes == 0 || lane.weight == 0 ||
-          lane.max_payload_bytes > std::size_t(k_cbMaxSteamNetworkingSocketsMessageSizeSend) ||
-          lane.send_slots > std::numeric_limits<std::size_t>::max() / lane.max_payload_bytes ||
+          lane.max_payload_bytes > size_t(k_cbMaxSteamNetworkingSocketsMessageSizeSend) ||
+          lane.send_slots > std::numeric_limits<size_t>::max() / lane.max_payload_bytes ||
           lane.send_byte_budget == 0 || lane.send_byte_budget > lane.send_slots * lane.max_payload_bytes ||
-          lane.send_byte_budget > std::size_t(INT32_MAX) - total_bytes)
+          lane.send_byte_budget > size_t(INT32_MAX) - total_bytes)
         devils_engine::utils::error{}("network GNS invalid send lane budget");
       total_bytes += lane.send_byte_budget;
     }
     // The pinned GNS backend clamps SendBufferSize to at least 4 KiB. Our
     // per-lane slabs still enforce the smaller application budgets exactly.
-    send_buffer_bytes = int(std::max(total_bytes, std::size_t{4096}));
+    send_buffer_bytes = int(std::max(total_bytes, size_t{4096}));
     peers.resize(config.peers);
     listeners.resize(config.listeners);
     newest.resize(config.peers * lanes.size());
@@ -217,15 +217,15 @@ struct gns_transport::impl {
   gns_transport_config config;
   std::vector<connection> peers;
   std::vector<listener> listeners;
-  std::vector<std::int64_t> newest;
+  std::vector<int64_t> newest;
   std::vector<std::shared_ptr<send_pool>> pools;
   std::vector<int> priorities;
-  std::vector<std::uint16_t> weights;
+  std::vector<uint16_t> weights;
   std::shared_ptr<detail::gns_receive_budget> receive_budget;
   HSteamNetPollGroup group = k_HSteamNetPollGroup_Invalid;
   int send_buffer_bytes = 0;
   gns_dispatcher* dispatcher = nullptr;
-  std::uint64_t refused_incoming = 0;
+  uint64_t refused_incoming = 0;
 };
 
 gns_transport::gns_transport(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
@@ -265,7 +265,7 @@ gns_listen_result gns_transport::listen(const SteamNetworkingIPAddr& address,
   const auto handle = state.sockets.CreateListenSocketIP(address, int(options.size() + 1), values.data());
   if (!handle) return {gns_status::backend_rejected, {}};
   *slot = {handle, new_generation()};
-  return {gns_status::ok, {std::uint32_t(slot - state.listeners.begin()), slot->generation}};
+  return {gns_status::ok, {uint32_t(slot - state.listeners.begin()), slot->generation}};
 }
 
 gns_status gns_transport::listen_address(const gns_listener listener, SteamNetworkingIPAddr& address) {
@@ -364,7 +364,7 @@ void gns_transport::shutdown() {
   state.group = k_HSteamNetPollGroup_Invalid;
 }
 
-std::uint64_t gns_transport::refused_incoming_count() const noexcept {
+uint64_t gns_transport::refused_incoming_count() const noexcept {
   return impl_->refused_incoming;
 }
 
@@ -388,7 +388,7 @@ gns_adopt_result gns_transport::adopt(const HSteamNetConnection handle) {
   const auto set = [&](const ESteamNetworkingConfigValue key, const int value) {
     if (!state.utils.SetConnectionConfigValueInt32(handle, key, value)) return false;
     int32 actual = 0;
-    std::size_t bytes = sizeof(actual);
+    size_t bytes = sizeof(actual);
     ESteamNetworkingConfigDataType type{};
     const auto result = state.utils.GetConfigValue(key, k_ESteamNetworkingConfig_Connection,
                                                    handle, &type, &actual, &bytes);
@@ -403,10 +403,10 @@ gns_adopt_result gns_transport::adopt(const HSteamNetConnection handle) {
                                              state.priorities.data(), state.weights.data()) != k_EResultOK ||
       !state.sockets.SetConnectionPollGroup(handle, state.group))
     return refuse(gns_status::configuration_failed);
-  const auto index = std::size_t(free - state.peers.begin());
+  const auto index = size_t(free - state.peers.begin());
   *free = {handle, new_generation(), k_ESteamNetworkingConnectionState_None};
-  std::fill_n(state.newest.begin() + std::ptrdiff_t(index * state.pools.size()), state.pools.size(), 0);
-  return {gns_status::ok, {std::uint32_t(index), free->generation}};
+  std::fill_n(state.newest.begin() + ptrdiff_t(index * state.pools.size()), state.pools.size(), 0);
+  return {gns_status::ok, {uint32_t(index), free->generation}};
 }
 
 gns_status gns_transport::close(const gns_peer peer) {
@@ -417,8 +417,8 @@ gns_status gns_transport::close(const gns_peer peer) {
   return gns_status::ok;
 }
 
-gns_send_result gns_transport::try_send(const gns_peer peer, const std::uint16_t lane,
-                                        const std::span<const std::byte> payload, const std::uint64_t tag) {
+gns_send_result gns_transport::try_send(const gns_peer peer, const uint16_t lane,
+                                        const std::span<const std::byte> payload, const uint64_t tag) {
   auto& state = *impl_;
   auto* connection = state.find(peer);
   if (!connection) return {gns_status::invalid_peer};
@@ -427,7 +427,7 @@ gns_send_result gns_transport::try_send(const gns_peer peer, const std::uint16_t
   if (payload.size() > pool.config.max_payload_bytes) return {gns_status::payload_too_large};
   if (pool.retained_count == pool.config.send_slots) return {gns_status::count_budget_exceeded};
   if (payload.size() > pool.config.send_byte_budget - pool.retained_bytes) return {gns_status::byte_budget_exceeded};
-  std::size_t index = 0;
+  size_t index = 0;
   while (pool.slots[index].state.load(std::memory_order_acquire) != slot_state::free)
     ++index;
   auto& slot = pool.slots[index];
@@ -445,7 +445,7 @@ gns_send_result gns_transport::try_send(const gns_peer peer, const std::uint16_t
   message->m_pData = bytes;
   message->m_cbSize = int(payload.size());
   message->m_pfnFreeData = &release_send_payload;
-  message->m_nUserData = int64(reinterpret_cast<std::uintptr_t>(&slot));
+  message->m_nUserData = int64(reinterpret_cast<uintptr_t>(&slot));
   message->m_conn = connection->handle;
   message->m_idxLane = lane;
   message->m_nFlags = (pool.config.no_nagle ? k_nSteamNetworkingSend_NoNagle : 0) |
@@ -463,11 +463,11 @@ gns_send_result gns_transport::try_send(const gns_peer peer, const std::uint16_t
   return {gns_status::ok, result};
 }
 
-std::size_t gns_transport::poll_send_releases(const std::span<gns_send_release> output) {
-  std::size_t count = 0;
+size_t gns_transport::poll_send_releases(const std::span<gns_send_release> output) {
+  size_t count = 0;
   for (auto& pool_ptr : impl_->pools) {
     auto& pool = *pool_ptr;
-    for (std::size_t i = 0; i < pool.config.send_slots && count < output.size(); ++i) {
+    for (size_t i = 0; i < pool.config.send_slots && count < output.size(); ++i) {
       auto& slot = pool.slots[i];
       if (slot.state.load(std::memory_order_acquire) != slot_state::released) continue;
       output[count++] = slot.completion;
@@ -478,13 +478,13 @@ std::size_t gns_transport::poll_send_releases(const std::span<gns_send_release> 
 }
 
 gns_receive_result gns_transport::receive(const std::span<gns_received_message> output,
-                                          const std::size_t work_budget) {
+                                          const size_t work_budget) {
   auto& state = *impl_;
   if (!ready()) return {gns_status::not_ready};
   for (const auto& value : output)
     if (value) return {gns_status::output_not_empty};
   gns_receive_result result;
-  for (std::size_t examined = 0; examined < work_budget && result.count < output.size(); ++examined) {
+  for (size_t examined = 0; examined < work_budget && result.count < output.size(); ++examined) {
     if (state.receive_budget->count.load(std::memory_order_acquire) >= state.config.receive_leases) {
       result.status = gns_status::count_budget_exceeded;
       break;
@@ -499,14 +499,14 @@ gns_receive_result gns_transport::receive(const std::span<gns_received_message> 
     const auto connection = std::find_if(state.peers.begin(), state.peers.end(), [&](const auto& peer) {
       return peer.handle == message->m_conn;
     });
-    const auto index = std::size_t(connection - state.peers.begin());
+    const auto index = size_t(connection - state.peers.begin());
     const auto lane = message->m_idxLane;
     const bool reliable = (message->m_nFlags & k_nSteamNetworkingSend_Reliable) != 0;
     if (connection == state.peers.end() || lane >= state.pools.size() || message->m_cbSize < 0 ||
-        std::size_t(message->m_cbSize) > state.config.max_receive_bytes ||
+        size_t(message->m_cbSize) > state.config.max_receive_bytes ||
         reliable != (state.pools[lane]->config.delivery == gns_delivery::reliable_ordered)) {
       message->Release();
-      if (connection != state.peers.end()) (void)close({std::uint32_t(index), connection->generation});
+      if (connection != state.peers.end()) (void)close({uint32_t(index), connection->generation});
       result.status = gns_status::invalid_message;
       break;
     }
@@ -521,19 +521,19 @@ gns_receive_result gns_transport::receive(const std::span<gns_received_message> 
     state.receive_budget->count.fetch_add(1, std::memory_order_relaxed);
     target.message_ = message;
     target.budget_ = state.receive_budget;
-    target.peer_ = {std::uint32_t(index), connection->generation};
+    target.peer_ = {uint32_t(index), connection->generation};
   }
   return result;
 }
 
-std::size_t gns_transport::poll_connections(const std::span<gns_connection_event> output) {
-  std::size_t count = 0;
-  for (std::size_t i = 0; i < impl_->peers.size() && count < output.size(); ++i) {
+size_t gns_transport::poll_connections(const std::span<gns_connection_event> output) {
+  size_t count = 0;
+  for (size_t i = 0; i < impl_->peers.size() && count < output.size(); ++i) {
     auto& peer = impl_->peers[i];
     SteamNetConnectionInfo_t info{};
     if (peer.handle == k_HSteamNetConnection_Invalid || !impl_->sockets.GetConnectionInfo(peer.handle, &info) ||
         info.m_eState == peer.reported) continue;
-    output[count++] = {{std::uint32_t(i), peer.generation}, info, peer.needs_accept && info.m_eState == k_ESteamNetworkingConnectionState_Connecting};
+    output[count++] = {{uint32_t(i), peer.generation}, info, peer.needs_accept && info.m_eState == k_ESteamNetworkingConnectionState_Connecting};
     peer.reported = info.m_eState;
   }
   return count;
@@ -549,13 +549,13 @@ gns_status gns_transport::statistics(const gns_peer peer, SteamNetConnectionReal
            : gns_status::backend_rejected;
 }
 
-std::size_t gns_transport::retained_send_count(const std::uint16_t lane) const noexcept {
+size_t gns_transport::retained_send_count(const uint16_t lane) const noexcept {
   return lane < impl_->pools.size() ? impl_->pools[lane]->retained_count : 0;
 }
-std::size_t gns_transport::retained_send_bytes(const std::uint16_t lane) const noexcept {
+size_t gns_transport::retained_send_bytes(const uint16_t lane) const noexcept {
   return lane < impl_->pools.size() ? impl_->pools[lane]->retained_bytes : 0;
 }
-std::size_t gns_transport::leased_receive_count() const noexcept {
+size_t gns_transport::leased_receive_count() const noexcept {
   return impl_->receive_budget->count.load(std::memory_order_acquire);
 }
 

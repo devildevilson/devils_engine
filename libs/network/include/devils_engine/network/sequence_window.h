@@ -22,7 +22,7 @@ enum class sequence_classification : unsigned char {
 // authenticated jump needs an explicit reset/rebase by the session owner.
 // Values exactly half a sequence space apart are ambiguous and are never
 // accepted implicitly.
-template <std::unsigned_integral Sequence, std::size_t WindowBits>
+template <std::unsigned_integral Sequence, size_t WindowBits>
 class sequence_window {
 public:
   static_assert(WindowBits > 0, "network::sequence_window requires a non-empty window");
@@ -64,7 +64,7 @@ public:
 
     const Sequence age = Sequence(*newest_ - value);
     if (age >= Sequence(WindowBits)) return sequence_classification::stale;
-    return observed_.test(static_cast<std::size_t>(age))
+    return observed_.test(static_cast<size_t>(age))
              ? sequence_classification::duplicate
              : sequence_classification::new_value;
   }
@@ -82,14 +82,14 @@ public:
 
     const Sequence forward = Sequence(value - *newest_);
     if (forward != 0 && forward < half_range) {
-      observed_ <<= static_cast<std::size_t>(forward);
+      observed_ <<= static_cast<size_t>(forward);
       newest_ = value;
       observed_.set(0);
       return result;
     }
 
     const Sequence age = Sequence(*newest_ - value);
-    observed_.set(static_cast<std::size_t>(age));
+    observed_.set(static_cast<size_t>(age));
     return result;
   }
 

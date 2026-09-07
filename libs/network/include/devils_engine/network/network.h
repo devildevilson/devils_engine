@@ -9,6 +9,8 @@
 #include "sequence_window.h"
 #include "session.h"
 #include "state_schema.h"
+#include "fixed_point.h"
+#include "intent_wire.h"
 #include "session_wire.h"
 #include "state_digest.h"
 #include "tick_journal.h"

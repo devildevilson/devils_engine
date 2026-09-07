@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-06.
+Last updated: 2026-09-07.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -29,8 +29,10 @@ recorded here only after it is reproduced by an executable test or directly obse
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
 | SESSION-02 handshake wire format and ordered exchange | complete; 9/9 cases, 329/329 assertions in Debug and Release |
+| HOT-01 hot-path intent class and fixed point | complete; 10/10 cases, 325/325 assertions in Debug, Release and Clang |
+| HOT-02 transform frames and relevant set | not started; needs the cross-platform corpus answer to set its cadence |
 | Complete project suite | not run after adding SESSION-01/02; focused networking set is the verification scope |
-| Focused networking set | 121/121 in GCC Debug and Release, including real localhost UDP |
+| Focused networking set | 131/131 in GCC Debug and Release, including real localhost UDP |
 | Second toolchain (Clang + libc++) | networking/serialization set passes; three portability defects fixed, `devils_script` one open |
 | `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
@@ -77,6 +79,69 @@ Debug and Release verification passes **6/6 cases, 76/76 assertions**. The compl
 including the existing real localhost UDP cases, passes **81/81** in both configurations. No sanitizer or
 whole-project run was performed. Wire framing, challenge/response, credential lifecycle, automatic GNS
 reconnect and replay across a real new connection remain the next integration layer.
+
+## HOT-01 — hot-path intent class and fixed point, 2026-09-07
+
+The measured handshake exchange is 394 bytes: `client_hello` 96, an
+`authority_challenge` with a 48-byte challenge 148, a `client_response` with a 32-byte credential 98 and
+`session_accepted` 52. Narrowing every identifier there (session and peer to 16 bits, epoch and tick to 32,
+length to 16) would save 44 bytes, 11% of a once-per-connection exchange, and remove no packet: the pinned GNS
+source allows 1248 bytes of encrypted payload per packet. Per packet the transport costs 28 bytes of IP/UDP
+plus a 7-byte `UDPDataMsgHdr` and a 16-byte AES-GCM tag, so coalescing the four handshake messages into one
+packet saves three tags — 48 bytes, more than the entire width optimization. **The handshake was therefore left
+wide on purpose**, and the reason is recorded as a contract: the handshake establishes absolute values once so
+that per-tick messages can carry relative ones, and a 16-bit session identifier would additionally let a stale
+reconnect claim name a live session after 65536 sessions.
+
+`network/fixed_point.h` and `network/intent_wire.h` implement the per-tick class where the same questions cost
+ten times more.
+
+- The project's `act::intent` measures 48 bytes (`act::vec3` is three doubles, because `act::real_t` is
+  `double` with a comment promising fixed point "when determinism arrives"). Most of it must not travel at
+  all, and for reasons of trust rather than size: the connection names the session and peer, the acting entity
+  is implied (a client-supplied actor is the classic ownership forgery), and provenance is neither causal for
+  the authority nor trustworthy from a peer. `network::intent` is a separate narrow untrusted type, translated
+  at one seam which is exactly where ownership/legality/rate validation belongs.
+- Registered identifiers travel as a dense index into the sorted registry rather than as 64-bit string hashes.
+  Sorting is the agreement: peers need no protocol beyond registering the same things. The test confirms that
+  registration order does not change the fingerprint, that adding one identifier changes it and shifts later
+  indices, and that duplicate or empty registries are refused. Shifting is safe only because the fingerprint
+  is `intent_schema_fingerprint` and a differing peer is refused before the first tick.
+- The declared shape of a kind is what lets a batch omit both a count field and per-field presence flags. The
+  kind and the offset into the tick window share one byte — the bit packing pays where it multiplies, per
+  intent at 60 Hz, rather than once per packet.
+- The quantum is declared as a negative power of two. That makes the code a deterministic function of its
+  input on every conforming platform and makes decode-then-encode exact by construction rather than by
+  floating-point luck. Rounding is half away from zero with no `<cmath>` call: product, truncation and
+  remainder are each exact for the bounded range, so the comparison against one half compares exact
+  quantities. Golden rows pin the mapping, including that one quantum past a cell boundary a million units
+  from the origin still encodes as code 1 — the point of carrying a key.
+- Because the only floating-point step lives in that one header, the batch codec moves integers and cannot
+  contribute divergence at all.
+- Measured budget, asserted in the test rather than derived on paper: one movement intent for one tick is
+  **10 bytes**, three ticks of redundant movement **24 bytes**, a full eight-tick window **59 bytes**. Against
+  51 bytes of per-packet overhead, resending two extra ticks costs 14 bytes and removes the need for any
+  retransmit protocol. The lever for this class is packet count, not field width.
+- Refusals proven: undeclared kind on both sides, tick delta outside the packed window, registry index beyond
+  the frozen set on both sides, every truncated prefix (a header-only buffer is a legal empty batch, anything
+  else partial is refused), a zero-filled buffer, an oversized batch, more intents than prepared storage, an
+  unprepared output buffer, and a batch larger than one transport packet. `relative_cell` refuses a cell delta
+  which does not fit its width instead of narrowing a distant or forged target.
+- Tick reconstruction picks the window candidate nearest the receiver's own tick and refuses only the case
+  with no answer — a delta reaching before the first tick.
+
+**Correction to an earlier claim in this campaign:** quantization does not erase divergence, and it is not a
+divergence sink. The *correction* erases divergence, by overwriting. Two peers which quantize their own
+diverging values can disagree by a whole code at a boundary — a difference of two parts in ten million can flip
+a code — so a digest must never be computed over quantized values, and `state_digest` and checkpoint roots stay
+on canonical bytes. Worse, snapping a prediction onto a quantized authoritative value injects up to half a
+quantum of error even with no divergence at all; a client must compare and ignore an error within one quantum
+rather than snap. What the quantum buys is a *derived* correction threshold instead of an invented epsilon.
+The cure for libm divergence itself remains fixed point inside the simulation (the NUM branch), not on the wire.
+
+Verification: **10/10 cases, 325/325 assertions** in GCC Debug, GCC Release and Clang Debug. The whole focused
+set is **131/131** in GCC Debug and Release. No transform frames, relevant set, cadence schedule, prediction or
+correction policy is implemented by this slice.
 
 ## SESSION-02 — handshake wire format and ordered exchange, 2026-09-06
 

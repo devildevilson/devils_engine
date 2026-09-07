@@ -18,7 +18,7 @@
 
 namespace devils_engine::network {
 
-enum class link_endpoint : std::uint8_t {
+enum class link_endpoint : uint8_t {
   first,
   second
 };
@@ -27,45 +27,45 @@ constexpr link_endpoint opposite_endpoint(const link_endpoint value) noexcept {
   return value == link_endpoint::first ? link_endpoint::second : link_endpoint::first;
 }
 
-enum class link_reliability : std::uint8_t {
+enum class link_reliability : uint8_t {
   unreliable,
   reliable_ordered
 };
 
 struct link_send_options {
-  std::uint8_t lane = 0;
+  uint8_t lane = 0;
   link_reliability reliability = link_reliability::unreliable;
 
   bool operator==(const link_send_options&) const = default;
 };
 
 struct in_memory_link_config {
-  std::size_t queue_count_budget = 0;
-  std::size_t queue_byte_budget = 0;
-  std::size_t bytes_per_step = 0;
-  std::uint64_t base_latency_steps = 1;
-  std::uint64_t reliable_retry_steps = 1;
-  std::size_t trace_count_budget = 4096;
+  size_t queue_count_budget = 0;
+  size_t queue_byte_budget = 0;
+  size_t bytes_per_step = 0;
+  uint64_t base_latency_steps = 1;
+  uint64_t reliable_retry_steps = 1;
+  size_t trace_count_budget = 4096;
 };
 
-enum class link_send_status : std::uint8_t {
+enum class link_send_status : uint8_t {
   accepted,
   disconnected,
   count_budget_exceeded,
   byte_budget_exceeded
 };
 
-enum class link_connection_status : std::uint8_t {
+enum class link_connection_status : uint8_t {
   changed,
   already_in_state
 };
 
 struct link_transmission {
-  std::uint64_t epoch = 0;
-  std::uint64_t step = 0;
-  std::uint64_t sequence = 0;
-  std::uint32_t attempt = 0;
-  std::size_t byte_size = 0;
+  uint64_t epoch = 0;
+  uint64_t step = 0;
+  uint64_t sequence = 0;
+  uint32_t attempt = 0;
+  size_t byte_size = 0;
   link_endpoint source = link_endpoint::first;
   link_send_options options;
 
@@ -74,8 +74,8 @@ struct link_transmission {
 
 struct link_fault_effect {
   bool drop = false;
-  std::uint64_t extra_delay_steps = 0;
-  std::uint32_t duplicate_count = 0;
+  uint64_t extra_delay_steps = 0;
+  uint32_t duplicate_count = 0;
 
   bool operator==(const link_fault_effect&) const = default;
 };
@@ -86,7 +86,7 @@ struct no_link_faults {
   }
 };
 
-enum class link_trace_kind : std::uint8_t {
+enum class link_trace_kind : uint8_t {
   connected,
   disconnected,
   accepted,
@@ -99,11 +99,11 @@ enum class link_trace_kind : std::uint8_t {
 };
 
 struct link_trace_event {
-  std::uint64_t step = 0;
-  std::uint64_t epoch = 0;
-  std::uint64_t sequence = 0;
-  std::uint32_t attempt = 0;
-  std::size_t byte_size = 0;
+  uint64_t step = 0;
+  uint64_t epoch = 0;
+  uint64_t sequence = 0;
+  uint32_t attempt = 0;
+  size_t byte_size = 0;
   link_endpoint source = link_endpoint::first;
   link_send_options options;
   link_trace_kind kind = link_trace_kind::accepted;
@@ -114,9 +114,9 @@ struct link_trace_event {
 
 template <class Message>
 struct link_received_message {
-  std::uint64_t epoch = 0;
-  std::uint64_t sequence = 0;
-  std::uint64_t delivered_step = 0;
+  uint64_t epoch = 0;
+  uint64_t sequence = 0;
+  uint64_t delivered_step = 0;
   link_endpoint source = link_endpoint::first;
   link_send_options options;
   Message message;
@@ -125,7 +125,7 @@ struct link_received_message {
 template <class SizeOf, class Message>
 concept in_memory_size_policy =
   std::invocable<const SizeOf&, const Message&> &&
-  std::same_as<std::invoke_result_t<const SizeOf&, const Message&>, std::size_t>;
+  std::same_as<std::invoke_result_t<const SizeOf&, const Message&>, size_t>;
 
 template <class FaultPolicy>
 concept in_memory_fault_policy =
@@ -159,7 +159,7 @@ public:
     if (config_.reliable_retry_steps == 0) {
       utils::error{}("network::in_memory_link reliable retry must take at least one step");
     }
-    if (config_.queue_count_budget > std::numeric_limits<std::size_t>::max() / 2) {
+    if (config_.queue_count_budget > std::numeric_limits<size_t>::max() / 2) {
       utils::error{}("network::in_memory_link count budget overflow");
     }
     for (auto& direction : directions_) {
@@ -177,11 +177,11 @@ public:
     return connected_;
   }
 
-  std::uint64_t epoch() const noexcept {
+  uint64_t epoch() const noexcept {
     return epoch_;
   }
 
-  std::uint64_t step() const noexcept {
+  uint64_t step() const noexcept {
     return step_;
   }
 
@@ -189,10 +189,10 @@ public:
     return trace_;
   }
 
-  std::size_t omitted_trace_events() const noexcept {
+  size_t omitted_trace_events() const noexcept {
     return omitted_trace_events_;
   }
-  std::size_t suppressed_duplicates() const noexcept {
+  size_t suppressed_duplicates() const noexcept {
     return suppressed_duplicates_;
   }
   void clear_trace() noexcept {
@@ -202,24 +202,24 @@ public:
 
   // Includes outbound, scheduled deliveries and unread inbox entries. A slow
   // consumer backpressures the sender, including reliable sends, without loss.
-  std::size_t retained_count(const link_endpoint source) const noexcept {
+  size_t retained_count(const link_endpoint source) const noexcept {
     return directions_[index(source)].retained_count;
   }
-  std::size_t retained_bytes(const link_endpoint source) const noexcept {
+  size_t retained_bytes(const link_endpoint source) const noexcept {
     return directions_[index(source)].retained_bytes;
   }
 
-  std::size_t queued_count(const link_endpoint source) const noexcept {
+  size_t queued_count(const link_endpoint source) const noexcept {
     return directions_[index(source)].queued_count;
   }
 
-  std::size_t queued_bytes(const link_endpoint source) const noexcept {
+  size_t queued_bytes(const link_endpoint source) const noexcept {
     return directions_[index(source)].queued_bytes;
   }
 
   link_connection_status connect() {
     if (connected_) return link_connection_status::already_in_state;
-    if (epoch_ == std::numeric_limits<std::uint64_t>::max()) {
+    if (epoch_ == std::numeric_limits<uint64_t>::max()) {
       utils::error{}("network::in_memory_link epoch space exhausted");
     }
 
@@ -257,7 +257,7 @@ public:
   // configured byte budget in each direction, then publishes all deliveries
   // whose delay expired at this step.
   void advance() {
-    if (step_ == std::numeric_limits<std::uint64_t>::max()) {
+    if (step_ == std::numeric_limits<uint64_t>::max()) {
       utils::error{}("network::in_memory_link step space exhausted");
     }
     ++step_;
@@ -294,42 +294,42 @@ public:
   }
 
 private:
-  static constexpr std::size_t no_slot = std::numeric_limits<std::size_t>::max();
+  static constexpr size_t no_slot = std::numeric_limits<size_t>::max();
   struct queued_message {
     Message message;
-    std::uint64_t sequence = 0;
-    std::uint64_t not_before_step = 0;
-    std::size_t byte_size = 0;
-    std::size_t remaining_bytes = 0;
-    std::uint32_t attempt = 0;
+    uint64_t sequence = 0;
+    uint64_t not_before_step = 0;
+    size_t byte_size = 0;
+    size_t remaining_bytes = 0;
+    uint32_t attempt = 0;
     link_send_options options;
-    std::size_t next = no_slot;
+    size_t next = no_slot;
   };
 
   struct lane_state {
-    std::size_t head = no_slot;
-    std::size_t tail = no_slot;
-    std::uint64_t next_sequence = 0;
-    std::uint64_t last_reliable_delivery_step = 0;
+    size_t head = no_slot;
+    size_t tail = no_slot;
+    uint64_t next_sequence = 0;
+    uint64_t last_reliable_delivery_step = 0;
   };
 
   struct direction_state {
     std::array<lane_state, 256> lanes;
     std::vector<std::optional<queued_message>> slots;
-    std::vector<std::size_t> free_slots;
-    std::size_t queued_count = 0;
-    std::size_t queued_bytes = 0;
-    std::size_t retained_count = 0;
-    std::size_t retained_bytes = 0;
+    std::vector<size_t> free_slots;
+    size_t queued_count = 0;
+    size_t queued_bytes = 0;
+    size_t retained_count = 0;
+    size_t retained_bytes = 0;
   };
 
   struct scheduled_delivery {
     received_type value;
-    std::uint64_t ready_step = 0;
-    std::uint64_t insertion_order = 0;
+    uint64_t ready_step = 0;
+    uint64_t insertion_order = 0;
   };
 
-  static constexpr std::size_t index(const link_endpoint value) noexcept {
+  static constexpr size_t index(const link_endpoint value) noexcept {
     return value == link_endpoint::first ? 0 : 1;
   }
 
@@ -346,7 +346,7 @@ private:
                         link_trace_kind::rejected, link_send_status::disconnected);
       return link_send_status::disconnected;
     }
-    const std::size_t byte_size = std::invoke(size_of_, message);
+    const size_t byte_size = std::invoke(size_of_, message);
     if (direction.retained_count == config_.queue_count_budget) {
       append_send_trace(source, options, lane.next_sequence, byte_size,
                         link_trace_kind::rejected, link_send_status::count_budget_exceeded);
@@ -358,12 +358,12 @@ private:
                         link_trace_kind::rejected, link_send_status::byte_budget_exceeded);
       return link_send_status::byte_budget_exceeded;
     }
-    if (lane.next_sequence == std::numeric_limits<std::uint64_t>::max()) {
+    if (lane.next_sequence == std::numeric_limits<uint64_t>::max()) {
       utils::error{}("network::in_memory_link lane sequence space exhausted");
     }
 
-    const std::uint64_t sequence = lane.next_sequence++;
-    const std::size_t slot = direction.free_slots.back();
+    const uint64_t sequence = lane.next_sequence++;
+    const size_t slot = direction.free_slots.back();
     direction.free_slots.pop_back();
     direction.slots[slot].emplace(queued_message{
       std::forward<Value>(message),
@@ -390,7 +390,7 @@ private:
 
   void transmit_direction(const link_endpoint source) {
     auto& direction = directions_[index(source)];
-    std::size_t available = config_.bytes_per_step;
+    size_t available = config_.bytes_per_step;
 
     while (true) {
       lane_state* selected_lane = nullptr;
@@ -405,7 +405,7 @@ private:
       auto& message = *direction.slots[selected_lane->head];
       if (message.remaining_bytes != 0) {
         if (available == 0) return;
-        const std::size_t transmitted = std::min(available, message.remaining_bytes);
+        const size_t transmitted = std::min(available, message.remaining_bytes);
         available -= transmitted;
         message.remaining_bytes -= transmitted;
         append_message_trace(source, message, link_trace_kind::transmitted,
@@ -438,7 +438,7 @@ private:
       append_message_trace(source, message, link_trace_kind::dropped,
                            message.byte_size);
       if (message.options.reliability == link_reliability::reliable_ordered) {
-        if (message.attempt == std::numeric_limits<std::uint32_t>::max()) {
+        if (message.attempt == std::numeric_limits<uint32_t>::max()) {
           utils::error{}("network::in_memory_link reliable attempt space exhausted");
         }
         ++message.attempt;
@@ -455,24 +455,24 @@ private:
       return;
     }
 
-    const std::uint64_t delay = checked_delay(effect.extra_delay_steps);
-    std::uint64_t ready_step = add_steps(delay);
+    const uint64_t delay = checked_delay(effect.extra_delay_steps);
+    uint64_t ready_step = add_steps(delay);
     if (message.options.reliability == link_reliability::reliable_ordered) {
       ready_step = std::max(ready_step, lane.last_reliable_delivery_step);
       lane.last_reliable_delivery_step = ready_step;
     }
 
-    const std::size_t requested_duplicates =
+    const size_t requested_duplicates =
       message.options.reliability == link_reliability::reliable_ordered ? 0 : effect.duplicate_count;
-    std::size_t extra = std::min(requested_duplicates,
+    size_t extra = std::min(requested_duplicates,
                                  config_.queue_count_budget - direction.retained_count);
     if (message.byte_size != 0) extra = std::min(extra,
                                                  (config_.queue_byte_budget - direction.retained_bytes) / message.byte_size);
     suppressed_duplicates_ += requested_duplicates - extra;
     direction.retained_count += extra;
     direction.retained_bytes += extra * message.byte_size;
-    for (std::size_t i = 0; i <= extra; ++i) {
-      if (next_delivery_order_ == std::numeric_limits<std::uint64_t>::max()) {
+    for (size_t i = 0; i <= extra; ++i) {
+      if (next_delivery_order_ == std::numeric_limits<uint64_t>::max()) {
         utils::error{}("network::in_memory_link delivery order space exhausted");
       }
       scheduled_.push_back({
@@ -512,7 +512,7 @@ private:
         return left.insertion_order < right.insertion_order;
       });
 
-    std::size_t ready_count = 0;
+    size_t ready_count = 0;
     while (ready_count < scheduled_.size() &&
            scheduled_[ready_count].ready_step <= step_) {
       auto& delivery = scheduled_[ready_count];
@@ -522,18 +522,18 @@ private:
         std::move(delivery.value));
       ++ready_count;
     }
-    scheduled_.erase(scheduled_.begin(), scheduled_.begin() + std::ptrdiff_t(ready_count));
+    scheduled_.erase(scheduled_.begin(), scheduled_.begin() + ptrdiff_t(ready_count));
   }
 
-  std::uint64_t checked_delay(const std::uint64_t extra) const {
-    if (extra > std::numeric_limits<std::uint64_t>::max() - config_.base_latency_steps) {
+  uint64_t checked_delay(const uint64_t extra) const {
+    if (extra > std::numeric_limits<uint64_t>::max() - config_.base_latency_steps) {
       utils::error{}("network::in_memory_link delivery delay overflow");
     }
     return config_.base_latency_steps + extra;
   }
 
-  std::uint64_t add_steps(const std::uint64_t amount) const {
-    if (amount > std::numeric_limits<std::uint64_t>::max() - step_) {
+  uint64_t add_steps(const uint64_t amount) const {
+    if (amount > std::numeric_limits<uint64_t>::max() - step_) {
       utils::error{}("network::in_memory_link scheduled step overflow");
     }
     return step_ + amount;
@@ -546,7 +546,7 @@ private:
       direction.retained_count = 0;
       direction.retained_bytes = 0;
       direction.free_slots.clear();
-      for (std::size_t i = 0; i < direction.slots.size(); ++i) {
+      for (size_t i = 0; i < direction.slots.size(); ++i) {
         direction.slots[i].reset();
         direction.free_slots.push_back(i);
       }
@@ -580,8 +580,8 @@ private:
   void append_send_trace(
     const link_endpoint source,
     const link_send_options options,
-    const std::uint64_t sequence,
-    const std::size_t byte_size,
+    const uint64_t sequence,
+    const size_t byte_size,
     const link_trace_kind kind,
     const link_send_status status) {
     append_trace({
@@ -601,7 +601,7 @@ private:
     const link_endpoint source,
     const queued_message& message,
     const link_trace_kind kind,
-    const std::size_t byte_size) {
+    const size_t byte_size) {
     append_trace({
       step_,
       epoch_,
@@ -643,12 +643,12 @@ private:
   std::array<std::vector<received_type>, 2> inboxes_;
   std::vector<scheduled_delivery> scheduled_;
   std::vector<link_trace_event> trace_;
-  std::uint64_t step_ = 0;
-  std::uint64_t epoch_ = 0;
-  std::uint64_t next_delivery_order_ = 0;
+  uint64_t step_ = 0;
+  uint64_t epoch_ = 0;
+  uint64_t next_delivery_order_ = 0;
   bool connected_ = false;
-  std::size_t omitted_trace_events_ = 0;
-  std::size_t suppressed_duplicates_ = 0;
+  size_t omitted_trace_events_ = 0;
+  size_t suppressed_duplicates_ = 0;
 };
 
 } // namespace devils_engine::network

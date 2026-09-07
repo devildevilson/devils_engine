@@ -26,7 +26,7 @@ namespace devils_engine::network {
 // core, project and mod file in canonical load order. It is computed before a
 // connection and sent as fixed-size handshake metadata; peers do not hash or
 // transfer their installation during the handshake itself.
-enum class session_content_domain : std::uint8_t {
+enum class session_content_domain : uint8_t {
   core,
   project,
   mod
@@ -36,7 +36,7 @@ struct session_content_entry {
   session_content_domain domain = session_content_domain::core;
   // Core/project use zero. Mod files use the resolved mod load position; all
   // files from one mod have the same position and package ID.
-  std::uint32_t load_order = 0;
+  uint32_t load_order = 0;
   std::string_view package;
   std::string_view path;
   std::span<const std::byte> bytes;
@@ -48,7 +48,7 @@ struct session_content_manifest {
   std::span<const session_content_entry> entries;
 };
 
-enum class session_content_status : std::uint8_t {
+enum class session_content_status : uint8_t {
   built,
   empty_product,
   empty_version,
@@ -65,9 +65,9 @@ namespace detail {
 
 inline bool canonical_manifest_name(const std::string_view value) noexcept {
   if (value.empty() || value.front() == '/' || value.back() == '/') return false;
-  std::size_t begin = 0;
+  size_t begin = 0;
   while (begin < value.size()) {
-    const std::size_t end = value.find('/', begin);
+    const size_t end = value.find('/', begin);
     const std::string_view part = value.substr(
       begin, end == std::string_view::npos ? value.size() - begin : end - begin);
     if (part.empty() || part == "." || part == "..") return false;
@@ -82,25 +82,25 @@ inline bool canonical_manifest_name(const std::string_view value) noexcept {
 
 inline auto manifest_key(const session_content_entry& entry) noexcept {
   return std::tuple{
-    std::uint8_t(entry.domain), entry.load_order, entry.package, entry.path};
+    uint8_t(entry.domain), entry.load_order, entry.package, entry.path};
 }
 
-inline void sha_u32(utils::SHA256& hash, const std::uint32_t value) {
+inline void sha_u32(utils::SHA256& hash, const uint32_t value) {
   std::array<std::byte, 4> bytes{};
   for (unsigned i = 0; i < bytes.size(); ++i)
-    bytes[i] = std::byte(std::uint8_t(value >> (i * 8)));
+    bytes[i] = std::byte(uint8_t(value >> (i * 8)));
   hash.update(bytes.data(), bytes.size());
 }
 
-inline void sha_u64(utils::SHA256& hash, const std::uint64_t value) {
+inline void sha_u64(utils::SHA256& hash, const uint64_t value) {
   std::array<std::byte, 8> bytes{};
   for (unsigned i = 0; i < bytes.size(); ++i)
-    bytes[i] = std::byte(std::uint8_t(value >> (i * 8)));
+    bytes[i] = std::byte(uint8_t(value >> (i * 8)));
   hash.update(bytes.data(), bytes.size());
 }
 
 inline void sha_string(utils::SHA256& hash, const std::string_view value) {
-  sha_u64(hash, std::uint64_t(value.size()));
+  sha_u64(hash, uint64_t(value.size()));
   hash.update(value.data(), value.size());
 }
 
@@ -117,12 +117,12 @@ inline void sha_string(utils::SHA256& hash, const std::string_view value) {
   if (manifest.product.empty()) return session_content_status::empty_product;
   if (manifest.version.empty()) return session_content_status::empty_version;
   if (manifest.entries.empty()) return session_content_status::empty_manifest;
-  if (manifest.entries.size() > std::numeric_limits<std::uint32_t>::max())
+  if (manifest.entries.size() > std::numeric_limits<uint32_t>::max())
     return session_content_status::too_many_entries;
 
   const session_content_entry* previous = nullptr;
   for (const auto& entry : manifest.entries) {
-    if (std::uint8_t(entry.domain) > std::uint8_t(session_content_domain::mod))
+    if (uint8_t(entry.domain) > uint8_t(session_content_domain::mod))
       return session_content_status::invalid_domain;
     if (!detail::canonical_manifest_name(entry.package) ||
         !detail::canonical_manifest_name(entry.path))
@@ -146,13 +146,13 @@ inline void sha_string(utils::SHA256& hash, const std::string_view value) {
   detail::sha_u32(hash, 1);
   detail::sha_string(hash, manifest.product);
   detail::sha_string(hash, manifest.version);
-  detail::sha_u32(hash, std::uint32_t(manifest.entries.size()));
+  detail::sha_u32(hash, uint32_t(manifest.entries.size()));
   for (const auto& entry : manifest.entries) {
-    detail::sha_u32(hash, std::uint32_t(entry.domain));
+    detail::sha_u32(hash, uint32_t(entry.domain));
     detail::sha_u32(hash, entry.load_order);
     detail::sha_string(hash, entry.package);
     detail::sha_string(hash, entry.path);
-    detail::sha_u64(hash, std::uint64_t(entry.bytes.size()));
+    detail::sha_u64(hash, uint64_t(entry.bytes.size()));
     if (!entry.bytes.empty()) hash.update(entry.bytes.data(), entry.bytes.size());
   }
   output = hash.finalize();
@@ -164,17 +164,17 @@ inline void sha_string(utils::SHA256& hash, const std::string_view value) {
 // whole-installation identity above; the other fields give a useful refusal
 // instead of reducing every incompatibility to "hash differs".
 struct session_compatibility {
-  std::uint32_t handshake_format = 1;
-  std::uint32_t protocol_version = 0;
-  std::uint32_t state_schema_fingerprint = 0;
-  std::uint32_t intent_schema_fingerprint = 0;
-  std::uint32_t numeric_profile = 0;
+  uint32_t handshake_format = 1;
+  uint32_t protocol_version = 0;
+  uint32_t state_schema_fingerprint = 0;
+  uint32_t intent_schema_fingerprint = 0;
+  uint32_t numeric_profile = 0;
   utils::digest content_root{};
 
   bool operator==(const session_compatibility&) const = default;
 };
 
-enum class session_compatibility_status : std::uint8_t {
+enum class session_compatibility_status : uint8_t {
   compatible,
   handshake_format_mismatch,
   protocol_version_mismatch,
@@ -202,7 +202,7 @@ enum class session_compatibility_status : std::uint8_t {
   return session_compatibility_status::compatible;
 }
 
-enum class session_handshake_status : std::uint8_t {
+enum class session_handshake_status : uint8_t {
   accepted,
   handshake_format_mismatch,
   protocol_version_mismatch,
@@ -301,7 +301,7 @@ struct authority_message_stamp {
   bool operator==(const authority_message_stamp&) const = default;
 };
 
-enum class authority_message_status : std::uint8_t {
+enum class authority_message_status : uint8_t {
   accepted,
   wrong_session,
   wrong_authority,
@@ -360,7 +360,7 @@ struct session_recovery_plan {
   Digest target_root{};
 };
 
-enum class session_recovery_status : std::uint8_t {
+enum class session_recovery_status : uint8_t {
   recovered,
   wrong_session,
   wrong_authority,

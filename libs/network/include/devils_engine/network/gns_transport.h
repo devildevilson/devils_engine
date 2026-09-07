@@ -11,44 +11,44 @@
 
 namespace devils_engine::network {
 
-enum class gns_delivery : std::uint8_t { reliable_ordered,
+enum class gns_delivery : uint8_t { reliable_ordered,
                                          unreliable_sequenced };
 
 struct gns_lane_config {
   gns_delivery delivery = gns_delivery::reliable_ordered;
   int priority = 0;
-  std::uint16_t weight = 1;
-  std::size_t send_slots = 8;
-  std::size_t max_payload_bytes = 1024;
-  std::size_t send_byte_budget = 8192;
+  uint16_t weight = 1;
+  size_t send_slots = 8;
+  size_t max_payload_bytes = 1024;
+  size_t send_byte_budget = 8192;
   bool no_nagle = true;
 };
 
 struct gns_transport_config {
-  std::size_t peers = 8;
-  std::size_t receive_leases = 32;
-  std::size_t max_receive_bytes = 512 * 1024;
+  size_t peers = 8;
+  size_t receive_leases = 32;
+  size_t max_receive_bytes = 512 * 1024;
   // Backend queued data is separate from messages leased to the caller.
   int backend_receive_messages = 128;
   int backend_receive_bytes = 4 * 1024 * 1024;
-  std::size_t listeners = 1;
+  size_t listeners = 1;
 };
 
 // Generation is unique across transport instances in this process. Neither
 // this ID nor a GNS handle is a persistent player/authority identity.
 struct gns_peer {
-  std::uint32_t slot = UINT32_MAX;
-  std::uint64_t generation = 0;
+  uint32_t slot = UINT32_MAX;
+  uint64_t generation = 0;
   bool operator==(const gns_peer&) const = default;
 };
 
 struct gns_listener {
-  std::uint32_t slot = UINT32_MAX;
-  std::uint64_t generation = 0;
+  uint32_t slot = UINT32_MAX;
+  uint64_t generation = 0;
   bool operator==(const gns_listener&) const = default;
 };
 
-enum class gns_status : std::uint8_t {
+enum class gns_status : uint8_t {
   ok,
   not_ready,
   invalid_peer,
@@ -82,15 +82,15 @@ struct gns_send_result {
   gns_status status = gns_status::ok;
   // Positive GNS message number on acceptance; negative EResult on backend
   // refusal. Acceptance is not remote delivery or gameplay acknowledgement.
-  std::int64_t message_number_or_error = 0;
+  int64_t message_number_or_error = 0;
 };
 
 struct gns_send_release {
   gns_peer peer;
-  std::uint16_t lane = 0;
-  std::uint64_t tag = 0;
-  std::int64_t message_number = 0;
-  std::size_t bytes = 0;
+  uint16_t lane = 0;
+  uint64_t tag = 0;
+  int64_t message_number = 0;
+  size_t bytes = 0;
 };
 
 namespace detail {
@@ -116,8 +116,8 @@ public:
   gns_peer peer() const noexcept {
     return peer_;
   }
-  std::uint16_t lane() const noexcept;
-  std::int64_t message_number() const noexcept;
+  uint16_t lane() const noexcept;
+  int64_t message_number() const noexcept;
   void reset() noexcept;
 
 private:
@@ -129,8 +129,8 @@ private:
 
 struct gns_receive_result {
   gns_status status = gns_status::ok;
-  std::size_t count = 0;
-  std::size_t superseded = 0;
+  size_t count = 0;
+  size_t superseded = 0;
 };
 
 struct gns_connection_event {
@@ -150,7 +150,7 @@ class gns_transport;
 class gns_dispatcher {
 public:
   gns_dispatcher(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
-                 std::size_t transport_capacity);
+                 size_t transport_capacity);
   ~gns_dispatcher();
   gns_dispatcher(const gns_dispatcher&) = delete;
   gns_dispatcher& operator=(const gns_dispatcher&) = delete;
@@ -197,7 +197,7 @@ public:
   // Idempotent final shutdown, no linger: closes endpoints/poll group and
   // unregisters routing. Leases/releases can outlive it; new work is refused.
   void shutdown();
-  std::uint64_t refused_incoming_count() const noexcept;
+  uint64_t refused_incoming_count() const noexcept;
   // Takes exclusive ownership on entry, INCLUDING refusal (closes the handle).
   // An already owned handle is refused without closing it. Only transfer fresh
   // connections before their first application messages/lane configuration.
@@ -207,26 +207,26 @@ public:
   // Copies the caller's bytes once into a prepared per-lane slab. GNS then owns
   // that slot until m_pfnFreeData; release order need not be FIFO. Rejected sends
   // never consume caller data. No borrowed caller pointer crosses this method.
-  [[nodiscard]] gns_send_result try_send(gns_peer peer, std::uint16_t lane,
+  [[nodiscard]] gns_send_result try_send(gns_peer peer, uint16_t lane,
                                          std::span<const std::byte> payload,
-                                         std::uint64_t tag = 0);
+                                         uint64_t tag = 0);
   // Reclaims accepted slots only when the owner observes release. Not an ACK.
   // Unobserved completions backpressure their own lane, not another lane.
-  std::size_t poll_send_releases(std::span<gns_send_release> output);
+  size_t poll_send_releases(std::span<gns_send_release> output);
   // All output elements must be empty. At most work_budget native messages
   // are examined, including stale unreliable frames, so a flood cannot monopolize
   // one pump. Outstanding leases are bounded across successive receive calls.
   [[nodiscard]] gns_receive_result receive(std::span<gns_received_message> output,
-                                           std::size_t work_budget = 64);
+                                           size_t work_budget = 64);
   // Observed state changes, not a lossless native callback log. A small output
   // does not discard unreported current states. Terminal handles stay owned
   // until close(). Intermediate states can coalesce between polls.
-  std::size_t poll_connections(std::span<gns_connection_event> output);
+  size_t poll_connections(std::span<gns_connection_event> output);
   [[nodiscard]] gns_status statistics(gns_peer peer, SteamNetConnectionRealTimeStatus_t& status,
                                       std::span<SteamNetConnectionRealTimeLaneStatus_t> lanes = {});
-  std::size_t retained_send_count(std::uint16_t lane) const noexcept;
-  std::size_t retained_send_bytes(std::uint16_t lane) const noexcept;
-  std::size_t leased_receive_count() const noexcept;
+  size_t retained_send_count(uint16_t lane) const noexcept;
+  size_t retained_send_bytes(uint16_t lane) const noexcept;
+  size_t leased_receive_count() const noexcept;
 
 private:
   friend class gns_dispatcher;

@@ -26,19 +26,19 @@
 
 namespace devils_engine::network {
 
-inline constexpr std::uint32_t session_wire_magic = UINT32_C(0x4853574e); // "NWSH"
-inline constexpr std::uint16_t session_wire_envelope_version = 1;
-inline constexpr std::size_t session_wire_header_bytes = 12;
-inline constexpr std::size_t session_wire_max_payload_bytes = 512;
-inline constexpr std::size_t session_wire_max_message_bytes =
+inline constexpr uint32_t session_wire_magic = UINT32_C(0x4853574e); // "NWSH"
+inline constexpr uint16_t session_wire_envelope_version = 1;
+inline constexpr size_t session_wire_header_bytes = 12;
+inline constexpr size_t session_wire_max_payload_bytes = 512;
+inline constexpr size_t session_wire_max_message_bytes =
   session_wire_header_bytes + session_wire_max_payload_bytes;
-inline constexpr std::size_t session_wire_max_credential_bytes = 256;
-inline constexpr std::size_t session_wire_max_challenge_bytes = 128;
-inline constexpr std::size_t session_nonce_bytes = 32;
+inline constexpr size_t session_wire_max_credential_bytes = 256;
+inline constexpr size_t session_wire_max_challenge_bytes = 128;
+inline constexpr size_t session_nonce_bytes = 32;
 
 using session_nonce = std::array<std::byte, session_nonce_bytes>;
 
-enum class session_message_type : std::uint8_t {
+enum class session_message_type : uint8_t {
   client_hello = 1,
   authority_challenge = 2,
   client_response = 3,
@@ -46,10 +46,10 @@ enum class session_message_type : std::uint8_t {
   session_refused = 5
 };
 
-inline constexpr std::uint8_t session_message_type_max =
-  std::uint8_t(session_message_type::session_refused);
+inline constexpr uint8_t session_message_type_max =
+  uint8_t(session_message_type::session_refused);
 
-enum class session_wire_status : std::uint8_t {
+enum class session_wire_status : uint8_t {
   ok,
   buffer_too_small,
   too_large,
@@ -64,7 +64,7 @@ enum class session_wire_status : std::uint8_t {
 // A refusal reason travels on the wire, so it is a stable numbering rather than
 // a reuse of session_handshake_status. Wire-level reasons say that the exchange
 // itself was wrong; the rest name one compatibility field.
-enum class session_refusal_reason : std::uint8_t {
+enum class session_refusal_reason : uint8_t {
   none = 0,
   handshake_format_mismatch = 1,
   protocol_version_mismatch = 2,
@@ -79,8 +79,8 @@ enum class session_refusal_reason : std::uint8_t {
   no_capacity = 11
 };
 
-inline constexpr std::uint8_t session_refusal_reason_max =
-  std::uint8_t(session_refusal_reason::no_capacity);
+inline constexpr uint8_t session_refusal_reason_max =
+  uint8_t(session_refusal_reason::no_capacity);
 
 // Decoded opaque spans point into the caller's received buffer. They are valid
 // only while that buffer is unchanged; a consumer which keeps a credential must
@@ -101,16 +101,16 @@ struct client_response {
   // A resuming client names the session it believes it belongs to and, when it
   // has one, the newest checkpoint it can prove. The anchor is a hint: the
   // authority may answer from any retained checkpoint not later than its target.
-  std::optional<std::uint64_t> resumed_session;
-  std::optional<recovery_anchor<std::uint64_t, utils::digest>> confirmed;
+  std::optional<uint64_t> resumed_session;
+  std::optional<recovery_anchor<uint64_t, utils::digest>> confirmed;
 };
 
 struct session_accepted {
-  std::uint64_t session = 0;
-  std::uint64_t local_peer = 0;
-  std::uint64_t authority_peer = 0;
-  std::uint64_t authority_epoch = 0;
-  std::uint64_t start_tick = 0;
+  uint64_t session = 0;
+  uint64_t local_peer = 0;
+  uint64_t authority_peer = 0;
+  uint64_t authority_epoch = 0;
+  uint64_t start_tick = 0;
 };
 
 struct session_refused {
@@ -125,23 +125,23 @@ struct session_wire_message {
 namespace detail {
 
 inline void wire_begin(state_writer& w, const session_message_type type,
-                       std::size_t& length_at) {
+                       size_t& length_at) {
   w.u32(session_wire_magic);
   w.u16(session_wire_envelope_version);
-  w.u8(std::uint8_t(type));
+  w.u8(uint8_t(type));
   w.u8(0); // Reserved; a nonzero value is a refusal, never a silent skip.
   length_at = w.position();
   w.u32(0);
 }
 
 [[nodiscard]] inline session_wire_status wire_end(state_writer& w,
-                                                  const std::size_t length_at) {
+                                                  const size_t length_at) {
   if (!w.good()) return session_wire_status::buffer_too_small;
-  const std::size_t payload_end = length_at + 4;
+  const size_t payload_end = length_at + 4;
   if (w.position() < payload_end) return session_wire_status::buffer_too_small;
-  const std::size_t payload = w.position() - payload_end;
+  const size_t payload = w.position() - payload_end;
   if (payload > session_wire_max_payload_bytes) return session_wire_status::too_large;
-  w.patch_u32(length_at, std::uint32_t(payload));
+  w.patch_u32(length_at, uint32_t(payload));
   return w.good() ? session_wire_status::ok : session_wire_status::buffer_too_small;
 }
 
@@ -195,7 +195,7 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
-  std::size_t length_at = 0;
+  size_t length_at = 0;
   detail::wire_begin(w, session_message_type::client_hello, length_at);
   detail::write_compatibility(w, message.compatibility);
   w.bytes(message.client_nonce);
@@ -209,11 +209,11 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
-  std::size_t length_at = 0;
+  size_t length_at = 0;
   detail::wire_begin(w, session_message_type::authority_challenge, length_at);
   detail::write_compatibility(w, message.compatibility);
   w.bytes(message.authority_nonce);
-  w.u32(std::uint32_t(message.challenge.size()));
+  w.u32(uint32_t(message.challenge.size()));
   w.bytes(message.challenge);
   return detail::wire_end(w, length_at);
 }
@@ -227,13 +227,13 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
-  std::size_t length_at = 0;
+  size_t length_at = 0;
   detail::wire_begin(w, session_message_type::client_response, length_at);
-  w.u32(std::uint32_t(message.credential.size()));
+  w.u32(uint32_t(message.credential.size()));
   w.bytes(message.credential);
-  w.u8(std::uint8_t(message.resumed_session.has_value()));
+  w.u8(uint8_t(message.resumed_session.has_value()));
   w.u64(message.resumed_session.value_or(0));
-  w.u8(std::uint8_t(message.confirmed.has_value()));
+  w.u8(uint8_t(message.confirmed.has_value()));
   w.u64(message.confirmed ? message.confirmed->tick : 0);
   detail::write_digest(w, message.confirmed ? message.confirmed->root : utils::digest{});
   return detail::wire_end(w, length_at);
@@ -244,7 +244,7 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
-  std::size_t length_at = 0;
+  size_t length_at = 0;
   detail::wire_begin(w, session_message_type::session_accepted, length_at);
   w.u64(message.session);
   w.u64(message.local_peer);
@@ -256,15 +256,15 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 
 [[nodiscard]] inline session_wire_status try_encode(const session_refused& message,
                                                     std::vector<std::byte>& out) {
-  if (std::uint8_t(message.reason) > session_refusal_reason_max ||
+  if (uint8_t(message.reason) > session_refusal_reason_max ||
       message.reason == session_refusal_reason::none)
     return session_wire_status::invalid_field;
   if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
-  std::size_t length_at = 0;
+  size_t length_at = 0;
   detail::wire_begin(w, session_message_type::session_refused, length_at);
-  w.u8(std::uint8_t(message.reason));
+  w.u8(uint8_t(message.reason));
   return detail::wire_end(w, length_at);
 }
 
@@ -283,7 +283,7 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   if (r.u8() != 0) return session_wire_status::invalid_field;
   const auto length = r.u32();
   if (!r.good()) return session_wire_status::truncated;
-  const std::size_t available = bytes.size() - session_wire_header_bytes;
+  const size_t available = bytes.size() - session_wire_header_bytes;
   if (length > session_wire_max_payload_bytes) return session_wire_status::too_large;
   if (length > available) return session_wire_status::truncated;
   if (length < available) return session_wire_status::trailing_bytes;
@@ -341,7 +341,7 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   out.credential = credential;
   out.resumed_session = has_session ? std::optional(session) : std::nullopt;
   out.confirmed = has_anchor
-                    ? std::optional(recovery_anchor<std::uint64_t, utils::digest>{tick, root})
+                    ? std::optional(recovery_anchor<uint64_t, utils::digest>{tick, root})
                     : std::nullopt;
   return detail::finish_decode(r);
 }
@@ -377,12 +377,12 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 class session_transcript {
 public:
   void absorb(const std::span<const std::byte> message) {
-    detail::sha_u64(hash, std::uint64_t(message.size()));
+    detail::sha_u64(hash, uint64_t(message.size()));
     if (!message.empty()) hash.update(message.data(), message.size());
     ++absorbed_;
   }
 
-  [[nodiscard]] std::size_t absorbed() const noexcept {
+  [[nodiscard]] size_t absorbed() const noexcept {
     return absorbed_;
   }
 
@@ -402,11 +402,11 @@ public:
 private:
   utils::SHA256 hash;
   utils::digest value_{};
-  std::size_t absorbed_ = 0;
+  size_t absorbed_ = 0;
   bool sealed_ = false;
 };
 
-enum class handshake_phase : std::uint8_t {
+enum class handshake_phase : uint8_t {
   // Authority phases.
   awaiting_hello,
   awaiting_response,
@@ -601,8 +601,8 @@ private:
 class client_handshake {
 public:
   client_handshake(const session_compatibility& local, const session_nonce& nonce,
-                   const std::optional<std::uint64_t> resumed_session = std::nullopt,
-                   const std::optional<recovery_anchor<std::uint64_t, utils::digest>> confirmed =
+                   const std::optional<uint64_t> resumed_session = std::nullopt,
+                   const std::optional<recovery_anchor<uint64_t, utils::digest>> confirmed =
                      std::nullopt) noexcept
     : local_(local), nonce_(nonce), resumed_session_(resumed_session), confirmed_(confirmed) {}
 
@@ -733,8 +733,8 @@ private:
 
   session_compatibility local_;
   session_nonce nonce_;
-  std::optional<std::uint64_t> resumed_session_;
-  std::optional<recovery_anchor<std::uint64_t, utils::digest>> confirmed_;
+  std::optional<uint64_t> resumed_session_;
+  std::optional<recovery_anchor<uint64_t, utils::digest>> confirmed_;
   session_transcript transcript_;
   std::vector<std::byte> credential_;
   session_accepted accepted_;

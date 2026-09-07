@@ -902,6 +902,77 @@ discrete fact, transform correction alone is insufficient. The first `tile_front
 keep actor AI and structural outcomes server-authoritative. Later experiments can replicate the necessary
 causal components or rollback from an authoritative checkpoint.
 
+## Hot-path wire contract
+
+The handshake and the per-tick classes are optimized for opposite things, and
+conflating them is the mistake this section exists to prevent.
+
+**Width is a direction, not a preference.** The handshake establishes *absolute*
+wide values once — a 64-bit session, tick and epoch — precisely so that per-tick
+messages can carry *relative* narrow ones. Narrowing the handshake would destroy
+that ability: a 64-bit tick cannot be reconstructed from sixteen low bits if the
+base was never established. A fat handshake is therefore the condition for a
+thin hot path, not waste. The measured handshake is 394 bytes for a complete
+exchange against 1248 bytes of usable payload in one packet, so narrowing its
+identifiers removes no packet at all, while a 16-bit session identifier would
+let a stale reconnect claim name a live session after 65536 sessions.
+
+**What must not travel.** A per-tick message omits everything the receiver can
+derive and everything a peer must not assert. The connection names the session
+and the peer, so neither is a field. The acting entity is likewise implied — a
+client-supplied actor identifier is the classic ownership forgery. Provenance
+(which action produced an intent) is neither causal for the authority nor
+trustworthy from a peer. Registered identifiers travel as a dense index into the
+frozen registry rather than as 64-bit string hashes, which is also stricter: an
+index outside the registry is a refusal at the boundary, where an arbitrary hash
+is merely a lookup miss inside the project.
+
+**The registry index is the sorted position.** Peers need no agreement protocol
+beyond registering the same things; sorting *is* the agreement. Index stability
+across versions is explicitly not a property — adding one identifier shifts
+every later index — and that is safe only because the fingerprint over exactly
+that sorted list is `session_compatibility::intent_schema_fingerprint` and
+refuses a differing peer before the first tick. Stability by refusal is cheaper
+and stricter than stability by reserved ranges.
+
+**Envelope per class, type first.** Byte zero is the message type, because it
+decides how every following byte is read, including the width of a length field.
+Hot classes carry no magic and no length: the transport delivers whole messages,
+so the received size is authoritative and the peer is already established. Bulk
+classes (checkpoint chunks) carry a 32-bit length because they slice something
+megabyte-sized. Only the handshake keeps magic and version, because it is the
+one place where a peer may be the wrong service or the wrong build. A class
+whose sub-messages are self-describing needs no count field either: the reader
+consumes until the buffer ends, and a remainder which cannot form a whole
+sub-message is a refusal rather than a partially accepted batch.
+
+**Packet count, not field width, is the intent lever.** One packet costs 28
+bytes of IP/UDP plus a 7-byte GNS header and a 16-byte AES-GCM tag, so a 10-byte
+intent in its own packet is over 80% overhead. Batching several ticks into one
+packet halves the cost and buys redundancy for free: a lost packet does not
+stall the authority because the same intents arrive again in the next two. The
+tick window is therefore part of the encoding, not a policy above it.
+
+**Quantization is for replication only; divergence detection uses exact bytes.**
+A quantum declared as a negative power of two makes the code a deterministic
+function of its input on every conforming platform, and makes decode-then-encode
+return the same code by construction. That stops the *transport* from adding
+divergence. It does not remove divergence, and two peers which quantize their
+own diverging values can disagree by a whole code at a boundary — a two-part-in-
+ten-million difference can flip a code. So a digest must never be computed over
+quantized values; `state_digest` and checkpoint roots stay on canonical bytes.
+
+What the quantum does buy is a derived threshold. Snapping a prediction onto a
+quantized authoritative value injects up to half a quantum of error even when
+there is no divergence at all, so a client compares instead of snapping: an
+error within one quantum means the authority knows nothing better than the
+client does and the correction is ignored; a larger error is corrected and
+smoothed. The epsilon is derived from the format rather than invented.
+
+The cure for divergence itself is fixed point inside the simulation, not on the
+wire — the `act::real_t` typedef and the NUM branch below. Wire quantization
+only guarantees that replication does not make it worse.
+
 ### Replication cadence is project data
 
 Intent and transform cadence are independent. Intents are proposed/closed every simulation tick; transforms can
@@ -1257,6 +1328,8 @@ NET-00 contract (complete)
                       -> NET-08 selected real-transport adapter
                            -> SESSION-01 compatibility/identity/reconnect recovery
                                 -> SESSION-02 handshake wire format + challenge/response
+                                     -> HOT-01 hot-path intent class + quantization
+                                          -> HOT-02 transform frames + relevant set
                                 -> NET-LAB-01 multi-process loopback/LAN
                                 -> NET-LAB-02 compatible cross-build exchange
                                      -> SERVER-01 headless authority
@@ -1630,6 +1703,32 @@ Those are exercised in NET-LAB-01 rather than hidden inside the transport adapte
 
 Done with `network/session_wire.h` and `network_session_wire_test`. Wire framing does not imply a transport:
 the exchange is proven over byte buffers, and NET-LAB-01 carries it over a real connection.
+
+### HOT-01 — hot-path intent class and quantization primitives (`M`, complete 2026-09-07)
+
+- Carry only what the authority cannot derive: no session, peer, acting entity or provenance.
+- Translate the narrow wire intent into the project's simulation intent at one seam, and validate ownership,
+  legality and rate there.
+- Declare each kind's shape once, so a batch needs neither a count nor per-field presence flags.
+- Pack the kind and the tick window offset into one byte, where the saving multiplies per intent rather than
+  per packet.
+- Declare the quantum as a negative power of two and keep every floating-point step in one header, so the
+  batch codec moves integers only.
+- Report a clamp or an out-of-range cell delta; never narrow a distant or forged target silently.
+- Measure the byte budget in a test rather than deriving it on paper.
+
+Done with `network/fixed_point.h`, `network/intent_wire.h` and `network_intent_wire_test`.
+
+### HOT-02 — transform frames and the relevant set (`M-L`)
+
+- Send a dense per-client index instead of an entity identifier, with set membership as its own reliable class.
+- Carry positions as cell key plus fixed point, and direction as an independent replicated field rather than
+  something derived from velocity.
+- Instantiate the declared cadence classes and measure bytes per second per client at project entity counts.
+- Prove that relevance, delta and cadence dominate encoding: the ladder must be measured, not assumed.
+
+Done when a measured budget exists for the project's target entity count and the correction threshold is
+derived from the declared quantum.
 
 ### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 

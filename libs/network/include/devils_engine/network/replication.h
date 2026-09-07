@@ -22,7 +22,7 @@ namespace devils_engine::network {
 template <class Tick, std::unsigned_integral Sequence, class BaselineId,
           class InputSequence>
 struct state_frame_header {
-  std::uint32_t format_version = 0;
+  uint32_t format_version = 0;
   Tick server_tick{};
   Sequence state_sequence{};
   std::optional<BaselineId> base_baseline;
@@ -45,7 +45,7 @@ enum class state_frame_acceptance : unsigned char {
 // classify() never mutates: a receiver commits only after decoding and
 // materializing the frame succeeds. An authenticated full-baseline recovery
 // may establish a distant sequence explicitly with reset().
-template <std::unsigned_integral Sequence, std::size_t MaxForwardAdvance>
+template <std::unsigned_integral Sequence, size_t MaxForwardAdvance>
 class state_frame_window {
 public:
   static_assert(MaxForwardAdvance > 0,
@@ -55,10 +55,10 @@ public:
   static_assert(MaxForwardAdvance < half_range,
                 "network::state_frame_window must be smaller than half the sequence space");
 
-  constexpr explicit state_frame_window(const std::uint32_t format_version) noexcept
+  constexpr explicit state_frame_window(const uint32_t format_version) noexcept
     : format_version_(format_version) {}
 
-  constexpr std::uint32_t format_version() const noexcept {
+  constexpr uint32_t format_version() const noexcept {
     return format_version_;
   }
 
@@ -71,7 +71,7 @@ public:
   }
 
   constexpr state_frame_acceptance classify(
-    const std::uint32_t format_version,
+    const uint32_t format_version,
     const Sequence sequence) const noexcept {
     if (format_version != format_version_) {
       return state_frame_acceptance::format_version_mismatch;
@@ -90,7 +90,7 @@ public:
   }
 
   constexpr state_frame_acceptance commit(
-    const std::uint32_t format_version,
+    const uint32_t format_version,
     const Sequence sequence) noexcept {
     const state_frame_acceptance result = classify(format_version, sequence);
     if (result == state_frame_acceptance::accepted) newest_ = sequence;
@@ -102,7 +102,7 @@ public:
   }
 
   constexpr state_frame_acceptance reset(
-    const std::uint32_t format_version,
+    const uint32_t format_version,
     const Sequence accepted) noexcept {
     if (format_version != format_version_) {
       return state_frame_acceptance::format_version_mismatch;
@@ -112,7 +112,7 @@ public:
   }
 
 private:
-  std::uint32_t format_version_ = 0;
+  uint32_t format_version_ = 0;
   std::optional<Sequence> newest_;
 };
 
@@ -128,8 +128,8 @@ enum class baseline_store_status : unsigned char {
 
 struct baseline_store_result {
   baseline_store_status status = baseline_store_status::stored;
-  std::size_t evicted_count = 0;
-  std::size_t evicted_bytes = 0;
+  size_t evicted_count = 0;
+  size_t evicted_bytes = 0;
 
   constexpr bool stored() const noexcept {
     return status == baseline_store_status::stored;
@@ -139,7 +139,7 @@ struct baseline_store_result {
 template <std::totally_ordered BaselineId, class Snapshot, class SizeOf>
   requires std::invocable<const SizeOf&, const Snapshot&> &&
            std::convertible_to<std::invoke_result_t<const SizeOf&, const Snapshot&>,
-                               std::size_t>
+                               size_t>
 class baseline_store {
 public:
   using id_type = BaselineId;
@@ -148,8 +148,8 @@ public:
   using history_type = bounded_history<BaselineId, Snapshot>;
   using entry = typename history_type::entry;
 
-  baseline_store(const std::size_t count_budget,
-                 const std::size_t byte_budget,
+  baseline_store(const size_t count_budget,
+                 const size_t byte_budget,
                  SizeOf size_of = {})
     : values_(count_budget, byte_budget), size_of_(std::move(size_of)) {}
 
@@ -162,7 +162,7 @@ public:
   [[nodiscard]] baseline_store_result try_store(
     const BaselineId& id,
     Snapshot&& snapshot) {
-    const std::size_t bytes = byte_size(snapshot);
+    const size_t bytes = byte_size(snapshot);
     return convert(values_.try_store(id, std::move(snapshot), bytes));
   }
 
@@ -178,16 +178,16 @@ public:
     return values_.entries();
   }
 
-  std::size_t count_budget() const noexcept {
+  size_t count_budget() const noexcept {
     return values_.count_budget();
   }
-  std::size_t byte_budget() const noexcept {
+  size_t byte_budget() const noexcept {
     return values_.byte_budget();
   }
-  std::size_t retained_count() const noexcept {
+  size_t retained_count() const noexcept {
     return values_.retained_count();
   }
-  std::size_t retained_bytes() const noexcept {
+  size_t retained_bytes() const noexcept {
     return values_.retained_bytes();
   }
   bool empty() const noexcept {
@@ -224,8 +224,8 @@ private:
     return {baseline_store_status::budget_exceeded, 0, 0};
   }
 
-  std::size_t byte_size(const Snapshot& snapshot) const {
-    return static_cast<std::size_t>(std::invoke(size_of_, snapshot));
+  size_t byte_size(const Snapshot& snapshot) const {
+    return static_cast<size_t>(std::invoke(size_of_, snapshot));
   }
 
   history_type values_;
@@ -243,8 +243,8 @@ enum class delta_materialize_status : unsigned char {
 
 struct delta_materialize_result {
   delta_materialize_status status = delta_materialize_status::materialized;
-  std::size_t evicted_count = 0;
-  std::size_t evicted_bytes = 0;
+  size_t evicted_count = 0;
+  size_t evicted_bytes = 0;
 
   constexpr bool materialized() const noexcept {
     return status == delta_materialize_status::materialized;
@@ -366,7 +366,7 @@ namespace detail {
 
 template <class Range, class KeyLess>
 bool has_strictly_ordered_keys(const Range& values, KeyLess& less) {
-  for (std::size_t i = 1; i < values.size(); ++i) {
+  for (size_t i = 1; i < values.size(); ++i) {
     if (!std::invoke(less, values[i - 1].key, values[i].key)) return false;
   }
   return true;
@@ -384,7 +384,7 @@ keyed_delta_status visit_keyed_delta(
   KeyLess& less, ValueEqual& equal, Emit emit) {
   if (!has_strictly_ordered_keys(base, less)) return keyed_delta_status::base_not_canonical;
   if (!has_strictly_ordered_keys(current, less)) return keyed_delta_status::current_not_canonical;
-  std::size_t b = 0, c = 0;
+  size_t b = 0, c = 0;
   while (b < base.size() || c < current.size()) {
     if (b == base.size() || (c < current.size() && std::invoke(less, current[c].key, base[b].key))) {
       const auto& value = current[c++];
@@ -415,7 +415,7 @@ keyed_delta_status visit_keyed_apply(
   KeyLess& less, ValueEqual& equal, Emit emit) {
   if (!has_strictly_ordered_keys(base, less)) return keyed_delta_status::base_not_canonical;
   if (!has_strictly_ordered_keys(delta, less)) return keyed_delta_status::delta_not_canonical;
-  std::size_t b = 0;
+  size_t b = 0;
   for (const auto& change : delta) {
     while (b < base.size() && std::invoke(less, base[b].key, change.key)) {
       const auto& value = base[b++];
@@ -459,14 +459,14 @@ template <class Key, class Value, class Version,
   const keyed_snapshot<Key, Value, Version>& current,
   keyed_delta<Key, Value, Version>& output,
   KeyLess less = {}, ValueEqual equal = {}) {
-  std::size_t count = 0;
+  size_t count = 0;
   const auto status = detail::visit_keyed_delta(base, current, less, equal,
                                                 [&](const auto&, const auto&, const auto*) {
                                                   ++count;
                                                 });
   if (status != keyed_delta_status::success) return status;
   if (count > output.capacity()) return keyed_delta_status::capacity_exceeded;
-  std::size_t index = 0;
+  size_t index = 0;
   detail::visit_keyed_delta(base, current, less, equal,
                             [&](const Key& key, std::optional<Version> expected, const auto* value) {
                               if (index == output.size()) output.push_back({key, expected, std::nullopt});
@@ -483,7 +483,7 @@ template <class Key, class Value, class Version,
                               } else
                                 target.result.reset();
                             });
-  output.erase(output.begin() + std::ptrdiff_t(count), output.end());
+  output.erase(output.begin() + ptrdiff_t(count), output.end());
   return keyed_delta_status::success;
 }
 
@@ -495,14 +495,14 @@ template <class Key, class Value, class Version,
   keyed_snapshot<Key, Value, Version>& output,
   KeyLess less = {}, ValueEqual equal = {}) {
   if (&base == &output) return keyed_delta_status::aliased_output;
-  std::size_t count = 0;
+  size_t count = 0;
   const auto status = detail::visit_keyed_apply(base, delta, less, equal,
                                                 [&](const auto&, const auto&, const auto&) {
                                                   ++count;
                                                 });
   if (status != keyed_delta_status::success) return status;
   if (count > output.capacity()) return keyed_delta_status::capacity_exceeded;
-  std::size_t index = 0;
+  size_t index = 0;
   detail::visit_keyed_apply(base, delta, less, equal,
                             [&](const Key& key, const Version& version, const Value& value) {
                               if (index == output.size())
@@ -515,7 +515,7 @@ template <class Key, class Value, class Version,
                               }
                               ++index;
                             });
-  output.erase(output.begin() + std::ptrdiff_t(count), output.end());
+  output.erase(output.begin() + ptrdiff_t(count), output.end());
   return keyed_delta_status::success;
 }
 
@@ -527,7 +527,7 @@ template <class Key, class Value, class Version,
   const keyed_snapshot<Key, Value, Version>& current,
   KeyLess less = {}, ValueEqual equal = {}) {
   keyed_delta_build_result<Key, Value, Version> result;
-  std::size_t count = 0;
+  size_t count = 0;
   result.status = detail::visit_keyed_delta(base, current, less, equal,
                                             [&](const auto&, const auto&, const auto*) {
                                               ++count;
@@ -544,7 +544,7 @@ template <class Key, class Value, class Version,
   const keyed_snapshot<Key, Value, Version>& base,
   const keyed_delta<Key, Value, Version>& delta,
   KeyLess less = {}, ValueEqual equal = {}) {
-  std::size_t count = 0;
+  size_t count = 0;
   const auto status = detail::visit_keyed_apply(base, delta, less, equal,
                                                 [&](const auto&, const auto&, const auto&) {
                                                   ++count;

@@ -494,6 +494,77 @@ a transport early and releases its registration slot.
   nonzero listen port; native shutdown may defer OS-port release, so a subsequent
   bind can return `backend_rejected`. Tests try a bounded localhost port range.
 
+## Implemented slice: hot-path intent class and fixed point
+
+`fixed_point.h` owns the only floating-point arithmetic in the hot wire path.
+A world coordinate splits into an integer cell key and a code inside that cell,
+so resolution does not degrade with distance from the origin — the replication
+counterpart of the world-generation result that accumulation is cured by writing
+the accumulator rather than by moving the origin.
+
+The quantum is declared as a negative power of two, and that is not a stylistic
+choice. Multiplying an IEEE-754 double by a power of two is exact, so the code
+is a deterministic function of its input on every conforming platform, and
+decoding then re-encoding returns the same code by construction instead of by
+floating-point luck; a decimal quantum such as `0.001` would satisfy both only
+approximately. Rounding is half away from zero and computed without any
+`<cmath>` call: the product is exact, the truncation is exact, and the remainder
+of two nearby representable values is exact, so the comparison against one half
+compares exact quantities. Out-of-range and non-finite inputs report a clamp
+instead of being folded into a plausible coordinate, and `relative_cell`
+refuses a cell delta which does not fit its width rather than narrowing a
+distant or forged target silently. A direction is quantized over a full turn, so
+its wrap is the natural modular wrap of the code and there is no boundary at
+which two peers can disagree about the representable set.
+
+`intent_wire.h` is the hot upstream class. `network::intent` is deliberately
+not the project's simulation intent: it omits everything the receiver derives
+and everything a peer must not assert — the session and peer (named by the
+connection), the acting entity (a client-supplied actor is the classic ownership
+forgery) and provenance (neither causal nor trustworthy here). The project
+translates it into its own intent at one seam, which is exactly where ownership,
+legality and rate validation belong.
+
+There is no magic and no length field: the transport delivers whole messages, so
+the received size is authoritative. Byte zero is the message type because it
+decides how every following byte is read. A batch carries no count either —
+each intent packs its kind and its offset into the tick window into one byte,
+the reader consumes until the buffer ends, and a remainder which cannot form a
+whole intent is refused rather than partially accepted. Resending recent ticks
+is how the class survives loss without a retransmit protocol, so the window is
+part of the encoding rather than a policy above it.
+
+`intent_field_layout` declares what one kind carries (quantized axes, a registry
+index, an opaque entity reference, a direction). The project owns what a kind
+means; the library owns how its declared shape travels, so no gameplay verb is
+named here, and the declared shape is what lets the batch omit both counts and
+presence flags. A duplicate or malformed declaration is refused at preparation
+instead of giving one wire code two readings.
+
+`id_index_table` is the dense translation for 64-bit registered identifiers:
+the index of an identifier is its position in the sorted set, so peers need no
+agreement protocol beyond registering the same things — sorting is the
+agreement. The fingerprint hashes canonical little-endian bytes of exactly that
+sorted list and belongs in `session_compatibility::intent_schema_fingerprint`.
+Index stability across versions is explicitly not a property: adding one
+identifier shifts every later index, and that is safe only because a differing
+fingerprint is refused before the first tick. Stability by refusal is cheaper
+and stricter than stability by reserved ranges. A reference index is checked
+against the registry on both encode and decode, because an encoder which can
+produce a batch its own decoder refuses is a bug that only appears across a
+network.
+
+Measured sizes: one movement intent for one tick is 10 bytes, three ticks of
+redundant movement 24 bytes, and a full eight-tick window 59 bytes — against 51
+bytes of per-packet transport overhead (IP/UDP plus the pinned GNS header and
+AES-GCM tag). The lever for this class is therefore packet count, not field
+width. Quantization belongs to replication only: two peers quantizing their own
+diverging values can disagree by a whole code at a boundary, so `state_digest`
+and checkpoint roots stay on canonical bytes.
+
+This slice adds no transform frames, relevant set, cadence schedule, prediction
+or correction policy.
+
 NET-08C now runs the same NET06 checkpoint/replay/digest and NET07
 baseline/delta/recovery handlers over both an in-memory byte boundary and real
 localhost UDP through this adapter. Its bounded laboratory codec remains project

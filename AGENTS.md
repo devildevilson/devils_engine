@@ -4,6 +4,41 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- HOT-01: THE PER-TICK CLASS, AND WHERE WIDTH ACTUALLY PAYS (2026-09-07).
+  Measured first, then decided. The whole handshake exchange is 394 B; narrowing every id in it saves 44 B
+  (11%, once per connection) and removes NO packet, because the pinned GNS allows 1248 B of encrypted payload
+  per packet and each packet already costs 28 B IP/UDP + 7 B GNS header + 16 B AES-GCM tag. Coalescing the
+  four handshake messages saves three tags = 48 B, MORE than the entire width optimization. So the handshake
+  stays wide ON PURPOSE, and the reason is now a contract: THE HANDSHAKE ESTABLISHES ABSOLUTE VALUES ONCE SO
+  THAT PER-TICK MESSAGES CAN CARRY RELATIVE ONES — a 64-bit tick cannot be rebuilt from 16 low bits if the
+  base was never established. A fat handshake is the CONDITION for a thin hot path.
+  `network/intent_wire.h` + `network/fixed_point.h`. `network::intent` is NOT `act::intent` (48 B, and
+  `act::vec3` is three doubles because `act::real_t` is still `double`): the wire type omits what the receiver
+  DERIVES and what a peer must not ASSERT — session/peer (named by the connection), acting entity (a
+  client-supplied actor is the classic ownership forgery), provenance. Translation happens at ONE seam, which
+  is exactly where ownership/legality/rate validation belongs. Registered ids travel as a dense index into the
+  SORTED registry: SORTING IS THE AGREEMENT, no protocol needed; index stability across versions is NOT a
+  property and does not need to be, because the fingerprint over that sorted list is
+  `intent_schema_fingerprint` and refuses a differing peer before the first tick. Type byte FIRST (it decides
+  how the rest is read, including a length field's width); hot classes carry NO magic and NO length (the
+  transport delivers whole messages) and NO count (kind + tick-window offset share one byte, the reader
+  consumes to the end, a partial remainder is refused). Bit packing pays PER INTENT at 60 Hz, not per packet.
+  QUANTUM = NEGATIVE POWER OF TWO, not a style choice: multiplying a double by a power of two is exact, so the
+  code is a deterministic function of its input on every conforming platform and decode->encode is exact BY
+  CONSTRUCTION; rounding is half-away-from-zero with NO `<cmath>` call. All floating point lives in one header,
+  so the batch codec moves integers and cannot contribute divergence.
+  MEASURED BUDGET, asserted in the test instead of derived on paper: 1 move intent = 10 B, 3 redundant ticks =
+  24 B, full 8-tick window = 59 B. Against 51 B of per-packet overhead, two extra ticks cost 14 B and remove
+  the need for any retransmit protocol. THE LEVER IS PACKET COUNT, NOT FIELD WIDTH.
+  CORRECTION TO AN EARLIER CLAIM: quantization does NOT erase divergence and is NOT a divergence sink — the
+  CORRECTION erases it, by overwriting. Two peers quantizing their own diverging values can disagree by a
+  WHOLE CODE at a boundary (two parts in ten million flips a code), so a digest must NEVER be computed over
+  quantized values: `state_digest`/checkpoint roots stay on canonical bytes. And naively snapping onto a
+  quantized authoritative value injects up to half a quantum EVEN WITH ZERO DIVERGENCE, so the client compares
+  and ignores an error within one quantum instead of snapping. What the quantum buys is a DERIVED threshold
+  instead of an invented epsilon. The cure for libm divergence is fixed point IN THE SIMULATION (NUM branch).
+  `10/10`, `325/325` in GCC Debug, GCC Release and Clang; focused set `131/131`.
+
 - SESSION-02: THE HANDSHAKE BECOMES BYTES, AND A SECOND TOOLCHAIN (2026-09-06).
   `network/session_wire.h` freezes the handshake format and deliberately DROPS width neutrality: two
   installations must agree on exact bytes, so session/peer/epoch/tick are fixed 64-bit and a project maps

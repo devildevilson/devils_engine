@@ -21,8 +21,8 @@ enum class history_store_status : unsigned char {
 
 struct history_store_result {
   history_store_status status = history_store_status::stored;
-  std::size_t evicted_count = 0;
-  std::size_t evicted_bytes = 0;
+  size_t evicted_count = 0;
+  size_t evicted_bytes = 0;
 
   constexpr bool stored() const noexcept {
     return status == history_store_status::stored;
@@ -40,12 +40,12 @@ class bounded_history {
 public:
   struct entry {
     Tick tick{};
-    std::size_t byte_size = 0;
+    size_t byte_size = 0;
     Bundle bundle;
   };
 
-  bounded_history(const std::size_t count_budget,
-                  const std::size_t byte_budget)
+  bounded_history(const size_t count_budget,
+                  const size_t byte_budget)
     : slots_(count_budget), count_budget_(count_budget), byte_budget_(byte_budget) {}
 
   bounded_history(const bounded_history&) = default;
@@ -68,19 +68,19 @@ public:
     return *this;
   }
 
-  std::size_t count_budget() const noexcept {
+  size_t count_budget() const noexcept {
     return count_budget_;
   }
 
-  std::size_t byte_budget() const noexcept {
+  size_t byte_budget() const noexcept {
     return byte_budget_;
   }
 
-  std::size_t retained_count() const noexcept {
+  size_t retained_count() const noexcept {
     return count_;
   }
 
-  std::size_t retained_bytes() const noexcept {
+  size_t retained_bytes() const noexcept {
     return retained_bytes_;
   }
 
@@ -99,8 +99,8 @@ public:
   // The range's extent is borrowed until the next mutation. Entry addresses
   // themselves stay stable until their own eviction (fixed ring slots).
   auto entries() const noexcept {
-    return std::views::iota(std::size_t{0}, count_) |
-           std::views::transform([this](const std::size_t i) -> const entry& {
+    return std::views::iota(size_t{0}, count_) |
+           std::views::transform([this](const size_t i) -> const entry& {
              return at(i);
            });
   }
@@ -121,13 +121,13 @@ public:
 
   [[nodiscard]] history_store_result try_store(const Tick& tick,
                                                const Bundle& bundle,
-                                               const std::size_t byte_size) {
+                                               const size_t byte_size) {
     return try_store_impl(tick, bundle, byte_size);
   }
 
   [[nodiscard]] history_store_result try_store(const Tick& tick,
                                                Bundle&& bundle,
-                                               const std::size_t byte_size) {
+                                               const size_t byte_size) {
     return try_store_impl(tick, std::move(bundle), byte_size);
   }
 
@@ -149,7 +149,7 @@ public:
   }
 
 private:
-  const entry& at(const std::size_t offset) const noexcept {
+  const entry& at(const size_t offset) const noexcept {
     return *slots_[(head_ + offset) % count_budget_];
   }
 
@@ -163,7 +163,7 @@ private:
   template <class Value>
   history_store_result try_store_impl(const Tick& tick,
                                       Value&& bundle,
-                                      const std::size_t byte_size) {
+                                      const size_t byte_size) {
     if (!empty() && !(at(count_ - 1).tick < tick)) {
       return {
         find_entry(tick) != nullptr ? history_store_status::duplicate_tick
@@ -195,11 +195,11 @@ private:
   }
 
   std::vector<std::optional<entry>> slots_;
-  std::size_t head_ = 0;
-  std::size_t count_ = 0;
-  std::size_t count_budget_ = 0;
-  std::size_t byte_budget_ = 0;
-  std::size_t retained_bytes_ = 0;
+  size_t head_ = 0;
+  size_t count_ = 0;
+  size_t count_budget_ = 0;
+  size_t byte_budget_ = 0;
+  size_t retained_bytes_ = 0;
 };
 
 } // namespace devils_engine::network

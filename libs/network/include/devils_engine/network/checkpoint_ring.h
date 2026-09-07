@@ -20,35 +20,35 @@ namespace devils_engine::network {
 // and supplies its logical retained size.
 template <std::totally_ordered Tick, class Blob, class SizeOf>
   requires std::invocable<SizeOf&, const Blob&> &&
-           std::same_as<std::invoke_result_t<SizeOf&, const Blob&>, std::size_t>
+           std::same_as<std::invoke_result_t<SizeOf&, const Blob&>, size_t>
 class checkpoint_ring {
 public:
   using history_type = bounded_history<Tick, Blob>;
   using entry = typename history_type::entry;
 
   checkpoint_ring(
-    const std::size_t count_budget,
-    const std::size_t byte_budget,
+    const size_t count_budget,
+    const size_t byte_budget,
     SizeOf size_of)
     : history_(count_budget, byte_budget), size_of_(std::move(size_of)) {}
 
-  checkpoint_ring(const std::size_t count_budget, const std::size_t byte_budget)
+  checkpoint_ring(const size_t count_budget, const size_t byte_budget)
     requires std::default_initializable<SizeOf>
     : checkpoint_ring(count_budget, byte_budget, SizeOf{}) {}
 
-  std::size_t count_budget() const noexcept {
+  size_t count_budget() const noexcept {
     return history_.count_budget();
   }
 
-  std::size_t byte_budget() const noexcept {
+  size_t byte_budget() const noexcept {
     return history_.byte_budget();
   }
 
-  std::size_t retained_count() const noexcept {
+  size_t retained_count() const noexcept {
     return history_.retained_count();
   }
 
-  std::size_t retained_bytes() const noexcept {
+  size_t retained_bytes() const noexcept {
     return history_.retained_bytes();
   }
 
@@ -88,12 +88,12 @@ public:
   }
 
   [[nodiscard]] history_store_result try_store(const Tick& tick, const Blob& blob) {
-    const auto byte_size = std::size_t(std::invoke(size_of_, std::as_const(blob)));
+    const auto byte_size = size_t(std::invoke(size_of_, std::as_const(blob)));
     return history_.try_store(tick, blob, byte_size);
   }
 
   [[nodiscard]] history_store_result try_store(const Tick& tick, Blob&& blob) {
-    const auto byte_size = std::size_t(std::invoke(size_of_, std::as_const(blob)));
+    const auto byte_size = size_t(std::invoke(size_of_, std::as_const(blob)));
     return history_.try_store(tick, std::move(blob), byte_size);
   }
 

@@ -42,7 +42,7 @@ template <class Tick>
 struct replay_result {
   replay_status status = replay_status::completed;
   std::optional<Tick> tick;
-  std::size_t replayed_ticks = 0;
+  size_t replayed_ticks = 0;
 
   constexpr bool completed() const noexcept {
     return status == replay_status::completed;
@@ -195,7 +195,7 @@ template <
   if (target_tick == checkpoint_tick) return {};
 
   constexpr replay_context context{};
-  std::size_t replayed_ticks = 0;
+  size_t replayed_ticks = 0;
   for (const auto& entry : bundles) {
     const Tick current = std::invoke(tick_of, entry);
     if (!(checkpoint_tick < current)) continue;
