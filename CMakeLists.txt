@@ -93,10 +93,12 @@ set(BUILD_TESTING ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "Build tests fo
 set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 set(CMAKE_SKIP_INSTALL_ALL_DEPENDENCY ON)
 
+set(ZLIB_COMPAT ON)
 set(ZLIB_BUILD_EXAMPLES OFF)
 set(ZLIB_BUILD_TESTING OFF)
 set(ZLIB_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(ZLIBNG_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(ZLIBNG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 set(WITH_GTEST ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(PNG_STATIC OFF)
 set(PNG_TOOLS OFF)
@@ -118,8 +120,6 @@ set(MSDF_ATLAS_NO_ARTERY_FONT ON CACHE BOOL "Do not require the artery-font-form
 set(SPDLOG_BUILD_EXAMPLE OFF)
 set(SPDLOG_BUILD_TESTS OFF)
 set(SPDLOG_USE_STD_FORMAT ON)
-
-set(ZLIB_COMPAT ON)
 
 set(DYNAMICBITSET_USE_STD_BITOPS ON)
 set(DYNAMICBITSET_BUILD_EXAMPLE OFF)
@@ -161,6 +161,16 @@ set(MZ_OPENSSL OFF CACHE BOOL "Disable OpenSSL dependency in minizip-ng" FORCE)
 set(MZ_PKCRYPT OFF CACHE BOOL "Disable PKWARE traditional encryption in minizip-ng" FORCE)
 set(MZ_WZAES OFF CACHE BOOL "Disable WinZIP AES encryption in minizip-ng" FORCE)
 set(MZ_LIBBSD OFF CACHE BOOL "Disable libbsd crypto-random dependency in minizip-ng" FORCE)
+set(MZ_ZLIB OFF CACHE BOOL "" FORCE)
+set(MZ_ZLIB_NG ON CACHE BOOL "" FORCE)
+set(MZ_FORCE_FETCH_LIBS ON CACHE BOOL "" FORCE)
+#set(MZ_FETCH_LIBS OFF CACHE BOOL "" FORCE)
+set(MZ_ZSTD ON CACHE BOOL "" FORCE)
+set(MZ_BZIP2 OFF CACHE BOOL "" FORCE)
+set(MZ_LZMA OFF CACHE BOOL "" FORCE)
+set(MZ_PKCRYPT OFF CACHE BOOL "" FORCE)
+set(MZ_WZAES OFF CACHE BOOL "" FORCE)
+set(MZ_LIBCOMP OFF CACHE BOOL "" FORCE)
 
 set(INSTALL_DOCS OFF)
 set(INSTALL_PKG_CONFIG_MODULE OFF)
@@ -183,6 +193,10 @@ set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
 set(FASTNOISE2_STRICT_FP ON CACHE BOOL "Deterministic FastNoise2 output across SIMD feature sets" FORCE)
 set(FASTNOISE2_TOOLS OFF CACHE BOOL "" FORCE)
 set(FASTNOISE2_TESTS OFF CACHE BOOL "" FORCE)
+
+set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(protobuf_BUILD_EXPORT OFF CACHE BOOL "" FORCE)
+set(protobuf_WITH_ZLIB ON CACHE BOOL "Enable zlib support in Protobuf" FORCE)
 
 #set(BUILD_SHARED_LIBS ON)
 
@@ -451,12 +465,24 @@ FetchContent_Declare(
   OVERRIDE_FIND_PACKAGE
 )
 
+FetchContent_Declare(
+  protobuf
+  GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
+  GIT_TAG        v36.1
+  GIT_SUBMODULES "" # Отключаем сабмодули, если они не нужны, для экономии места
+)
+
 FetchContent_MakeAvailable(ZLIB)
 
 # workarounds for zlib-ng
-add_library(ZLIB::ZLIB ALIAS zlib)
-set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
-set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
+if(TARGET zlib AND NOT TARGET ZLIB::ZLIB)
+  add_library(ZLIB::ZLIB ALIAS zlib)
+  set(ZLIB_FOUND TRUE CACHE INTERNAL "")
+  set(ZLIB_INCLUDE_DIRS $<TARGET_PROPERTY:zlib,INTERFACE_INCLUDE_DIRECTORIES> CACHE INTERNAL "")
+  set(ZLIB_LIBRARIES zlib CACHE INTERNAL "")
+  #set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
+  #set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
+endif()
 
 FetchContent_MakeAvailable(PNG)
 
@@ -467,7 +493,23 @@ FetchContent_MakeAvailable(freetype)
 
 add_library(Freetype::Freetype ALIAS freetype-interface)
 
-FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi GameNetworkingSockets) # RE-flex
+FetchContent_MakeAvailable(protobuf)
+
+include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
+set(Protobuf_INCLUDE_DIR ${protobuf_SOURCE_DIR}/src CACHE INTERNAL "")
+set(Protobuf_LIBRARIES protobuf::libprotobuf CACHE INTERNAL "")
+#include(FindProtobuf)
+
+FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi) # RE-flex
+
+macro(install)
+endmacro()
+
+FetchContent_MakeAvailable(GameNetworkingSockets)
+
+macro(install)
+    _install(${ARGN})
+endmacro()
 
 if (TARGET minizip)
   target_compile_options(minizip PRIVATE
