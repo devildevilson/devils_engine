@@ -4,6 +4,45 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- SESSION-04 + THE PROTOBUF CONFLICT: ONE CAUSE, TWO FAILURES (2026-09-07).
+  `network/reconnect.h`. The slice STOPS SHORT of the transport on purpose: no socket, no byte, no replayed
+  tick. What the library owns is what MUST NOT BE GUESSED. SILENCE IS NOT LOSS — two budgets, not one, so a
+  slow tick or a stalled frame cannot tear down a session; the warning fires once per spike and rearms.
+  THE DEADLINE IS THE RECONNECT TICKET'S OWN `expires_at`: nothing new travels on the wire to arrange it and
+  the two sides cannot disagree; it is checked BEFORE spending an attempt, so an expired ticket abandons with
+  zero attempts. Backoff = deterministic doubling with a cap and NO JITTER (the library owns no randomness).
+  Traffic resurrects from suspicion AND from a declared loss the caller has not acted on yet (the spike that
+  resolves itself), but NOT from `attempting` onward — a fresh connection is in flight and bytes from the old
+  handle are ambiguous, not reassuring. A transport that reported itself gone skips the silence budget
+  (direct evidence); a terminal refusal is not retried (it would only spend the deadline).
+  `session_hold_table` has DECLARED capacity, because a table growing with disappearing peers is an allocation
+  A PEER CONTROLS; consult it only AFTER the credential verified, so a stranger cannot enumerate sessions
+  through resolution answers; expired ≠ unknown (worthless ticket vs wrong authority).
+  `assess_recovery` IS WHERE THE RETENTION BUDGET BECOMES VISIBLE: a checkpoint at K is state AFTER K, so the
+  only sufficient history is one whose oldest bundle is at or before K+1; K+2 is a `history_gap` — and that is
+  exactly why the client has a `rejoin` action: "RECOVERY IMPOSSIBLE, JOIN FRESH" IS A NORMAL ANSWER, not a
+  failure. Composition test over a real ring+history: ticks flowing while the peer was away evict the bundle
+  after the checkpoint, and a NEWER CHECKPOINT restores feasibility WITHOUT a larger history — retention is a
+  cadence and a budget working together, not history alone.
+  A TEST CAUGHT A REAL INCONSISTENCY AND THE CODE WAS RIGHT: epoch orientation in `resolve` compares the
+  epoch PRESENTED against the one RECORDED (older = stale), same as `classify_authority_message` and the
+  credential; the test expectation was inverted and a header comment described the wrong mechanism.
+  `7/7`, `173/173` on g++ and clang++.
+  PROTOBUF: GNS pulls in protobuf (it must — its wire messages are protobuf) while the project VENDORS it, and
+  that one conflict gave two errors. Before `OVERRIDE_FIND_PACKAGE`: config mode found the SYSTEM protobuf 36,
+  and with `protobuf_MODULE_COMPATIBLE=ON` its module read `LOCATION` off the vendored `libprotobuf-lite`
+  target, which CMake forbids. After: the right tool, but its redirect config only DECLARES the package found,
+  so GNS never reached its module fallback and `protobuf_generate_cpp` was undefined — that command exists
+  only in an INSTALLED protobuf's module (generated from a `.in`) or CMake's own FindProtobuf, never in the
+  sources. Fix: the redirect config documents a hook, so the one missing command is written to
+  `${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/protobuf-extra.cmake` — no dependency patch, no system leak. The LEGACY
+  FLAT layout is deliberate (GNS includes `<steamnetworkingsockets_messages.pb.h>` flat and adds its binary
+  dir; modern `protobuf_generate` keeps the proto's relative path and would not be found); import paths are
+  each proto's own directory since they import by bare name. Then `install(EXPORT protobuf-targets)` demanded
+  this project's zlib in an export set: nothing is installed here and the option protobuf 36 actually reads is
+  `protobuf_INSTALL` (OFF now) — `protobuf_BUILD_EXPORT` is NOT an option in 36 and does nothing.
+  Both platforms now take protobuf from the same place; focused set `145/145` in Debug.
+
 - SESSION-03: OF TWO CREDENTIALS THE ENGINE OWNS EXACTLY ONE (2026-09-07).
   The scope decision IS the slice. A JOIN credential proves who a stranger is, and who vouches is POLICY
   (platform identity / offline keystore / dedicated-server token) — it stays the injected verifier in

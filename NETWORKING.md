@@ -1724,20 +1724,22 @@ Done with `network/credential.h` and `network_credential_test`. No key storage, 
 join-credential format is added; the project persists bytes and the authority key must not live beside the
 tickets it signs.
 
-### SESSION-04 — automatic transport reconnect (`M-L`)
+### SESSION-04 — automatic reconnect policy and recovery feasibility (`M`, complete 2026-09-07)
 
-- Declare what counts as a lost connection rather than guessing it from one slow tick.
-- Declare an attempt schedule with a terminal give-up; a reconnect is not an unbounded retry loop.
-- Re-run the handshake on the fresh transport handle carrying the reconnect claim and credential, and let the
-  authority resolve it against a declared grace window for a session whose peer disappeared.
-- Ship the checkpoint and the sealed bundle range on the bulk lane and drive `recover_session` on the follower.
-- Resume the client's intent window from the published tick, not from its own prediction.
-- Treat "recovery is impossible, join fresh" as a normal outcome: `bounded_history` evicts by budget, so the
-  retention budget is what this outcome measures, not a failure to handle.
+- Declare what counts as a lost connection rather than guessing it from one slow tick: suspicion and loss are
+  separate budgets.
+- Declare a deterministic attempt schedule with a terminal give-up, and name every abandonment.
+- Take the reconnect deadline from the ticket's own expiry, so the two sides cannot disagree about how long a
+  reconnect is worth attempting and nothing new has to travel on the wire.
+- Hold a session whose peer disappeared for a declared window, with declared capacity, consulted only after
+  the credential verified.
+- Decide whether recovery is possible from the retained checkpoint and bundle history at all, and treat
+  "recovery is impossible, join fresh" as a normal outcome rather than a failure: `bounded_history` evicts by
+  budget, so this outcome is what measures the retention budget.
 
-Done when a follower survives a real transport loss, recovers transactionally over a new connection and
-converges to the authority's root, and when an unrecoverable history produces a clean fresh join instead of a
-partial replacement.
+Done with `network/reconnect.h` and `network_reconnect_test`. The transport calls, the bulk checkpoint
+transfer, the intent-window resumption after publication and multi-process execution belong to NET-LAB-01,
+which drives this machine over a real connection.
 
 ### HOT-01 — hot-path intent class and quantization primitives (`M`, complete 2026-09-07)
 

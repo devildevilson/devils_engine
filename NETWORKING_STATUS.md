@@ -32,9 +32,10 @@ recorded here only after it is reproduced by an executable test or directly obse
 | HOT-01 hot-path intent class and fixed point | complete; 10/10 cases, 325/325 assertions in Debug, Release and Clang |
 | HOT-02 transform frames and relevant set | not started; needs the cross-platform corpus answer to set its cadence |
 | SESSION-03 reconnect credential | complete; 7/7 cases, 144/144 assertions in Debug, Release and Clang |
-| SESSION-04 automatic transport reconnect | not started; next session-layer work |
+| SESSION-04 automatic reconnect policy and recovery feasibility | complete; 7/7 cases, 173/173 assertions in Debug, Release and Clang |
+| Vendored protobuf for GNS | fixed; Linux and Windows now take protobuf from the same place |
 | Complete project suite | not run after adding SESSION-01/02; focused networking set is the verification scope |
-| Focused networking set | 138/138 in GCC Debug and Release, including real localhost UDP |
+| Focused networking set | 145/145 in GCC Debug and Release, including real localhost UDP |
 | Second toolchain (Clang + libc++) | networking/serialization set passes; three portability defects fixed, `devils_script` one open |
 | `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
@@ -81,6 +82,84 @@ Debug and Release verification passes **6/6 cases, 76/76 assertions**. The compl
 including the existing real localhost UDP cases, passes **81/81** in both configurations. No sanitizer or
 whole-project run was performed. Wire framing, challenge/response, credential lifecycle, automatic GNS
 reconnect and replay across a real new connection remain the next integration layer.
+
+## SESSION-04 — automatic reconnect policy and recovery feasibility, 2026-09-07
+
+`libs/network/include/devils_engine/network/reconnect.h`. The slice deliberately stops short of the transport:
+nothing here opens a socket, sends a byte or replays a tick. What the library owns is what must not be guessed.
+
+- **Silence is not loss.** Two budgets, not one: a slow tick or a stalled frame must not tear down a session,
+  so suspicion is separate from loss. The warning fires once per spike and rearms after traffic returns.
+- **The deadline is the reconnect ticket's own `expires_at`.** Nothing new travels on the wire to arrange it,
+  and the two sides therefore cannot disagree about how long a reconnect is worth attempting. The coordinator
+  checks the deadline *before* spending an attempt, so an expired ticket abandons with `deadline_passed` and
+  zero attempts.
+- Backoff is deterministic doubling with a cap and **no jitter**: the library owns no randomness. A caller
+  spreading a crowd of reconnecting clients adds its own. An incoherent policy answers `valid() == false`.
+- Traffic resurrects a session from suspicion **and** from a declared loss the caller has not acted on yet —
+  the spike which resolves itself, where reconnecting is pure cost. It does not resurrect from `attempting`
+  onward: a fresh connection is in flight and bytes from the old handle are ambiguous, not reassuring.
+- A transport which reported itself gone skips the silence budget entirely; that is direct evidence. A
+  terminal refusal is not retried on the schedule, which would only spend the deadline.
+- `session_hold_table` has **declared capacity**, because a table which grows with disappearing peers is an
+  allocation a peer controls. Reaping is explicit, so the declared capacity is the capacity actually available.
+  Consult it only after the credential verified: the credential proves the principal, so a stranger cannot
+  enumerate sessions through resolution answers. Expiry and absence are different answers — "expired" tells a
+  returning client its ticket is worthless, "unknown" may mean it reached the wrong authority.
+- **`assess_recovery` is where the retention budget becomes visible.** A checkpoint at `K` is the committed
+  state after `K`, so replay needs a sealed bundle for every tick `K+1..N`; the only sufficient history is one
+  whose oldest retained bundle is at or before `K+1`. A history starting at `K+2` is `history_gap` — and that
+  is precisely why the client has a `rejoin` action: "recovery is impossible, join fresh" is a normal answer,
+  not a failure. A target equal to the checkpoint is recoverable with zero replayed ticks.
+- The composition test runs the authority's side of one reconnect over a real `checkpoint_ring` and
+  `bounded_history`: ticks which kept flowing while the peer was away evict the bundle after the retained
+  checkpoint and make recovery impossible, while a **newer checkpoint restores feasibility without a larger
+  history**. Retention is a checkpoint cadence and a bundle budget working together, not history alone.
+
+**A test caught a real inconsistency, and the code was right.** The first run disagreed with
+`session_hold_table::resolve` about epoch orientation. The implementation compares the epoch *presented*
+against the one *recorded* — older than the record is stale — which is the same orientation as
+`classify_authority_message` and `verify_reconnect_credential`. The test expectation was inverted, and a
+comment in the header described the wrong mechanism (detecting that the authority itself migrated is the
+credential's job, since only it knows the authority's current epoch). Both were corrected.
+
+Verification: **7/7 cases, 173/173 assertions** under g++ and clang++. These were first measured by direct
+compilation, because the CMake configure was broken at the time by the protobuf conflict below; the focused
+set was rerun through ctest afterwards.
+
+## Vendored protobuf for GNS — one cause, two failures, 2026-09-07
+
+Building for Windows exposed that GameNetworkingSockets pulls in protobuf (it must: its wire messages —
+certificates and connection setup — are protobuf), and that the Linux build had been resolving protobuf from
+somewhere else entirely. The project vendors protobuf through FetchContent while GNS independently calls
+`find_package(Protobuf)`, and that single conflict produced two different errors.
+
+- **Before `OVERRIDE_FIND_PACKAGE`:** `find_package(Protobuf QUIET CONFIG)` found the *system*
+  `/usr/lib/cmake/protobuf/protobuf-config.cmake` (36.0). GNS forces `protobuf_MODULE_COMPATIBLE=ON`, so that
+  config included `protobuf-module.cmake`, which read the `LOCATION` property of the target
+  `libprotobuf-lite` — a real target of the vendored protobuf, and CMake forbids reading `LOCATION` from a
+  non-imported target.
+- **After `OVERRIDE_FIND_PACKAGE`:** the right tool, and it removed the system protobuf from the search. But
+  it works through a redirect config which only declares the package found, so `Protobuf_FOUND` became true,
+  GNS never reached its module-mode fallback, and `protobuf_generate_cpp` was undefined. That command exists
+  only in an *installed* protobuf's `protobuf-module.cmake` (generated from a `.in` at install time) and in
+  CMake's own `FindProtobuf`; the vendored sources carry neither, only `protobuf-generate.cmake` with the
+  modern `protobuf_generate`.
+
+The redirect config documents the hook for exactly this case, so the one missing command is now written into
+`${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/protobuf-extra.cmake` — no dependency patch and no system protobuf
+leaking in. The **legacy flat layout is deliberate**: GNS includes generated headers flat
+(`<steamnetworkingsockets_messages.pb.h>`) and adds its binary dir to the include path, while the modern
+`protobuf_generate` preserves each proto's relative path, which those includes would not find. Import paths
+are each proto's own directory, because these protos import one another by bare name.
+
+A second error followed: `install(EXPORT protobuf-targets)` demanded that this project's `zlib` also belong to
+an export set. Nothing here is installed, and the option protobuf 36 actually reads is `protobuf_INSTALL`,
+now set OFF. Noted in passing: `protobuf_BUILD_EXPORT`, which the project sets, is **not an option in
+protobuf 36** and has no effect.
+
+Result: `GameNetworkingSockets_s` builds against the vendored protobuf on Linux, so both platforms now take
+protobuf from the same place, and the focused set is **145/145** in Debug.
 
 ## SESSION-03 — reconnect credential, 2026-09-07
 

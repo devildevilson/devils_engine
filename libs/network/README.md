@@ -494,6 +494,73 @@ a transport early and releases its registration slot.
   nonzero listen port; native shutdown may defer OS-port release, so a subsequent
   bind can return `backend_rejected`. Tests try a bounded localhost port range.
 
+## Implemented slice: automatic reconnect policy and recovery feasibility
+
+`reconnect.h` opens no socket, sends no byte and replays no tick: the caller
+performs the transport work and drives the handshake and `recover_session`.
+What the library owns is what must not be guessed — when a connection counts as
+lost, how long to keep trying, when to stop, and whether recovery is possible at
+all from the history still retained. It reads no clock; instants are
+caller-declared in the same unit the credential uses, so a reconnect deadline
+and a ticket expiry cannot drift apart.
+
+**Silence is not loss.** `reconnect_policy` declares two budgets, not one: a
+single slow tick or a stalled frame must not tear down a session, so suspicion
+(worth telling the presentation about) is separate from loss (worth
+reconnecting for). Backoff is deterministic doubling with a cap and no jitter —
+the library owns no randomness, and a caller spreading a crowd of reconnecting
+clients adds its own on top. An incoherent policy answers `valid() == false`
+instead of being silently repaired.
+
+**The deadline is the ticket's own expiry.** A client attempting after it cannot
+succeed, because the authority will refuse the credential, so the coordinator
+checks the deadline *before* spending an attempt and abandons with
+`deadline_passed`. Nothing new travels on the wire to arrange this: the ticket
+already carries `expires_at`, so the two sides cannot disagree about how long a
+reconnect is worth trying.
+
+`reconnect_coordinator` is one ordered machine over caller observations. Traffic
+resurrects a session from suspicion *and* from a declared loss the caller has
+not acted on yet — the common case of a spike which resolves itself, where
+reconnecting would be pure cost. It does not resurrect from `attempting`
+onward: a fresh connection is in flight by then, and bytes from the old handle
+are ambiguous rather than reassuring. A transport which reported itself gone
+skips the silence budget, since that is direct evidence. Each abandonment names
+its reason: `attempts_exhausted`, `deadline_passed`, `refused` (a terminal
+refusal is not retried on the schedule, which would only spend the deadline) or
+`unrecoverable`.
+
+`session_hold_table` retains a session whose peer disappeared for a declared
+window and reaps it afterwards. Capacity is declared, because a table which
+grows with disappearing peers is an allocation a peer controls. Consult it only
+**after** the reconnect credential verified: the credential proves the
+principal, so a stranger cannot use resolution answers to discover which
+sessions exist. Expiry and absence are different answers — "expired" tells a
+returning client its ticket is worthless, "unknown" may mean it is talking to
+the wrong authority entirely. Epoch orientation matches `credential.h` and
+`classify_authority_message`: the epoch presented is compared against the one
+recorded, so older than the record is stale.
+
+`assess_recovery` is where the retention budget becomes visible. A checkpoint at
+`K` is the committed state *after* tick `K`, so replay needs a sealed bundle for
+every tick `K+1..N`, including explicitly empty ones — the only sufficient
+history is therefore one whose oldest retained bundle is at or before `K+1`. A
+history starting at `K+2` leaves a hole no amount of replay fills, and that
+outcome is `history_gap`, which is why the client has a `rejoin` action at all:
+**"recovery is impossible, join fresh" is a normal answer, not a failure.** A
+target equal to the checkpoint is recoverable with zero replayed ticks;
+`no_checkpoint` and `target_before_checkpoint` are named separately, and a
+refusal leaves the caller's plan untouched.
+
+The composition test shows the two budgets working together: ticks which kept
+flowing while a peer was away evict the bundle after the retained checkpoint and
+make recovery impossible, while a *newer* checkpoint restores feasibility
+without a larger history. Retention is a checkpoint cadence and a bundle budget
+together, not history alone.
+
+This slice adds no transport calls, no bulk checkpoint transfer, no intent-window
+resumption and no multi-process execution; those are NET-LAB-01.
+
 ## Implemented slice: reconnect credential
 
 `credential.h` owns exactly one credential, and the split is the design.

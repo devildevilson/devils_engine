@@ -195,8 +195,13 @@ set(FASTNOISE2_TOOLS OFF CACHE BOOL "" FORCE)
 set(FASTNOISE2_TESTS OFF CACHE BOOL "" FORCE)
 
 set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(protobuf_BUILD_EXPORT OFF CACHE BOOL "" FORCE)
+set(protobuf_BUILD_EXPORT OFF CACHE BOOL "" FORCE) # Not an option in protobuf 36; kept harmless.
 set(protobuf_WITH_ZLIB ON CACHE BOOL "Enable zlib support in Protobuf" FORCE)
+set(Protobuf_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
+# Nothing here is installed, and protobuf's install(EXPORT protobuf-targets)
+# would demand that this project's zlib be part of an export set as well. The
+# option protobuf actually reads is protobuf_INSTALL.
+set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
 
 #set(BUILD_SHARED_LIBS ON)
 
@@ -295,6 +300,7 @@ FetchContent_Declare(
   GIT_TAG        9cb7092ac8c75a82b5c6ea72652ca8d0091d7ffa
   GIT_PROGRESS   TRUE
   SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
+  GIT_SUBMODULES ""
 )
 
 FetchContent_Declare(
@@ -469,7 +475,8 @@ FetchContent_Declare(
   protobuf
   GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
   GIT_TAG        v36.1
-  GIT_SUBMODULES "" # Отключаем сабмодули, если они не нужны, для экономии места
+  GIT_SUBMODULES ""
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_MakeAvailable(ZLIB)
@@ -496,9 +503,74 @@ add_library(Freetype::Freetype ALIAS freetype-interface)
 FetchContent_MakeAvailable(protobuf)
 
 include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
-set(Protobuf_INCLUDE_DIR ${protobuf_SOURCE_DIR}/src CACHE INTERNAL "")
-set(Protobuf_LIBRARIES protobuf::libprotobuf CACHE INTERNAL "")
+#set(Protobuf_INCLUDE_DIR ${protobuf_SOURCE_DIR}/src CACHE INTERNAL "")
+#set(Protobuf_LIBRARIES protobuf::libprotobuf CACHE INTERNAL "")
 #include(FindProtobuf)
+
+# GameNetworkingSockets calls the legacy protobuf_generate_cpp(). That command
+# does not come from protobuf's sources: it is generated into an INSTALLED
+# protobuf's protobuf-module.cmake, or provided by CMake's own FindProtobuf.
+# A protobuf brought in by FetchContent has neither, and OVERRIDE_FIND_PACKAGE
+# makes find_package(Protobuf) succeed through a redirect config which only
+# declares the package found — so GNS never reaches its module-mode fallback and
+# the command is missing. Before OVERRIDE_FIND_PACKAGE the same conflict showed
+# up from the other side: find_package found the SYSTEM protobuf config, whose
+# module tried to read the LOCATION property of the vendored libprotobuf-lite
+# target, which CMake forbids.
+#
+# The redirect config documents exactly this hook, so the one missing command is
+# supplied through it instead of by patching the dependency or by letting a
+# system protobuf leak into the build.
+#
+# The legacy flat layout is deliberate: outputs go directly into
+# CMAKE_CURRENT_BINARY_DIR because GNS includes them flat, as
+# <steamnetworkingsockets_messages.pb.h>, and adds that directory to its include
+# path. The modern protobuf_generate() preserves each proto's relative path
+# instead, which those includes would not find.
+file(WRITE "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/protobuf-extra.cmake" [==[
+function(protobuf_generate_cpp SRCS HDRS)
+  if(NOT ARGN)
+    message(SEND_ERROR "protobuf_generate_cpp() called without any .proto files")
+    return()
+  endif()
+
+  # Each proto's own directory becomes an import path, which is what lets these
+  # protos import one another by bare name.
+  set(_include_flags "")
+  set(_dirs "")
+  foreach(_proto IN LISTS ARGN)
+    get_filename_component(_abs "${_proto}" ABSOLUTE)
+    get_filename_component(_dir "${_abs}" DIRECTORY)
+    list(APPEND _dirs "${_dir}")
+  endforeach()
+  list(REMOVE_DUPLICATES _dirs)
+  foreach(_dir IN LISTS _dirs)
+    list(APPEND _include_flags "-I${_dir}")
+  endforeach()
+
+  set(_srcs "")
+  set(_hdrs "")
+  foreach(_proto IN LISTS ARGN)
+    get_filename_component(_abs "${_proto}" ABSOLUTE)
+    get_filename_component(_name "${_abs}" NAME_WE)
+    set(_src "${CMAKE_CURRENT_BINARY_DIR}/${_name}.pb.cc")
+    set(_hdr "${CMAKE_CURRENT_BINARY_DIR}/${_name}.pb.h")
+    add_custom_command(
+      OUTPUT "${_src}" "${_hdr}"
+      COMMAND protobuf::protoc
+      ARGS --cpp_out "${CMAKE_CURRENT_BINARY_DIR}" ${_include_flags} "${_abs}"
+      DEPENDS "${_abs}" protobuf::protoc
+      COMMENT "Running C++ protocol buffer compiler on ${_proto}"
+      VERBATIM)
+    list(APPEND _srcs "${_src}")
+    list(APPEND _hdrs "${_hdr}")
+  endforeach()
+
+  set_source_files_properties(${_srcs} ${_hdrs} PROPERTIES GENERATED TRUE)
+  set(${SRCS} ${_srcs} PARENT_SCOPE)
+  set(${HDRS} ${_hdrs} PARENT_SCOPE)
+endfunction()
+]==])
 
 FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi) # RE-flex
 
