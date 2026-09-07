@@ -1330,6 +1330,8 @@ NET-00 contract (complete)
                                 -> SESSION-02 handshake wire format + challenge/response
                                      -> HOT-01 hot-path intent class + quantization
                                           -> HOT-02 transform frames + relevant set
+                                     -> SESSION-03 reconnect credential
+                                          -> SESSION-04 automatic transport reconnect
                                 -> NET-LAB-01 multi-process loopback/LAN
                                 -> NET-LAB-02 compatible cross-build exchange
                                      -> SERVER-01 headless authority
@@ -1703,6 +1705,39 @@ Those are exercised in NET-LAB-01 rather than hidden inside the transport adapte
 
 Done with `network/session_wire.h` and `network_session_wire_test`. Wire framing does not imply a transport:
 the exchange is proven over byte buffers, and NET-LAB-01 carries it over a real connection.
+
+### SESSION-03 — reconnect credential (`M`, complete 2026-09-07)
+
+- Own only the credential the engine must own: the authority mints the reconnect credential for itself and
+  verifies it without the external identity service, which can be down exactly when a reconnect is needed.
+  A join credential stays an injected policy.
+- Separate the two proofs: an entitlement tag keyed by the authority's own key, and a proof of possession
+  keyed by a derived secret over the handshake transcript. The first is replayable by design; the second is
+  what stops whoever captured the first from using it.
+- Derive the session secret instead of storing it, so no per-session secret table exists to lose.
+- Separate the domains of the entitlement tag, the secret derivation and the presentation.
+- Read no clock: the authority declares the instant, and a clock which moved backwards refuses.
+- Order the checks so a stranger costs no cryptographic work, and compare tags in constant time.
+- Write down that expiry is the only revocation available without per-session state.
+
+Done with `network/credential.h` and `network_credential_test`. No key storage, key rotation schedule, or
+join-credential format is added; the project persists bytes and the authority key must not live beside the
+tickets it signs.
+
+### SESSION-04 — automatic transport reconnect (`M-L`)
+
+- Declare what counts as a lost connection rather than guessing it from one slow tick.
+- Declare an attempt schedule with a terminal give-up; a reconnect is not an unbounded retry loop.
+- Re-run the handshake on the fresh transport handle carrying the reconnect claim and credential, and let the
+  authority resolve it against a declared grace window for a session whose peer disappeared.
+- Ship the checkpoint and the sealed bundle range on the bulk lane and drive `recover_session` on the follower.
+- Resume the client's intent window from the published tick, not from its own prediction.
+- Treat "recovery is impossible, join fresh" as a normal outcome: `bounded_history` evicts by budget, so the
+  retention budget is what this outcome measures, not a failure to handle.
+
+Done when a follower survives a real transport loss, recovers transactionally over a new connection and
+converges to the authority's root, and when an unrecoverable history produces a clean fresh join instead of a
+partial replacement.
 
 ### HOT-01 — hot-path intent class and quantization primitives (`M`, complete 2026-09-07)
 

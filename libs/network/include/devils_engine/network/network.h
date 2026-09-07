@@ -3,6 +3,7 @@
 
 #include "bounded_history.h"
 #include "checkpoint_ring.h"
+#include "credential.h"
 #include "in_memory_link.h"
 #include "replication.h"
 #include "replay.h"

@@ -4,6 +4,38 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- SESSION-03: OF TWO CREDENTIALS THE ENGINE OWNS EXACTLY ONE (2026-09-07).
+  The scope decision IS the slice. A JOIN credential proves who a stranger is, and who vouches is POLICY
+  (platform identity / offline keystore / dedicated-server token) — it stays the injected verifier in
+  session.h. A RECONNECT credential is different IN KIND: the authority mints it for itself at admission and
+  must verify it ALONE, because the external identity service can be down exactly when a reconnect is needed.
+  Nobody but the engine can own that, so `network/credential.h` owns only that one.
+  TWO INDEPENDENT PROOFS, and conflating them is the classic reconnect hole: `ticket_mac` says WHAT the bearer
+  is entitled to (keyed by the authority's own key, no third party, replayable on its own BY DESIGN — it
+  states entitlement, not who is speaking); `presentation_mac` says the bearer presents it in THIS exchange
+  (keyed by a derived secret only authority+client know, over the handshake transcript, which contains BOTH
+  nonces). The test that matters: a passive observer holding EVERY BYTE of a captured credential, presented
+  against a different transcript, is refused. Ticket without the secret is not enough either.
+  SESSION SECRET IS DERIVED, NOT STORED — `MAC(authority key, session, principal)`: no per-session secret
+  table exists, so none can be lost. THREE DOMAIN TAGS separate entitlement / derivation / presentation;
+  without them all three are byte strings under one key and the attacker picks which is which.
+  THE LIBRARY READS NO CLOCK: instants are caller-declared and only the AUTHORITY's instant admits — a
+  bearer's clock is not evidence; a backwards clock answers `not_yet_valid`, a DISTINCT status from `expired`
+  because the operator's fix differs. CHECK ORDER IS CONTRACT AND ASSERTED WITH A COUNTING POLICY: wrong
+  session or expired window costs ZERO MAC calls, a bad ticket tag stops BEFORE any secret is derived — an
+  authority never does crypto work proportional to a stranger's claims. Comparison is constant-time (a
+  compare whose duration depends on matched leading bytes turns an unforgeable tag into a few hundred
+  guesses). Tampered fields are refused WITH THE AUTHORITY'S STATE MADE TO AGREE WITH THE FORGERY (worst
+  case): the field comparison is a DIAGNOSTIC, the tag is the DEFENCE. 109 canonical bytes inside the 256-byte
+  budget, by static_assert.
+  WRITTEN-DOWN LIMITATION: reissue does NOT revoke. Without per-session state revocation is impossible, so
+  expiry is the only revocation — hence a short window and reissue at every admission; a test asserts the old
+  ticket still verifies until its own expiry, so the property is recorded instead of discovered later.
+  MAC primitive INJECTED (`credential_mac_policy`), no algorithm in the library; the test brings HMAC-SHA256
+  over the engine's SHA-256, which is where a concrete primitive belongs. `7/7`, `144/144` in GCC Debug,
+  GCC Release and Clang; focused set `138/138`. NOT added: key storage, rotation, join-credential format.
+  Next: SESSION-04 automatic transport reconnect.
+
 - HOT-01: THE PER-TICK CLASS, AND WHERE WIDTH ACTUALLY PAYS (2026-09-07).
   Measured first, then decided. The whole handshake exchange is 394 B; narrowing every id in it saves 44 B
   (11%, once per connection) and removes NO packet, because the pinned GNS allows 1248 B of encrypted payload

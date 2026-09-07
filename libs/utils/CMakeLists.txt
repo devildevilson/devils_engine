@@ -14,6 +14,12 @@ elseif (TARGET zstd::libzstd_shared)
   set(ZSTD_TARGET zstd::libzstd_shared)
 elseif (TARGET zstd::libzstd_static)
   set(ZSTD_TARGET zstd::libzstd_static)
+elseif (TARGET zstd)
+  set(ZSTD_TARGET zstd)
+elseif (TARGET libzstd)
+  set(ZSTD_TARGET libzstd)
+elseif (TARGET libzstd_static)
+  set(ZSTD_TARGET libzstd_static)
 else()
   find_library(ZSTD_LIBRARY NAMES zstd REQUIRED)
   find_path(ZSTD_INCLUDE_DIR NAMES zstd.h REQUIRED)
@@ -112,7 +118,7 @@ target_link_libraries(devils_utils
 if (WIN32)
   # psapi — ради `GetProcessMemoryInfo` в process_memory.cpp: пик памяти каждая система отдаёт своим
   # способом, и на Windows он живёт именно там.
-  target_link_libraries(devils_utils bcrypt ncrypt crypt32 psapi)
+  target_link_libraries(devils_utils PRIVATE bcrypt ncrypt crypt32 psapi)
 endif()
 
 target_include_directories(devils_utils PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")

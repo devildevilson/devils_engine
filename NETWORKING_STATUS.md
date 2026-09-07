@@ -31,15 +31,17 @@ recorded here only after it is reproduced by an executable test or directly obse
 | SESSION-02 handshake wire format and ordered exchange | complete; 9/9 cases, 329/329 assertions in Debug and Release |
 | HOT-01 hot-path intent class and fixed point | complete; 10/10 cases, 325/325 assertions in Debug, Release and Clang |
 | HOT-02 transform frames and relevant set | not started; needs the cross-platform corpus answer to set its cadence |
+| SESSION-03 reconnect credential | complete; 7/7 cases, 144/144 assertions in Debug, Release and Clang |
+| SESSION-04 automatic transport reconnect | not started; next session-layer work |
 | Complete project suite | not run after adding SESSION-01/02; focused networking set is the verification scope |
-| Focused networking set | 131/131 in GCC Debug and Release, including real localhost UDP |
+| Focused networking set | 138/138 in GCC Debug and Release, including real localhost UDP |
 | Second toolchain (Clang + libc++) | networking/serialization set passes; three portability defects fixed, `devils_script` one open |
 | `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
 | NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
 | SESSION-01 strict compatibility/identity/recovery primitives | neutral slice complete; 6/6 cases, 76/76 assertions pass in Debug and Release |
 | Session wire handshake and challenge/response | complete as a neutral slice; see SESSION-02 below |
-| Credential issuer/storage and automatic transport reconnect | not started; next multi-process laboratory work |
+| Automatic transport reconnect and multi-process exchange | not started; next multi-process laboratory work |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
@@ -79,6 +81,60 @@ Debug and Release verification passes **6/6 cases, 76/76 assertions**. The compl
 including the existing real localhost UDP cases, passes **81/81** in both configurations. No sanitizer or
 whole-project run was performed. Wire framing, challenge/response, credential lifecycle, automatic GNS
 reconnect and replay across a real new connection remain the next integration layer.
+
+## SESSION-03 — reconnect credential, 2026-09-07
+
+`libs/network/include/devils_engine/network/credential.h`. The scope decision came first and it is the
+content of the slice: **of the two credentials, the engine must own exactly one.**
+
+A join credential proves who a stranger is, and which authority vouches for that is policy — platform
+identity, offline keystore, dedicated-server token — so it stays the injected verifier already in
+`session.h`. A reconnect credential is different in kind: the authority mints it for itself at admission and
+has to verify it **alone**, because the external identity service can be unreachable exactly when a reconnect
+is needed. Nobody but the engine can own that.
+
+- **Two independent proofs, and conflating them is the classic reconnect hole.** `ticket_mac` says what the
+  bearer is entitled to, keyed by the authority's own key, checkable with no third party, and replayable on
+  its own *by design* — it states an entitlement, not who is speaking. `presentation_mac` says the bearer is
+  presenting it in **this** exchange: keyed by a secret only the authority and that client know, over the
+  handshake transcript, which contains both nonces.
+- The replay test is the one that matters: a passive observer holding **every byte** of a captured credential,
+  presented against a different transcript, is refused with `presentation_mac_invalid`. Holding the ticket
+  without the derived secret is likewise not enough, and a presentation made for one entitlement does not
+  carry another ticket.
+- The session secret is **derived**, `MAC(authority key, session, principal)`, not stored: the authority keeps
+  no per-session secret table and therefore cannot lose one. Verified deterministic, and different per
+  session and per principal.
+- Three **domain tags** separate the entitlement tag, the secret derivation and the presentation. Without
+  them all three are byte strings under one key and an attacker picks which is which; a test asserts that the
+  secret and the ticket tag for the same session under the same key differ.
+- **The library reads no clock.** Instants are caller-declared and only the authority's instant decides
+  admission — a bearer's clock is not evidence. A clock which moved backwards answers `not_yet_valid`, a
+  distinct status from `expired` because the operator's fix differs. Both boundaries are pinned: valid at the
+  issue instant, refused at the expiry instant.
+- **Check order is contract, and it is asserted with a counting policy**: a wrong session or an expired window
+  costs zero MAC calls, and a bad entitlement tag stops before any secret is derived. An authority never does
+  cryptographic work proportional to a stranger's claims.
+- Tag comparison is `equal_in_constant_time`. A comparison whose duration depends on how many leading bytes
+  matched turns an unforgeable tag into a few hundred guesses.
+- Every tampered ticket field is refused **with the authority's state deliberately made to agree with the
+  forgery** — the worst case, where the declared comparisons all pass and only the tag stands between the
+  bearer and admission. That is the point: the field comparison is a diagnostic, the tag is the defence.
+- The canonical credential is 109 bytes, inside the 256-byte handshake credential budget (a static assertion,
+  not a hope). Wrong size, wrong format byte and an unprepared buffer are refusals.
+
+**Written-down limitation:** reissuing a ticket does **not** revoke the previous one. Without per-session
+state an authority cannot revoke, so expiry is its only revocation — which is why the window is short and a
+ticket is reissued at every admission. A test asserts the older ticket still verifies until its own expiry,
+so the property is recorded rather than discovered later.
+
+The MAC primitive is injected through `credential_mac_policy`; no algorithm is chosen in the library. The
+test supplies HMAC-SHA256 over the engine's own SHA-256, which is where a concrete primitive belongs. No key
+storage, rotation schedule or join-credential format is added, and the authority key must not be stored
+beside the tickets it signs.
+
+Verification: **7/7 cases, 144/144 assertions** in GCC Debug, GCC Release and Clang Debug. Focused set
+**138/138** in GCC Debug and Release.
 
 ## HOT-01 — hot-path intent class and fixed point, 2026-09-07
 

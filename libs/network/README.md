@@ -494,6 +494,65 @@ a transport early and releases its registration slot.
   nonzero listen port; native shutdown may defer OS-port release, so a subsequent
   bind can return `backend_rejected`. Tests try a bounded localhost port range.
 
+## Implemented slice: reconnect credential
+
+`credential.h` owns exactly one credential, and the split is the design.
+
+A **join** credential proves who a stranger is. Which authority vouches for
+that — a platform identity, an offline keystore, a dedicated-server token — is
+policy, and it stays an injected verifier in `session.h`. A **reconnect**
+credential is different in kind: the authority mints it for itself at admission
+and must verify it **alone**, without the external identity service, because
+that service can be unreachable exactly when a reconnect is needed. Nobody but
+the engine can own that, so only that one lives here.
+
+The credential carries two independent proofs, and conflating them is the
+classic reconnect hole:
+
+- `ticket_mac` says **what** the bearer is entitled to. The authority keyed it
+  with its own key and checks it with no third party. It is replayable on its
+  own, deliberately: it states an entitlement, not who is speaking now.
+- `presentation_mac` says the bearer is presenting it **in this exchange**. It
+  is keyed by a secret only the authority and that client know, over the
+  handshake transcript, which contains both nonces. A passive observer holding
+  every byte of a captured credential therefore cannot use it in an exchange of
+  their own — proven by presenting a whole captured credential against a
+  different transcript and getting `presentation_mac_invalid`.
+
+The session secret is **derived**, not stored: `MAC(authority key, session,
+principal)`. The authority keeps no per-session secret table and so cannot lose
+one; the client receives the value once at admission over the already-encrypted
+transport. Three domain tags separate the ticket tag, the secret derivation and
+the presentation, because without them all three are byte strings under one key
+and an attacker chooses which is which.
+
+The library never reads a clock. Validity instants are caller-declared and only
+the **authority's** instant decides admission — a bearer's clock is not
+evidence. A clock which moved backwards answers `not_yet_valid` rather than
+accepting, and that is a distinct status from `expired` because the operator's
+fix differs.
+
+Check order is part of the contract: declared fields, then the ticket's own tag,
+then the proof of possession. An authority learns "this is not my ticket"
+without doing work proportional to a stranger's claims, and never derives a
+secret for a session it does not own — asserted with a counting policy. MAC
+comparison is `equal_in_constant_time`: a comparison whose duration depends on
+how many leading bytes matched turns an unforgeable tag into a few hundred
+guesses.
+
+The MAC primitive is injected through `credential_mac_policy`; no cryptographic
+algorithm is chosen here. The test brings HMAC-SHA256 over the engine's own
+SHA-256 to prove the composition, which is where a concrete primitive belongs.
+
+**Written-down limitation:** reissuing a ticket does not revoke the previous
+one. Without per-session state an authority cannot revoke, so expiry is the only
+revocation it has — which is why the window is short and a ticket is reissued at
+every admission. A test asserts that the older ticket still verifies until its
+own expiry, so the property is recorded rather than assumed.
+
+Persistence is not here: the project stores the bytes. The authority key must
+not be stored beside the tickets it signs.
+
 ## Implemented slice: hot-path intent class and fixed point
 
 `fixed_point.h` owns the only floating-point arithmetic in the hot wire path.
