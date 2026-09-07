@@ -605,7 +605,7 @@ struct render_config_storage {
 
 // Парсинг описания render-graph в render_config_storage (graphics_base НЕ участвует — п.7).
 // Только парсим и связываем структуры друг с другом; ничего GPU не создаём.
-render_config_storage build_render_config(std::string path); // источник — папка на диске (сырой io; fast_test)
+render_config_storage build_render_config(std::string path); // источник — папка на диске (сырой io)
 // источник — движковый demiurg-реестр: prefix вида "render_config/" адресует ресурсы
 // render_config_source (файлы описания render-graph). См. demiurg 1a, срез 2.
 render_config_storage build_render_config(const demiurg::resource_system* reg, std::string prefix);

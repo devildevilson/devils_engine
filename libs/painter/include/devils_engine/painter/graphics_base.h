@@ -102,7 +102,7 @@ struct graphics_base {
 
   // Источник шейдеров через demiurg (Фаза 1). Если config_reg_ != nullptr, create_pipeline
   // тянет шейдеры из реестра (glsl_source_file/shader_source_file по расширению), иначе
-  // fs-fallback через file_io (fast_test / корневой main.cpp). shader_prefix_ — напр. "shaders/".
+  // fs-fallback через file_io. shader_prefix_ — напр. "shaders/".
   const demiurg::resource_system* config_reg_ = nullptr;
   mutable shader_compiler shader_compiler_;
   std::string shader_prefix_;
@@ -112,7 +112,7 @@ struct graphics_base {
   // вычисляет транзитивный used-set этих графов и создаёт ТОЛЬКО нужные им GPU-ресурсы
   // (контейнеры) и дескрипторы. Индексы глобальные/стабильные — не компактятся,
   // неиспользуемые слоты остаются без backing. graph_filtered_==false ⇒ создаём ВСЁ (обратная
-  // совместимость: fs-путь fast_test/main.cpp, где resident-графы не заданы).
+  // совместимость с конфигурациями, где resident-графы не заданы).
   std::string startup_graph_;
   std::vector<std::string> resident_graphs_;
   bool graph_filtered_ = false; // включена ли фильтрация по used-set

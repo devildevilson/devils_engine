@@ -1504,8 +1504,7 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   constants_memory[1].resize(offset / sizeof(uint32_t), 0);
 
   // Фаза 3: если заданы resident-графы — считаем объединённый used-set и создаём ТОЛЬКО
-  // их ресурсы/дескрипторы. Иначе graph_filtered_ остаётся false ⇒ создаём всё
-  // (fs-путь fast_test/main.cpp).
+  // их ресурсы/дескрипторы. Иначе graph_filtered_ остаётся false ⇒ создаём всё.
   graph_filtered_ = false;
   if (!resident_graphs_.empty()) {
     std::vector<uint32_t> graph_indices;

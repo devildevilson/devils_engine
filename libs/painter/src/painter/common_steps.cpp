@@ -304,7 +304,7 @@ void graphics_step_instance::create_pipeline_layout(const graphics_base* ctx) {
 // Загрузка одного шейдер-модуля (Фаза 1: конфиг painter на рельсах demiurg).
 // По расширению: .spv → готовые байты (shader_source_file, без компиляции); иначе GLSL
 // (glsl_source_file) → shader_crafter с реальным реестром (резолв #include через demiurg).
-// Если ctx->config_reg_ == nullptr — fs-fallback через file_io (fast_test / корневой main.cpp).
+// Если ctx->config_reg_ == nullptr — fs-fallback через file_io.
 // Имена specialization-констант живут в OpName, а spirv-opt их снимает, поэтому в готовом
 // оптимизированном модуле остаются только constant_id и типы. Эта отдельная сборка того же
 // исходника с debug info нужна ИСКЛЮЧИТЕЛЬНО для карты имя→id; pipeline по-прежнему собирается из

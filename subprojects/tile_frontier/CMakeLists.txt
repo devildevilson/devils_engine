@@ -266,7 +266,7 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 )
 
 # render-graph описание грузится через движковый demiurg-реестр (resources/engine/render_config/),
-# а не сканом папки. test_render_config остаётся каноничным источником (шарится с fast_test/tests),
+# а не сканом папки. test_render_config остаётся каноничным источником (общим с тестами),
 # копируем его в движковое дерево ПОСЛЕ копирования resources/ (порядок POST_BUILD сохраняется).
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -287,7 +287,7 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 )
 
 # Шейдеры через движковый demiurg-реестр (Фаза 1): resources/engine/shaders/*.glsl (тип "shaders").
-# Копии выше (shaders/, tests/shaders/) держит fs-fallback painter'а и корневой main.cpp — не трогаем.
+# Копии выше (shaders/, tests/shaders/) нужны для fs-fallback painter'а.
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_SOURCE_DIR}/subprojects/tests/shaders

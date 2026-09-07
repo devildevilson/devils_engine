@@ -1555,7 +1555,7 @@ static std::vector<T> parse_texts(const std::vector<config_source::config_text>&
   return arr;
 }
 
-// источник на файловой системе (сырой io) — используется fast_test'ом
+// источник на файловой системе (сырой io)
 static config_source make_fs_config_source(std::string path) {
   config_source src;
   src.read_file = [path](const std::string& name) -> std::string {
