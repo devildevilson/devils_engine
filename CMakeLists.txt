@@ -202,6 +202,12 @@ set(Protobuf_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
 # would demand that this project's zlib be part of an export set as well. The
 # option protobuf actually reads is protobuf_INSTALL.
 set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
+# protobuf passes its own install switch down to the bundled utf8_range without
+# forcing it, so a tree configured before protobuf_INSTALL was turned off keeps
+# ON here and fails to GENERATE: utf8_range's install(EXPORT) then demands the
+# vendored Abseil in an export set it deliberately is not in. Forcing it makes
+# an existing cache recover instead of requiring a wiped build directory.
+set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 
 #set(BUILD_SHARED_LIBS ON)
 

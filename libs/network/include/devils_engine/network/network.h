@@ -16,5 +16,6 @@
 #include "session_wire.h"
 #include "state_digest.h"
 #include "tick_journal.h"
+#include "transform_wire.h"
 
 #endif

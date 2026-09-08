@@ -38,8 +38,10 @@ namespace devils_engine::network {
 enum class hot_message_type : uint8_t {
   // 0 is not a message: a zero-filled buffer must not decode as anything.
   intent_batch = 1,
-  // 2..63 remain for further upstream classes, 64..191 for authority classes
-  // (transform frames, relevant-set changes), 192..255 for bulk transfer.
+  // 2..63 remain for further upstream classes, 64..191 for authority classes,
+  // 192..255 for bulk transfer.
+  relevant_set_update = 64,
+  transform_frame = 65,
 };
 
 inline constexpr size_t intent_batch_header_bytes = 3;
@@ -218,7 +220,9 @@ namespace detail {
 // tick from the session's own progress, which is why the handshake establishes
 // a wide absolute tick: 16 bits cannot be widened by a peer's assertion, only
 // by what the receiver already knows.
-[[nodiscard]] inline intent_wire_status try_encode_intent_batch(
+namespace detail {
+
+[[nodiscard]] inline intent_wire_status encode_intent_batch_body(
   const uint64_t base_tick, const std::span<const intent> intents,
   const intent_layout_table& layouts, const id_index_table& registry,
   std::vector<std::byte>& out) {
@@ -253,6 +257,20 @@ namespace detail {
   return w.good() ? intent_wire_status::ok : intent_wire_status::buffer_too_small;
 }
 
+} // namespace detail
+
+// A refused batch leaves the output empty, the same rule the decoder follows: a
+// caller must never be handed a prefix of a message its own encoder rejected.
+[[nodiscard]] inline intent_wire_status try_encode_intent_batch(
+  const uint64_t base_tick, const std::span<const intent> intents,
+  const intent_layout_table& layouts, const id_index_table& registry,
+  std::vector<std::byte>& out) {
+  const auto status =
+    detail::encode_intent_batch_body(base_tick, intents, layouts, registry, out);
+  if (status != intent_wire_status::ok) out.clear();
+  return status;
+}
+
 struct intent_batch_view {
   uint16_t base_tick_low = 0;
   size_t count = 0;
@@ -263,7 +281,9 @@ struct intent_batch_view {
 // allocator. The reference index is checked against the registry here, so an
 // out-of-range index is a refusal at the boundary rather than a lookup miss
 // inside the project.
-[[nodiscard]] inline intent_wire_status try_decode_intent_batch(
+namespace detail {
+
+[[nodiscard]] inline intent_wire_status decode_intent_batch_body(
   const std::span<const std::byte> bytes, const intent_layout_table& layouts,
   const id_index_table& registry, intent_batch_view& view, std::vector<intent>& out) {
   out.clear();
@@ -308,20 +328,48 @@ struct intent_batch_view {
   return r.good() ? intent_wire_status::ok : intent_wire_status::truncated;
 }
 
+} // namespace detail
+
+// A refused batch leaves nothing behind. Decoding fills the caller's storage as
+// it reads, so without this a caller that inspected `out` after a refusal would
+// find the prefix of a message which was never accepted — the one shape of
+// "partially accepted batch" the format is meant to make impossible. clear()
+// keeps the capacity, so the no-growth guarantee is unaffected.
+[[nodiscard]] inline intent_wire_status try_decode_intent_batch(
+  const std::span<const std::byte> bytes, const intent_layout_table& layouts,
+  const id_index_table& registry, intent_batch_view& view, std::vector<intent>& out) {
+  const auto status = detail::decode_intent_batch_body(bytes, layouts, registry, view, out);
+  if (status != intent_wire_status::ok) {
+    out.clear();
+    view.count = 0;
+  }
+  return status;
+}
+
+// Low bits alone cannot say which window they belong to, so the nearest
+// candidate to the receiver's own tick is chosen. Every hot class carries its
+// tick this way, so the arithmetic lives here once: two implementations of a
+// wrap rule are two chances to disagree exactly once every 65536 ticks, which
+// is the least reproducible bug this campaign could produce.
+[[nodiscard]] inline constexpr uint64_t widen_tick_low16(
+  const uint64_t receiver_tick, const uint16_t tick_low) noexcept {
+  constexpr uint64_t window = uint64_t(1) << 16;
+  constexpr uint64_t half = window / 2;
+  uint64_t base = (receiver_tick & ~(window - 1)) | uint64_t(tick_low);
+  if (base + half < receiver_tick) base += window;
+  else if (base >= window && base > receiver_tick + half) base -= window;
+  return base;
+}
+
 // The absolute tick of one intent, reconstructed from what the receiver already
-// knows. Low bits alone cannot say which window they belong to, so the nearest
-// candidate to the receiver's own tick is chosen. A batch whose reconstructed
-// tick lies in the future of the receiver is the caller's decision to refuse;
-// the library only performs the arithmetic, and refuses only the case which has
-// no answer at all — a delta reaching before the first tick.
+// knows. A batch whose reconstructed tick lies in the future of the receiver is
+// the caller's decision to refuse; the library only performs the arithmetic, and
+// refuses only the case which has no answer at all — a delta reaching before the
+// first tick.
 [[nodiscard]] inline std::optional<uint64_t> intent_absolute_tick(
   const uint64_t receiver_tick, const uint16_t base_tick_low,
   const uint8_t tick_delta) noexcept {
-  constexpr uint64_t window = uint64_t(1) << 16;
-  constexpr uint64_t half = window / 2;
-  uint64_t base = (receiver_tick & ~(window - 1)) | uint64_t(base_tick_low);
-  if (base + half < receiver_tick) base += window;
-  else if (base >= window && base > receiver_tick + half) base -= window;
+  const uint64_t base = widen_tick_low16(receiver_tick, base_tick_low);
   if (base < uint64_t(tick_delta)) return std::nullopt;
   return base - uint64_t(tick_delta);
 }

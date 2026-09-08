@@ -105,12 +105,20 @@ template <class Code>
   return axis_split{int32_t(key), code, clamped};
 }
 
+// The lattice point as a single integer count of quanta. Composing the key and
+// the code is done in exactly one place because comparisons live here too: a
+// correction threshold is a comparison of two lattice points, and doing it in
+// codes rather than in world doubles is what makes the threshold exactly one
+// declared quantum instead of an invented epsilon.
+template <class Code>
+[[nodiscard]] constexpr int64_t axis_codes(const int32_t key, const uint32_t code) noexcept {
+  return (int64_t(key) << fixed_axis<Code>::code_bits) | int64_t(code);
+}
+
 template <class Code>
 [[nodiscard]] constexpr double join_axis(const fixed_axis<Code> axis, const int32_t key,
                                          const uint32_t code) noexcept {
-  const int64_t total =
-    (int64_t(key) << fixed_axis<Code>::code_bits) | int64_t(code);
-  return double(total) / double(uint64_t(1) << axis.fraction_bits);
+  return double(axis_codes<Code>(key, code)) / double(uint64_t(1) << axis.fraction_bits);
 }
 
 // A hot message carries a cell RELATIVE to one the receiver already knows, so

@@ -1100,6 +1100,52 @@ ticks, maximum tolerable age, priority, delivery class and byte budget. An adapt
 interval within declared bounds using relevance, velocity and connection conditions. Correctness must not depend
 on receiving every transform frame.
 
+### The relevant set is the lever, and the ladder is measured
+
+For a declared profile — 60 Hz simulation (TIME-02's step), 2048 entities in the loaded neighbourhood, 96 of
+them relevant to one client, three axes on the 1/1024 lattice plus an independent turn — the encoder's own
+arithmetic gives this per client:
+
+| Rung | What it adds | bytes/s | gain |
+| --- | --- | ---: | ---: |
+| 0 | every entity, every tick, by 64-bit handle, absolute keys | 3 440 640 | — |
+| 1 | relevance: 96 of 2048 | 161 280 | 21.3x |
+| 2 | dense slot and one frame origin: 11 bytes a record, not 28 | 65 760 | 2.45x |
+| 3 | declared cadence: own at 20 Hz, remote at 10 Hz | 11 470 | 5.73x |
+| 4 | change-only sparse frames plus a 1 Hz full pass and membership | 6 927 | 1.66x |
+
+Four clients at the last rung cost 27 KiB/s, about 222 kbit/s, which is what makes the class affordable at all.
+
+**The order of the levers is the result.** Relevance and cadence — deciding WHO and HOW OFTEN — are worth 21x
+and 5.7x. Encoding cleverness — the dense index, the shared frame origin, the change set — is worth 2.45x and
+1.66x, and that is where encoding effort usually goes. A byte-packing improvement cannot recover a relevance
+function that admits too much.
+
+**Membership is 91 of those 6 927 bytes, 1.3%.** Making the set its own reliable ordered class costs almost
+nothing, which is what allows it to be reliable while the frames stay unreliable. That split is the reason a
+frame carries the set generation it was built against: the two lanes can be ahead of one another in either
+direction, so a frame whose generation is not the receiver's is dropped rather than read against a different
+set of entities. Counting those drops is how the split's real cost gets measured on a live link.
+
+**The dense mode is for the full pass, not for the per-tick traffic.** A sparse record costs 13 bytes against a
+dense record's 11, but a sparse frame sends only what changed, so at this profile sparse is cheaper until the
+change set reaches 81 of 96 slots — 84%. Dense addressing therefore earns its place only on the periodic
+complete pass that the declared maximum staleness demands, which is the opposite of where a "keyframe"
+instinct would put it.
+
+**Shape is session identity; cadence deliberately is not.** A peer reading a record with a different field set
+produces a plausible wrong world rather than an error, so the declared shapes are fingerprinted and belong in
+`session_compatibility::numeric_profile` next to the quanta. An interval, a phase and a byte budget are
+excluded on purpose: an adaptive sender must be able to change them mid-session, and correctness must not
+depend on receiving any particular frame.
+
+**The correction threshold is one quantum, compared in codes.** A client's prediction is split onto the same
+lattice as the authoritative sample and the two are compared as integers, so the threshold is exactly the
+declared quantum on every platform and no floating-point epsilon exists to tune. One quantum is also its
+floor: snapping onto a quantized authoritative value injects up to half a quantum even when nothing diverged,
+so a tighter threshold corrects noise the format itself created. This is the concrete payoff of the quantum
+argument above — a 62 mm quantum is 62 mm of invisible divergence, and it is invisible precisely here.
+
 Client state hashes are diagnostics, never security or server authority. In a float-authoritative model the
 client cannot independently derive the authoritative physics root; it can only identify the last accepted
 server baseline and hash exact domains it truly executes.
@@ -1432,8 +1478,8 @@ NET-00 contract (complete)
                       -> NET-08 selected real-transport adapter
                            -> SESSION-01 compatibility/identity/reconnect recovery
                                 -> SESSION-02 handshake wire format + challenge/response
-                                     -> HOT-01 hot-path intent class + quantization
-                                          -> HOT-02 transform frames + relevant set
+                                     -> HOT-01 hot-path intent class + quantization (complete)
+                                          -> HOT-02 transform frames + relevant set (complete)
                                      -> SESSION-03 reconnect credential
                                           -> SESSION-04 automatic transport reconnect
                                 -> NET-LAB-01 multi-process loopback/LAN (slices 1-3 complete)
@@ -1860,16 +1906,20 @@ which drives this machine over a real connection.
 
 Done with `network/fixed_point.h`, `network/intent_wire.h` and `network_intent_wire_test`.
 
-### HOT-02 — transform frames and the relevant set (`M-L`)
+### HOT-02 — transform frames and the relevant set (`M`, complete 2026-09-09)
 
 - Send a dense per-client index instead of an entity identifier, with set membership as its own reliable class.
 - Carry positions as cell key plus fixed point, and direction as an independent replicated field rather than
   something derived from velocity.
 - Instantiate the declared cadence classes and measure bytes per second per client at project entity counts.
 - Prove that relevance, delta and cadence dominate encoding: the ladder must be measured, not assumed.
+- Refuse a frame whose set generation is not the receiver's, in both directions: the membership lane and the
+  frame lane are different lanes, so either can be ahead.
+- Derive the correction threshold from the declared quantum and compare in code space, so no epsilon appears.
 
-Done when a measured budget exists for the project's target entity count and the correction threshold is
-derived from the declared quantum.
+Done with `network/transform_wire.h` and `network_transform_wire_test`. The measured ladder and the
+mode crossover are below; carrying the class over real sockets belongs to the lab item, exactly as HOT-01's
+intent class was closed as a primitive and then driven by NET-LAB-01.
 
 ### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 

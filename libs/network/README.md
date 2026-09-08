@@ -688,8 +688,54 @@ width. Quantization belongs to replication only: two peers quantizing their own
 diverging values can disagree by a whole code at a boundary, so `state_digest`
 and checkpoint roots stay on canonical bytes.
 
-This slice adds no transform frames, relevant set, cadence schedule, prediction
-or correction policy.
+## Implemented slice: transform frames and the relevant set
+
+`transform_wire.h` is the hot downstream class, and it keeps three decisions
+apart on purpose: who is replicated (`relevant_set`), what travels
+(`transform_field_layout`) and how often (`cadence_policy`). Only the middle one
+is session identity — `transform_layout_table::shape_fingerprint` covers the
+declared shapes and deliberately excludes interval, phase and byte budget,
+because an adaptive sender must be able to change those mid-session while
+correctness never depends on receiving a particular frame.
+
+A frame addresses entities by a dense per-client slot, never by an entity
+identifier, so a client is never told about an entity outside its own set:
+relevance is a disclosure boundary and not only a bandwidth one. Slots are dense
+because the lowest free slot is reused, which is what lets a full pass omit slot
+indices entirely. Membership is diffed rather than logged — `publish()` compares
+the current table against the last published one — so an entity which entered
+and left between two publications produces no traffic at all, and a slot which
+changed occupant travels as one enter instead of a leave/enter pair whose order
+could matter. The mirror's table therefore equals the sender's by construction.
+
+Membership is a reliable ordered class and frames are unreliable sequenced,
+which means either lane can be ahead of the other. A frame carries the set
+generation it was built against and a mismatch is refused in both directions
+rather than read against a different set of entities; a gap in the membership
+generation is reported, because a reliable ordered lane cannot legitimately skip
+one. Positions travel as a cell key plus a code, relative to one origin cell
+stated once per frame, and a record which does not fit that reach is refused as
+a relevance fault rather than placed somewhere plausible. Direction is an
+independent replicated field: a receiver inferring facing from motion cannot
+represent an entity turning in place.
+
+The correction threshold is derived from the declared quantum and compared in
+code space, so it is exactly one quantum on every platform and there is no
+epsilon to tune. One quantum is its floor, because snapping onto a quantized
+authoritative value injects up to half a quantum even when nothing diverged.
+
+Measured budget per client at a declared profile (60 Hz, 2048 entities in the
+neighbourhood, 96 relevant, three axes plus turn): 3 440 640 bytes/s for
+everything every tick by handle, 161 280 with relevance, 65 760 with the dense
+slot and shared origin, 11 470 with the declared cadence, and 6 927 sending only
+what changed plus a one-second full pass. Relevance and cadence are worth 21.3x
+and 5.73x; all the encoding cleverness together is worth about 4x. Membership is
+1.3% of the final figure, and the sparse mode beats the dense one until the
+change set reaches 84% of the run — so dense addressing earns its place only on
+the periodic complete pass the staleness bound demands.
+
+This slice adds no transport call, no observed byte rate, no prediction and no
+interpolation policy.
 
 NET-08C now runs the same NET06 checkpoint/replay/digest and NET07
 baseline/delta/recovery handlers over both an in-memory byte boundary and real

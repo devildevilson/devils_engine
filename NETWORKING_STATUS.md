@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-08.
+Last updated: 2026-09-09.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -30,12 +30,12 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
 | SESSION-02 handshake wire format and ordered exchange | complete; 9/9 cases, 329/329 assertions in Debug and Release |
 | HOT-01 hot-path intent class and fixed point | complete; 10/10 cases, 325/325 assertions in Debug, Release and Clang |
-| HOT-02 transform frames and relevant set | not started; needs the cross-platform corpus answer to set its cadence |
+| HOT-02 transform frames and relevant set | complete; 10/10 cases, 582/582 assertions in GCC Debug and Release, syntax-clean under GCC 14, Clang/libstdc++ and Clang/libc++ |
 | SESSION-03 reconnect credential | complete; 7/7 cases, 144/144 assertions in Debug, Release and Clang |
 | SESSION-04 automatic reconnect policy and recovery feasibility | complete; 7/7 cases, 173/173 assertions in Debug, Release and Clang |
 | Vendored protobuf for GNS | fixed; Linux and Windows now take protobuf from the same place |
-| Complete project suite | **568/568** in GCC Debug on 2026-09-08, the first complete run of this campaign |
-| Focused networking set | 124/124 by `ctest -R "network|NET0|NETLAB"` in GCC Debug and Release on 2026-09-08, including real localhost UDP and the multi-process stand |
+| Complete project suite | **578/578** in GCC Debug on 2026-09-09 |
+| Focused networking set | 134/134 by `ctest -R "network|NET0|NETLAB"` in GCC Debug and Release on 2026-09-09, including real localhost UDP and the multi-process stand |
 | Second toolchain (Clang + libc++) | networking/serialization set passes; all four portability defects now closed, the `devils_script` one upstream in v1.3.1 |
 | `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
@@ -47,6 +47,100 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## HOT-02 — transform frames and the relevant set, 2026-09-09
+
+`network/transform_wire.h` is the downstream counterpart of HOT-01: what the authority tells ONE client about
+the entities that client is allowed to know about, and how often. Three decisions are kept apart on purpose —
+who is replicated (the relevant set), what travels (a declared per-class shape), and how often it travels (a
+cadence policy the sender may adapt) — because only the middle one is session identity.
+
+### The measured ladder is the result, and it inverts the usual effort
+
+Profile: 60 Hz simulation, 2048 entities in the loaded neighbourhood, 96 relevant to one client, three axes on
+the 1/1024 lattice plus an independent turn. Every figure is the encoder's own arithmetic at that profile,
+produced by the test rather than written on paper.
+
+| Rung | What it adds | bytes/s per client | gain |
+| --- | --- | ---: | ---: |
+| 0 | every entity, every tick, by 64-bit handle, absolute keys | 3 440 640 | — |
+| 1 | relevance: 96 of 2048 | 161 280 | 21.3x |
+| 2 | dense slot and one frame origin: 11 bytes a record, not 28 | 65 760 | 2.45x |
+| 3 | declared cadence: own at 20 Hz, remote at 10 Hz | 11 470 | 5.73x |
+| 4 | change-only sparse frames, a 1 Hz full pass, membership | 6 927 | 1.66x |
+
+Four clients at the last rung are 27 KiB/s, about 222 kbit/s. **Relevance and cadence are worth 21x and 5.7x;
+all the encoding cleverness together is worth about 4x.** A record 17 bytes narrower cannot rescue a relevance
+function that admits too much, and this is the number to reach for when a future frame format is proposed.
+
+Two further measurements came out of the same test:
+
+- **Membership costs 91 of the 6 927 bytes, 1.3%.** Making the set its own reliable ordered class is therefore
+  almost free, which is what allows the frames themselves to stay unreliable.
+- **Sparse beats dense until the change set reaches 81 of 96 slots, 84%.** A sparse record costs 13 bytes
+  against a dense record's 11, but it sends only what changed. So the dense mode earns its place only on the
+  periodic complete pass the declared staleness bound demands — the opposite of where a "keyframe" instinct
+  would put it. The crossover is asserted in the test, so a width change moves it loudly.
+
+### What the two-lane split forced into the format
+
+Membership is reliable ordered and frames are unreliable sequenced, which means **either lane can be ahead of
+the other**. A frame therefore carries the set generation it was built against, and a generation which is not
+the receiver's is refused in both directions rather than read against a different set of entities. The
+authority bumps the generation only when a publication actually changes something: a generation advancing for
+free would invalidate every frame in flight for nothing.
+
+The membership diff is computed by differencing the current table against the last published one, not by
+accumulating a change log. Two properties fall out for free: an entity which entered and left between two
+publications produces no traffic at all, and a slot which changed occupant travels as one enter rather than a
+leave/enter pair whose order could matter. The mirror's table equals the sender's slot for slot by
+construction, and the test asserts exactly that.
+
+A gap in the membership generation is reported (`generation_gap`), not absorbed. The lane is reliable and
+ordered, so a gap is a lane misuse rather than a network event, and absorbing it would leave the mirror
+silently describing a set the authority never had.
+
+### The correction threshold, derived rather than tuned
+
+A client's predicted position is split onto the same lattice as the authoritative sample and the two are
+compared **as integers**, so the threshold is exactly the declared quantum on every platform and there is no
+epsilon to tune. One quantum is its floor: snapping onto a quantized value injects up to half a quantum even
+when nothing diverged, so a tighter threshold corrects noise the format created. The verdict names the axis
+that diverged most, which makes a correction diagnosable instead of merely visible. Verified exact at a
+distance of 2^20 cells, where a world-space epsilon would already be the wrong size.
+
+### Two hazards closed on the way
+
+- **A refused message left a prefix behind, in both directions.** Every hot codec fills caller storage as it
+  works, so a caller which inspected the output after a refusal would find the beginning of a message that was
+  never accepted — the one shape of "partially accepted batch" the format exists to make impossible. The
+  encoders had the same hazard for a different reason: reach and handle validity are checked per record while
+  writing, so a relevance fault handed back a truncated frame the sender's own encoder had rejected. All five
+  codecs — the two new pairs and HOT-01's intent pair — now clear the output (and the view's count) on every
+  refusal. `clear()` keeps capacity, so the no-growth guarantee is untouched, and the tests assert both the
+  emptiness and the unchanged capacity.
+- **A build directory configured before the protobuf install fix could no longer GENERATE.** protobuf passes
+  its install switch down to the bundled `utf8_range` without forcing it, so `utf8_range_ENABLE_INSTALL` stayed
+  `ON` in an older cache and its `install(EXPORT)` demanded the vendored Abseil in an export set it
+  deliberately is not in. `build-release` configured cleanly and `build-debug` did not, which is exactly the
+  shape of a trap that only bites developers with an existing tree. The root `CMakeLists.txt` now forces the
+  switch off next to `protobuf_INSTALL`, and the old cache recovers without being wiped.
+
+Also extracted while adding the class: `widen_tick_low16`, the reconstruction of a wide tick from the low
+sixteen bits a hot message carries. Every hot class needs it, and two implementations of that wrap rule would
+be two chances to disagree exactly once every 65536 ticks — the least reproducible bug this campaign could
+produce.
+
+### What is deliberately not here
+
+No transport call, no live traffic and no observed byte rate. The ladder is the codec's arithmetic, which is
+honest about what it is: it fixes the ORDER of the levers and the cost of each format decision, and it cannot
+speak for loss, jitter or lane contention. Carrying the class over real sockets belongs to the lab item,
+exactly as HOT-01's intent class was closed as a primitive and then driven by NET-LAB-01 over 5G.
+
+Verification: **10/10 cases, 582/582 assertions** in GCC Debug and Release; the header and test are
+syntax-clean with `-Wall -Wextra` under GCC 14, Clang with libstdc++ and Clang with libc++. Focused networking
+set **134/134** in GCC Debug and Release; complete project suite **578/578** in GCC Debug.
 
 ## NET-LAB-01 slice 3 — a relocatable artifact, 2026-09-08
 
