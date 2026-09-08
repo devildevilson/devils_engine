@@ -16,9 +16,9 @@ NETLAB01_multi_process --follower  --rendezvous DIR --index I [--resume] [--addr
 NETLAB01_multi_process --intruder  --rendezvous DIR --index I
 ```
 
-`--address` selects the interface to bind and connect, so moving to a second machine is a
-command line rather than a code change; `--final-tick` overrides the run length, which a
-LAN measurement needs (see the link statistics note below).
+`--listen`/`--connect` name the endpoint outright, for peers on machines that share no
+directory; `--rendezvous` stays for the local harness, which needs a port the operating
+system picked. `--followers`, `--tick-ms` and `--final-tick` are the operator's knobs.
 
 ## What the stand asserts
 
@@ -185,6 +185,102 @@ is a requirement for the LAN slice, not a defect here.
   scheduled faults reach. Fuzzing is NET-11.
 - **A join credential worth the name.** It is a shared laboratory token, because
   SESSION-01/03 deliberately left join identity an injected policy.
+
+## Carrying the artifact to another machine
+
+The stand is one executable with no data files. Build it here, copy it there:
+
+```
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target NETLAB01_multi_process -j
+# build-release/subprojects/playgrounds/NETLAB01_multi_process/bin/NETLAB01_multi_process
+```
+
+What the target machine must have, and nothing else — **four** entries, down from
+eighty-five:
+
+| Dependency | Why it stays dynamic |
+| --- | --- |
+| `libc.so.6`, `libm.so.6`, `ld-linux` | glibc. The build host's symbol versions are the floor; see below. |
+| `libcrypto.so.3` | GameNetworkingSockets requires OpenSSL for AES-GCM/SHA-256 and offers only OpenSSL or libsodium — there is no bundled option for that pair. **Any OpenSSL 3.0 or newer**: the artifact's only symbol version is `OPENSSL_3.0.0` and all 41 symbols it imports are 3.0-era EVP/HMAC/RAND entry points, verified rather than assumed. A 1.1-era distribution (`libcrypto.so.1.1`) will not run it. |
+
+Everything else is linked in: Abseil, protobuf, GameNetworkingSockets, the engine
+libraries, and the C++ runtime. The three things that got it there:
+
+- **Abseil is vendored.** Protobuf needs it and protobuf's dependency script prefers
+  `find_package(absl CONFIG)`, so on a machine that has Abseil installed the artifact
+  quietly depended on **seventy-nine system shared libraries**. The vendored protobuf was
+  only half vendored while that was true. The root build now declares Abseil at the version
+  protobuf 36.1 names for itself, before protobuf, which is enough — protobuf's script opens
+  with `if (NOT TARGET absl::strings)`.
+- **`-static-libstdc++ -static-libgcc`.** The C++ runtime is the version-sensitive
+  dependency, not its presence: this build uses C++23 features whose libstdc++ symbols are
+  newer than many distributions ship. About a megabyte for a whole axis of risk.
+- **`-Wl,--as-needed`.** Without it the artifact also declared `libzstd.so.1`, reached only
+  through a corner of `devils_utils` it never calls.
+
+Size: 8.7 MB (5.1 MB before, when 79 of its dependencies lived on the host).
+
+### The glibc floor, and what it costs
+
+```
+objdump -T NETLAB01_multi_process | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1
+```
+
+For the artifact built here that is **GLIBC_2.38**, so roughly Ubuntu 23.10+, Debian 13,
+Fedora 39+ or a rolling distribution. Ubuntu 22.04 (2.35) will refuse it with a clear
+loader error rather than misbehaving.
+
+The floor is worth understanding before trying to lower it. It comes from
+`__isoc23_strtol`/`sscanf` — glibc's C23 redirects, which appear because everything is
+compiled as C++23 — plus `arc4random` at 2.36. Measured per source: GameNetworkingSockets
+22 references, protobuf 10, Abseil 2, the engine libraries **0**. So no change to this
+project's code can lower it, and dropping the dependencies to C++17 would risk an ABI
+split with the C++23 engine (Abseil's `string_view` aliasing is the concrete hazard). The
+real cure is to build the artifact against an older glibc — a container — which is a
+packaging decision, not a code one.
+
+### Running it across machines
+
+There is no shared directory between machines, so the endpoint is **declared** rather than
+discovered. `--listen`/`--connect` replace `--rendezvous`, which stays for the local
+harness only.
+
+```
+# authority, on the machine that will own the timeline
+./NETLAB01_multi_process --authority --listen 10.5.0.120:41200     --followers 3 --tick-ms 20 --final-tick 3000
+
+# each follower, with its own roster position
+./NETLAB01_multi_process --follower --connect 10.5.0.120:41200 --index 0
+./NETLAB01_multi_process --follower --connect 10.5.0.120:41200 --index 1
+./NETLAB01_multi_process --follower --connect 10.5.0.120:41200 --index 2
+```
+
+The authority prints the endpoint, the follower count it is waiting for, its pacing and
+its silence budgets, plus a reminder that the session is deliberately unauthenticated
+(`IP_AllowWithoutAuth`) because standalone GNS has no certificate authority. Every process
+ends with one line containing `tick=` and `root=`: **the run succeeded when every root is
+equal at the same tick.** A follower that was refused says so with a named reason.
+
+A follower needs only `--connect` and `--index`. **The pacing and the run length travel in
+the grant**, so they cannot be got wrong from a command line: a follower which took the
+tick period from its own arguments would declare a loss every tick against an authority
+pacing slower than it assumed. Pass `--final-tick` and `--tick-ms` to the authority only,
+and give a LAN run **tens of seconds** if the link statistics are meant to mean anything.
+(In this stand the wall pacing is not causal — the tick is the only coordinate and one tick
+is one step — which is why it is announced rather than fingerprinted. A project with
+authored durations converts them through the tick rate, and then the rate is causal and
+belongs in the compatibility fingerprint instead.)
+
+`--followers N` runs a reduced roster, and every count follows from it: a failure which
+names a roster position is skipped when that position was not launched. The stand asserted
+its way to that rule — with two followers it demanded a stale batch from a follower nobody
+started, and with one it waited forever for a reconnect that could not happen. Verified at
+N = 1, 2 and 3, every follower agreeing with the authority's root.
+
+Each roster position is a distinct identity, so two followers must not share an `--index`:
+the second is refused with `no_capacity`, which is exactly what the intruder in the local
+harness proves.
 
 ## The harness rule
 

@@ -20,6 +20,12 @@ namespace netlab01 {
 // undisturbed path survives a neighbour's recovery.
 struct lab_schedule {
   size_t followers = lab_max_followers;
+  // Silence budgets. Derived from the tick period by default rather than fixed
+  // in the follower: 60/220 ms is right for a 4 ms laboratory tick and much too
+  // tight for a slower one, where a single missed tick would look like a loss.
+  // 0 means "derive".
+  uint64_t suspect_after_ms = 0;
+  uint64_t lost_after_ms = 0;
   uint64_t final_tick = 70;
   // Authority closes the connection explicitly. That follower then learns of
   // the loss from the transport itself and skips its silence budget entirely.
@@ -36,10 +42,6 @@ struct lab_schedule {
   uint64_t tick_period_ms = 4;
   uint64_t ticket_window_ms = 20000;
   uint64_t hold_window_ms = 20000;
-  // The run is not over until every scheduled reconnect happened. Without this
-  // the authority's exit races a follower's return, and the stand would be
-  // reporting the scheduler rather than the protocol.
-  uint64_t expected_admissions = lab_max_followers + 2;
   // One batch deliberately proposing ticks the authority has already sealed.
   // Nothing about loopback produces a late intent on its own, and an ingress
   // branch nothing ever reaches is not a verified refusal. 0 disables it.
@@ -50,6 +52,44 @@ struct lab_schedule {
   // do, which proves it caught up but not that it participates again. 0 keeps
   // the run's length fixed.
   uint64_t resume_tail_ticks = 0;
+
+  // A scheduled failure names a roster position, and a reduced roster may not
+  // have it. Asking that question in one place is the fix for a whole class of
+  // bug: with `--followers 2` the stand demanded a stale batch from a follower
+  // which was never launched, and with `--followers 1` the authority waited
+  // forever for a reconnect that could not happen.
+  [[nodiscard]] bool hits_roster(const uint64_t tick, const size_t which) const noexcept {
+    return tick != 0 && which < followers;
+  }
+  [[nodiscard]] bool closes_someone() const noexcept {
+    return hits_roster(explicit_close_tick, explicit_close_follower);
+  }
+  [[nodiscard]] bool quiets_someone() const noexcept {
+    return hits_roster(quiet_from_tick, quiet_follower);
+  }
+  [[nodiscard]] bool kills_someone() const noexcept {
+    return hits_roster(self_exit_tick, self_exit_follower);
+  }
+  [[nodiscard]] bool staleness_tested() const noexcept {
+    return hits_roster(stale_batch_tick, stale_batch_follower);
+  }
+
+  // Joins plus exactly the reconnects the roster can actually produce.
+  [[nodiscard]] uint64_t admissions_expected() const noexcept {
+    return uint64_t(followers) + (closes_someone() ? 1 : 0) + (quiets_someone() ? 1 : 0) +
+           (kills_someone() ? 1 : 0);
+  }
+
+  [[nodiscard]] uint64_t suspect_ms() const noexcept {
+    if (suspect_after_ms != 0) return suspect_after_ms;
+    const uint64_t derived = tick_period_ms * 15;
+    return derived < 60 ? 60 : derived;
+  }
+  [[nodiscard]] uint64_t lost_ms() const noexcept {
+    if (lost_after_ms != 0) return lost_after_ms;
+    const uint64_t derived = tick_period_ms * 55;
+    return derived < 220 ? 220 : derived;
+  }
 };
 
 inline lab_schedule lab_continuous_schedule() {
@@ -68,7 +108,6 @@ inline lab_schedule lab_killed_schedule() {
   value.self_exit_tick = 20;
   value.self_exit_follower = 0;
   value.stale_batch_tick = 0;
-  value.expected_admissions = lab_max_followers + 1;
   value.resume_tail_ticks = 12;
   return value;
 }
@@ -133,8 +172,8 @@ public:
     journal_.recycle(std::vector<lab_intent_record>(lab_max_intents_per_tick * lab_max_followers));
   }
 
-  lab_link::listen_outcome listen(const uint32_t host_address) {
-    return link_.listen_any(host_address);
+  lab_link::listen_outcome listen(const uint32_t host_address, const uint16_t port) {
+    return port == 0 ? link_.listen_any(host_address) : link_.listen_on(host_address, port);
   }
 
   // Real conditions per live session, measured from the backend rather than
@@ -177,7 +216,7 @@ public:
     pump_transfers();
     if (host_.state.tick >= final_tick_) {
       if (transfers_active()) return true;
-      if (counters_.admissions < schedule_.expected_admissions) return true;
+      if (counters_.admissions < schedule_.admissions_expected()) return true;
       // The last bundles are accepted by the transport, not yet delivered.
       // Exiting here would make the follower's final tick depend on scheduling.
       if (linger_until_ == 0) linger_until_ = now + lab_linger_ms;
@@ -384,7 +423,7 @@ private:
     // end is ANNOUNCED: a follower which kept its first grant's value would
     // stop while the session is still running.
     if (schedule_.resume_tail_ticks != 0 && started_ &&
-        counters_.admissions >= schedule_.expected_admissions) {
+        counters_.admissions >= schedule_.admissions_expected()) {
       // The extension is a FIXED end, not "wherever we are plus a tail". The
       // authority cannot pass its announced final tick before the rejoin lands,
       // so a fixed end still guarantees at least the declared tail -- and it
@@ -412,6 +451,9 @@ private:
     lab_grant grant;
     grant.issued_at = now;
     grant.final_tick = final_tick_;
+    grant.tick_period_ms = schedule_.tick_period_ms;
+    grant.suspect_after_ms = schedule_.suspect_ms();
+    grant.lost_after_ms = schedule_.lost_ms();
     verify_.require(net::issue_reconnect_ticket(ticket, mac_, credential_scratch_,
                                                 grant.credential) ==
                       net::credential_status::accepted,

@@ -1386,7 +1386,7 @@ NET-00 contract (complete)
                                           -> HOT-02 transform frames + relevant set
                                      -> SESSION-03 reconnect credential
                                           -> SESSION-04 automatic transport reconnect
-                                -> NET-LAB-01 multi-process loopback/LAN (slices 1-2 complete)
+                                -> NET-LAB-01 multi-process loopback/LAN (slices 1-3 complete)
                                 -> NET-LAB-02 compatible cross-build exchange
                                      -> SERVER-01 headless authority
                                           -> TF-NET-01 online authoritative float stand
@@ -1838,7 +1838,7 @@ Done with a written GNS/Yojimbo comparison; maintaining both production adapters
 
 Done independently of gameplay UDP.
 
-### NET-LAB-01 — real multi-process loopback and LAN (`M`, slices 1-2 complete 2026-09-08)
+### NET-LAB-01 — real multi-process loopback and LAN (`M`, slices 1-3 complete 2026-09-08)
 
 - Run the same fake simulation/session fixture as separate authority and follower processes.
 - Start with OS loopback, then several followers on one machine, then several machines on a controlled LAN.
@@ -1866,9 +1866,17 @@ principal is a different order. The principal comes from the credential, never f
 Results, the properties the stand deliberately does not prove yet, and the design decisions it forced are in
 `NETWORKING_STATUS.md` and the playground's README.
 
-Remaining for this task: a second machine on a controlled LAN (the stand's `--address` is wired and proven on a
-non-loopback interface, but every process still runs on one host), recorded real RTT/jitter/loss — which the
-stand measured to need a run tens of seconds long, not merely a remote one — and a project-sized checkpoint.
+Slice 3 makes the stand a **relocatable artifact**, which is the closest available approximation of a real
+network when the other machines cannot build: `--listen`/`--connect` replace the shared-directory rendezvous,
+the pacing and silence budgets travel in the grant so a follower cannot assume them wrongly, and the executable
+went from eighty-five direct shared-library dependencies to four by vendoring Abseil (protobuf preferred the
+system copy, so the vendored protobuf was only half vendored) and linking the C++ runtime statically. The
+remaining dynamic dependencies are glibc and OpenSSL's `libcrypto.so.3`, which GNS requires because it offers
+only OpenSSL or libsodium for AES-GCM/SHA-256. The measured glibc floor is 2.38 and no change to this
+project's code can lower it; building against an older glibc is a packaging decision.
+
+Remaining for this task: a second machine on a controlled LAN, recorded real RTT/jitter/loss — which the stand
+measured to need a run tens of seconds long, not merely a remote one — and a project-sized checkpoint.
 
 ### NET-LAB-02 — compatible and incompatible build exchange (`M-L`)
 

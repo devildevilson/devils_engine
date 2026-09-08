@@ -42,11 +42,98 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
 | SESSION-01 strict compatibility/identity/recovery primitives | neutral slice complete; 6/6 cases, 76/76 assertions pass in Debug and Release |
 | Session wire handshake and challenge/response | complete as a neutral slice; see SESSION-02 below |
-| Automatic transport reconnect and multi-process exchange | NET-LAB-01 slices 1-2 complete: authority + 3 followers + intruder as separate processes, all roots equal in Debug and Release; a second machine is the remaining gap |
+| Automatic transport reconnect and multi-process exchange | NET-LAB-01 slices 1-3 complete: authority + 3 followers + intruder as separate processes, all roots equal; artifact relocatable (4 shared deps, glibc 2.38 floor) and addressed by `--listen`/`--connect`; a second machine is the remaining gap |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## NET-LAB-01 slice 3 — a relocatable artifact, 2026-09-08
+
+The point of this slice is that the stand can be **built here and carried to machines which
+cannot build**, which is the closest available approximation of a real network. Two things
+had to be true: the artifact must not need the build host, and the peers must be able to
+find each other without a shared directory.
+
+### The dependency audit found the interesting thing first
+
+The binary declared **eighty-five** direct shared libraries, seventy-nine of them system
+Abseil. Protobuf requires Abseil, and protobuf's dependency script prefers
+`find_package(absl CONFIG)` — so on a machine that has Abseil installed, the *vendored*
+protobuf was only half vendored, and the artifact quietly depended on the host's Abseil
+ABI. The root build now declares Abseil at the version protobuf 36.1 names for itself,
+ahead of protobuf, which is sufficient: protobuf's script opens with
+`if (NOT TARGET absl::strings)` and skips its search entirely.
+
+With that, plus `-static-libstdc++ -static-libgcc` and `-Wl,--as-needed` on the playground
+target, the artifact is down to **four** entries:
+
+```
+ld-linux-x86-64.so.2   libc.so.6   libm.so.6   libcrypto.so.3
+```
+
+`libzstd.so.1` was ours, not transitive — reached through a corner of `devils_utils` the
+stand never calls, and removed by `--as-needed`. `zstd`, `zlib` and brotli in the earlier
+`ldd` output were *Arch's libcrypto's* dependencies, so they follow whatever OpenSSL the
+target machine has. Size went 5.1 MB → 8.7 MB, which is the seventy-nine libraries moving
+inside.
+
+**OpenSSL stays dynamic and that is a real constraint.** GNS offers only OpenSSL or
+libsodium for AES-GCM/SHA-256 — there is no bundled option for that pair, and the machine
+has no static OpenSSL. We link 3.6.4 here, but the requirement is looser than that and it
+was checked rather than assumed: the artifact's only OpenSSL symbol version is
+`OPENSSL_3.0.0` and all 41 imported symbols are 3.0-era EVP/HMAC/RAND entry points, so
+**any OpenSSL 3.0+** serves. A 1.1-era distribution (`libcrypto.so.1.1`) will not.
+
+### The glibc floor is measured, and no code change can move it
+
+**GLIBC_2.38** — roughly Ubuntu 23.10+, Debian 13, Fedora 39+, or a rolling distribution;
+Ubuntu 22.04 (2.35) refuses it with a loader error. The floor comes from
+`__isoc23_strtol`/`sscanf`, glibc's C23 redirects, which appear because everything is
+compiled as C++23, plus `arc4random` at 2.36. Counted per source: GameNetworkingSockets 22
+references, protobuf 10, Abseil 2, **the engine libraries 0**. So this project's own code
+cannot lower it, and demoting the dependencies to C++17 would risk an ABI split with the
+C++23 engine (Abseil's `string_view` aliasing). Building against an older glibc in a
+container is the cure, and it is a packaging decision rather than a code one.
+
+### Finding each other without a shared directory
+
+`--listen HOST:PORT` and `--connect HOST:PORT` replace the file rendezvous, which stays for
+the local harness only — the harness wants a port the operating system picked, and a
+distributed run wants the port the operator declared, with no fallback: silently binding a
+different port than the one the followers were told is worse than refusing.
+
+The pacing now **travels in the grant**. A follower which took the tick period from its own
+command line would declare a loss every tick against an authority pacing slower than it
+assumed, so the tick period and both silence budgets are announced, and the budgets are
+derived from the tick period rather than fixed at the 60/220 ms that suited a 4 ms
+laboratory tick. Note what this is *not*: in this stand the wall pacing is not causal, so
+it is announced rather than fingerprinted; a project with authored durations converts them
+through the tick rate, which makes the rate causal and puts it in the compatibility
+fingerprint instead.
+
+### One class of defect, found three times by its own assertions
+
+A scheduled failure names a roster position, and a reduced roster may not have that
+position. With `--followers 2` the stand demanded a stale batch from a follower nobody
+launched; with `--followers 1` the authority waited forever for a reconnect that could not
+happen; and the cross-principal assertion fired because the followers' proposal cadences
+were offset by `roster % 2`, so with two followers they never collided and the canonical
+order across principals was never exercised at all. The schedule was wrong in each case,
+not the assertion: `lab_schedule` now asks "does this failure hit anyone", and the
+proposal cadence has one tick per window **shared** by every follower so a multi-principal
+bundle is guaranteed for any roster size.
+
+### Verification
+
+The copied artifact was run from a directory with no build tree in sight, over an explicit
+endpoint, at rosters of one, two and three followers — every follower agreeing with the
+authority's state root each time — and once over a real non-loopback interface
+(`192.168.122.1:41333`, 20 ms tick, 300 ticks) where all four processes reported
+`root=11962137424109576394`. At that length the link statistics populate:
+`quality=1, in_pps≈51`, one packet per tick. It leaves no files behind unless a scenario
+persists a ticket. The registered local test is unchanged at 1.5 s, **41/41** harness
+checks, and the focused networking set is **124/124** in GCC Debug and Release.
 
 ## NET-LAB-01 slice 2 — several followers, 2026-09-08
 

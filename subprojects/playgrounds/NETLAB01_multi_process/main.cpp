@@ -44,18 +44,37 @@ inline constexpr int lab_intruder_exit = 8;
 struct options {
   role which = role::verify;
   std::string scenario = "continuous";
+  // Used by the local harness only: peers on other machines cannot read a
+  // shared directory, which is exactly why --listen/--connect exist.
   std::filesystem::path rendezvous;
-  // Loopback by default. A LAN run is this flag plus a reachable interface, so
-  // moving to another machine is a command line rather than a code change.
+  // Loopback by default. Selects the interface in rendezvous mode.
   std::string address = "127.0.0.1";
+  // "A.B.C.D:PORT". Present means a DISTRIBUTED run: the authority binds this
+  // exact endpoint and the followers are told it outright.
+  std::string endpoint;
+  std::filesystem::path ticket;
   size_t index = 0;
+  size_t followers = 0;   // 0 = the scenario's own count
   // Overrides the scenario's run length. A LAN session wants a longer run than
   // a registered test can afford, and the backend's connection-quality window
   // is longer than the test's whole run.
   uint64_t final_tick = 0;
+  uint64_t tick_ms = 0;
+  uint64_t suspect_ms = 0;
+  uint64_t lost_ms = 0;
   bool resume = false;
   bool quiet = false;
 };
+
+struct endpoint_value {
+  uint32_t host = 0;
+  uint16_t port = 0;
+};
+
+std::string dotted_quad(const uint32_t host) {
+  return std::to_string((host >> 24) & 0xffu) + '.' + std::to_string((host >> 16) & 0xffu) + '.' +
+         std::to_string((host >> 8) & 0xffu) + '.' + std::to_string(host & 0xffu);
+}
 
 // Dotted quad to the host order GNS wants. A laboratory parser: refusing
 // anything it does not understand is the whole of its error handling.
@@ -80,11 +99,41 @@ std::optional<uint32_t> parse_ipv4(const std::string_view text) {
   return parts == 4 ? std::optional(value) : std::nullopt;
 }
 
+std::optional<uint32_t> parse_ipv4(const std::string_view text);
+
+std::optional<endpoint_value> parse_endpoint(const std::string_view text) {
+  const auto colon = text.rfind(':');
+  if (colon == std::string_view::npos || colon + 1 == text.size()) return std::nullopt;
+  const auto host = parse_ipv4(text.substr(0, colon));
+  if (!host) return std::nullopt;
+  unsigned port = 0;
+  for (const char c : text.substr(colon + 1)) {
+    if (c < '0' || c > '9') return std::nullopt;
+    port = port * 10 + unsigned(c - '0');
+    if (port > 65535) return std::nullopt;
+  }
+  if (port == 0) return std::nullopt;
+  return endpoint_value{*host, uint16_t(port)};
+}
+
 lab_schedule schedule_for(const std::string_view scenario) {
   if (scenario == "continuous") return lab_continuous_schedule();
   if (scenario == "killed") return lab_killed_schedule();
   utils::error{}("NET-LAB-01: unknown scenario '{}'", scenario);
   return {};
+}
+
+lab_schedule schedule_with(const options& opts) {
+  auto schedule = schedule_for(opts.scenario);
+  if (opts.final_tick != 0) schedule.final_tick = opts.final_tick;
+  if (opts.tick_ms != 0) schedule.tick_period_ms = opts.tick_ms;
+  if (opts.suspect_ms != 0) schedule.suspect_after_ms = opts.suspect_ms;
+  if (opts.lost_ms != 0) schedule.lost_after_ms = opts.lost_ms;
+  // Every count the schedule derives from the roster follows from this one
+  // number, because `lab_schedule` asks "does this failure hit anyone" rather
+  // than assuming a full roster.
+  if (opts.followers != 0) schedule.followers = std::min(opts.followers, lab_max_followers);
+  return schedule;
 }
 
 std::filesystem::path port_path(const std::filesystem::path& base) {
@@ -138,16 +187,46 @@ std::optional<uint16_t> await_port(const std::filesystem::path& base) {
 }
 
 int run_authority(const options& opts) {
-  auto schedule = schedule_for(opts.scenario);
-  if (opts.final_tick != 0) schedule.final_tick = opts.final_tick;
-  const auto host_address = parse_ipv4(opts.address);
-  if (!host_address) {
-    std::cerr << "NET-LAB-01 authority: '" << opts.address << "' is not a dotted quad\n";
-    return EXIT_FAILURE;
+  const auto schedule = schedule_with(opts);
+
+  // Two ways to be reachable, and they are not interchangeable. A distributed
+  // run names the endpoint outright, because peers on other machines cannot
+  // read a rendezvous file; the local harness lets the operating system pick a
+  // port and publishes it, because a fixed port fails on a busy machine.
+  uint32_t host_address = 0;
+  uint16_t declared_port = 0;
+  if (!opts.endpoint.empty()) {
+    const auto parsed = parse_endpoint(opts.endpoint);
+    if (!parsed) {
+      std::cerr << "NET-LAB-01 authority: '" << opts.endpoint
+                << "' is not A.B.C.D:PORT\n";
+      return EXIT_FAILURE;
+    }
+    host_address = parsed->host;
+    declared_port = parsed->port;
+  } else {
+    const auto parsed = parse_ipv4(opts.address);
+    if (!parsed) {
+      std::cerr << "NET-LAB-01 authority: '" << opts.address << "' is not a dotted quad\n";
+      return EXIT_FAILURE;
+    }
+    host_address = *parsed;
   }
+
   authority_run authority(schedule);
-  const auto bound = authority.listen(*host_address);
-  if (!publish_port(opts.rendezvous, bound.port)) {
+  const auto bound = authority.listen(host_address, declared_port);
+  if (opts.rendezvous.empty()) {
+    // Standalone: the operator needs the line below to point the followers, and
+    // needs to be told once that this session is deliberately unauthenticated.
+    std::cout << "authority listening " << dotted_quad(host_address) << ':' << bound.port
+              << " followers=" << schedule.followers
+              << " tick_ms=" << schedule.tick_period_ms
+              << " final_tick=" << schedule.final_tick
+              << " suspect_ms=" << schedule.suspect_ms()
+              << " lost_ms=" << schedule.lost_ms()
+              << " auth=none(IP_AllowWithoutAuth)\n";
+    std::cout.flush();
+  } else if (!publish_port(opts.rendezvous, bound.port)) {
     std::cerr << "NET-LAB-01 authority: cannot publish its port\n";
     return EXIT_FAILURE;
   }
@@ -155,7 +234,9 @@ int run_authority(const options& opts) {
   const auto deadline = std::chrono::steady_clock::now() + 60s;
   bool announced_start = false;
   while (authority.step()) {
-    if (authority.started() && !announced_start) {
+    // The marker belongs to the local harness. Writing it in a distributed run
+    // would drop a file into whatever directory the operator happened to be in.
+    if (!opts.rendezvous.empty() && authority.started() && !announced_start) {
       std::ofstream(started_path(opts.rendezvous)) << "1\n";
       announced_start = true;
     }
@@ -176,15 +257,16 @@ int run_authority(const options& opts) {
   if (schedule.resume_tail_ticks != 0)
     verify.require(authority.final_tick() > schedule.final_tick,
                    "the run was never extended, so a late rejoin was not given a tail to play");
-  verify.require(counters.admissions >= schedule.expected_admissions,
+  verify.require(counters.admissions >= schedule.admissions_expected(),
                  "authority did not admit every scheduled join and reconnect");
-  verify.require(counters.multi_principal_ticks > 0,
-                 "no tick ever carried intents from more than one principal, so the "
-                 "cross-principal canonical order was never exercised");
+  if (schedule.followers > 1)
+    verify.require(counters.multi_principal_ticks > 0,
+                   "no tick ever carried intents from more than one principal, so the "
+                   "cross-principal canonical order was never exercised");
   verify.require(counters.intents_accepted > 0, "authority accepted no intent");
   verify.require(counters.intents_duplicate > 0,
                  "the redundant intent window produced no duplicate to drop");
-  if (schedule.stale_batch_tick != 0)
+  if (schedule.staleness_tested())
     verify.require(counters.intents_late > 0,
                    "the scheduled stale batch was not refused as late");
   verify.require(counters.recoveries_planned >= 1, "authority planned no recovery");
@@ -212,7 +294,7 @@ int run_authority(const options& opts) {
 }
 
 int run_intruder(const options& opts) {
-  const auto schedule = schedule_for(opts.scenario);
+  const auto schedule = schedule_with(opts);
   const auto host_address = parse_ipv4(opts.address);
   const auto port = await_port(opts.rendezvous);
   if (!host_address || !port || !await_started(opts.rendezvous)) {
@@ -239,21 +321,39 @@ int run_intruder(const options& opts) {
 }
 
 int run_follower(const options& opts) {
-  auto schedule = schedule_for(opts.scenario);
-  if (opts.final_tick != 0) schedule.final_tick = opts.final_tick;
-  const auto host_address = parse_ipv4(opts.address);
-  if (!host_address) {
-    std::cerr << "NET-LAB-01 follower: '" << opts.address << "' is not a dotted quad\n";
-    return EXIT_FAILURE;
-  }
-  const auto port = await_port(opts.rendezvous);
-  if (!port) {
-    std::cerr << "NET-LAB-01 follower: the authority never published a port\n";
-    return EXIT_FAILURE;
+  const auto schedule = schedule_with(opts);
+
+  uint32_t host_address = 0;
+  uint16_t port = 0;
+  std::filesystem::path ticket = opts.ticket;
+  if (!opts.endpoint.empty()) {
+    const auto parsed = parse_endpoint(opts.endpoint);
+    if (!parsed) {
+      std::cerr << "NET-LAB-01 follower: '" << opts.endpoint << "' is not A.B.C.D:PORT\n";
+      return EXIT_FAILURE;
+    }
+    host_address = parsed->host;
+    port = parsed->port;
+    // The ticket is local state, so a distributed follower keeps it beside
+    // itself rather than in a directory it shares with nobody.
+    if (ticket.empty()) ticket = "netlab01-ticket-" + std::to_string(opts.index);
+  } else {
+    const auto parsed = parse_ipv4(opts.address);
+    if (!parsed) {
+      std::cerr << "NET-LAB-01 follower: '" << opts.address << "' is not a dotted quad\n";
+      return EXIT_FAILURE;
+    }
+    host_address = *parsed;
+    const auto discovered = await_port(opts.rendezvous);
+    if (!discovered) {
+      std::cerr << "NET-LAB-01 follower: the authority never published a port\n";
+      return EXIT_FAILURE;
+    }
+    port = *discovered;
+    if (ticket.empty()) ticket = ticket_path(opts.rendezvous, opts.index);
   }
 
-  follower_run follower(schedule, opts.index, *host_address, *port,
-                        ticket_path(opts.rendezvous, opts.index), opts.resume);
+  follower_run follower(schedule, opts.index, host_address, port, ticket, opts.resume);
   const auto deadline = std::chrono::steady_clock::now() + 60s;
   while (follower.step()) {
     if (std::chrono::steady_clock::now() >= deadline) {
@@ -300,9 +400,9 @@ int run_follower(const options& opts) {
   // position without checking the tick made two untouched followers in the
   // `killed` scenario answerable for a recovery nobody asked them to do.
   const bool disturbed =
-    (schedule.explicit_close_tick != 0 && opts.index == schedule.explicit_close_follower) ||
-    (schedule.quiet_from_tick != 0 && opts.index == schedule.quiet_follower) ||
-    (schedule.self_exit_tick != 0 && opts.index == schedule.self_exit_follower);
+    (schedule.closes_someone() && opts.index == schedule.explicit_close_follower) ||
+    (schedule.quiets_someone() && opts.index == schedule.quiet_follower) ||
+    (schedule.kills_someone() && opts.index == schedule.self_exit_follower);
   if (disturbed) verify.require(counters.recoveries >= 1,
                                 "a disturbed follower never recovered transactionally");
   else verify.require(counters.recoveries == 0 && counters.reconnects == 0,
@@ -492,15 +592,26 @@ int main(const int argc, const char* const* argv) {
     else if (arg == "--index" && i + 1 < argc) opts.index = size_t(std::stoul(argv[++i]));
     else if (arg == "--final-tick" && i + 1 < argc)
       opts.final_tick = uint64_t(std::stoull(argv[++i]));
+    else if (arg == "--listen" && i + 1 < argc) opts.endpoint = argv[++i];
+    else if (arg == "--connect" && i + 1 < argc) opts.endpoint = argv[++i];
+    else if (arg == "--ticket" && i + 1 < argc) opts.ticket = argv[++i];
+    else if (arg == "--followers" && i + 1 < argc)
+      opts.followers = size_t(std::stoul(argv[++i]));
+    else if (arg == "--tick-ms" && i + 1 < argc) opts.tick_ms = uint64_t(std::stoull(argv[++i]));
+    else if (arg == "--suspect-ms" && i + 1 < argc)
+      opts.suspect_ms = uint64_t(std::stoull(argv[++i]));
+    else if (arg == "--lost-ms" && i + 1 < argc) opts.lost_ms = uint64_t(std::stoull(argv[++i]));
     else utils::error{}("NET-LAB-01: unknown argument '{}'", arg);
   }
 
   switch (opts.which) {
     case role::authority:
-      if (opts.rendezvous.empty()) utils::error{}("NET-LAB-01: --authority needs --rendezvous");
+      if (opts.rendezvous.empty() && opts.endpoint.empty())
+        utils::error{}("NET-LAB-01: --authority needs --listen HOST:PORT or --rendezvous DIR");
       return run_authority(opts);
     case role::follower:
-      if (opts.rendezvous.empty()) utils::error{}("NET-LAB-01: --follower needs --rendezvous");
+      if (opts.rendezvous.empty() && opts.endpoint.empty())
+        utils::error{}("NET-LAB-01: --follower needs --connect HOST:PORT or --rendezvous DIR");
       return run_follower(opts);
     case role::intruder:
       if (opts.rendezvous.empty()) utils::error{}("NET-LAB-01: --intruder needs --rendezvous");

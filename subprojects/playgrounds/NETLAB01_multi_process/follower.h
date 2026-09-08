@@ -331,10 +331,15 @@ private:
     // two are unrelated numbers which happen to be milliseconds.
     anchor_ = int64_t(grant.issued_at) - int64_t(local);
     anchored_ = true;
+    // Budgets announced by the authority, never assumed locally.
+    const uint64_t backoff = grant.tick_period_ms * 10 < 40 ? 40 : grant.tick_period_ms * 10;
     const net::reconnect_policy policy{
-      .suspect_after = 60, .lost_after = 220,
-      .first_backoff = 40, .max_backoff = 320, .max_attempts = 8};
-    verify_.require(policy.valid(), "the laboratory reconnect policy is incoherent");
+      .suspect_after = grant.suspect_after_ms,
+      .lost_after = grant.lost_after_ms,
+      .first_backoff = backoff,
+      .max_backoff = grant.lost_after_ms * 2,
+      .max_attempts = 8};
+    verify_.require(policy.valid(), "the authority announced an incoherent reconnect policy");
     coordinator_.emplace(policy, grant.credential.ticket.expires_at, authority_now(local));
     if (pending_transport_loss_) {
       coordinator_->observe_transport_lost(authority_now(local));
@@ -476,10 +481,16 @@ private:
 
   void propose_intents(const uint64_t local) {
     const uint64_t for_tick = host_.state.tick + intent_lead;
-    // Offsets chosen so that some ticks carry intents from SEVERAL principals
-    // and some from one: a schedule where they never collide would never
-    // exercise the cross-principal order at all.
-    if (for_tick > last_proposed_ && for_tick % 9 == (4 + roster_ % 2)) {
+    // Two cadences on purpose: one tick every window is SHARED by every
+    // follower, so a bundle carrying several principals is guaranteed for any
+    // roster size, and the rest are private, so single-principal ticks happen
+    // too. An offset-only schedule looked fine with three followers and stopped
+    // exercising the cross-principal order entirely with two -- the assertion
+    // caught it, and the schedule was what was wrong.
+    const uint64_t phase = for_tick % 9;
+    const bool shared = phase == 4;
+    const bool mine = phase == (5 + roster_) % 9;
+    if (for_tick > last_proposed_ && (shared || mine)) {
       const auto split = net::split_axis(lab_axis, lab_authored_target(for_tick, roster_));
       verify_.require(!split.clamped, "an authored target left the declared fixed-point range");
       const int64_t quanta = (int64_t(split.key) << 16) | int64_t(split.code);

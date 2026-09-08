@@ -63,12 +63,15 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
   if (net::try_encode_credential(grant.credential, credential) != net::credential_status::accepted)
     return false;
   out.clear();
-  const size_t required = 1 + 16 + net::reconnect_credential_bytes + net::credential_mac_bytes;
+  const size_t required = 1 + 40 + net::reconnect_credential_bytes + net::credential_mac_bytes;
   if (out.capacity() < required) return false;
   net::state_writer w(out, false);
   w.u8(uint8_t(lab_message::reconnect_grant));
   w.u64(grant.issued_at);
   w.u64(grant.final_tick);
+  w.u64(grant.tick_period_ms);
+  w.u64(grant.suspect_after_ms);
+  w.u64(grant.lost_after_ms);
   w.bytes(credential);
   w.bytes(grant.session_secret);
   return w.good();
@@ -79,14 +82,24 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
   if (r.u8() != uint8_t(lab_message::reconnect_grant)) return false;
   const auto issued_at = r.u64();
   const auto final_tick = r.u64();
+  const auto tick_period_ms = r.u64();
+  const auto suspect_after_ms = r.u64();
+  const auto lost_after_ms = r.u64();
   const auto credential = r.take(net::reconnect_credential_bytes);
   const auto secret = r.take(net::credential_mac_bytes);
   if (!r.good() || r.position() != r.size()) return false;
   net::reconnect_credential decoded;
   if (net::try_decode_credential(credential, decoded) != net::credential_status::accepted)
     return false;
+  // An incoherent policy is refused at the boundary rather than handed to
+  // `reconnect_policy::valid()` to discover later.
+  if (tick_period_ms == 0 || suspect_after_ms == 0 || lost_after_ms <= suspect_after_ms)
+    return false;
   out.issued_at = issued_at;
   out.final_tick = final_tick;
+  out.tick_period_ms = tick_period_ms;
+  out.suspect_after_ms = suspect_after_ms;
+  out.lost_after_ms = lost_after_ms;
   out.credential = decoded;
   std::copy(secret.begin(), secret.end(), out.session_secret.begin());
   return true;

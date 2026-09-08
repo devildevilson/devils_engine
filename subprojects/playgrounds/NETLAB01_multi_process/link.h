@@ -103,6 +103,22 @@ public:
   // not accept port zero, so the fallback is a scan -- recorded rather than
   // hidden, because "the transport refuses an ephemeral bind" is a real
   // property of the backend and not a detail of this stand.
+  // A declared port, for a run whose peers are on other machines and cannot
+  // read a rendezvous file. There is no fallback here on purpose: an operator
+  // who named a port and silently got another one would point the followers at
+  // the wrong one.
+  listen_outcome listen_on(const uint32_t host, const uint16_t port) {
+    auto options = unauthenticated_options();
+    SteamNetworkingIPAddr address{};
+    address.SetIPv4(host, port);
+    const auto result = transport_.listen(address, options);
+    if (result.status != net::gns_status::ok)
+      utils::error{}("NET-LAB-01: listen on the declared port refused, status {}",
+                     unsigned(result.status));
+    listener_ = result.listener;
+    return {port, false};
+  }
+
   listen_outcome listen_any(const uint32_t host = 0x7f000001) {
     auto options = unauthenticated_options();
     SteamNetworkingIPAddr address{};

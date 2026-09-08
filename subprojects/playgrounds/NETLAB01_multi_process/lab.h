@@ -276,6 +276,18 @@ struct lab_grant {
   // extended so that it plays again rather than merely catching up, and a
   // session's length was never a client-side fact anyway.
   uint64_t final_tick = 0;
+  // The authority's pacing, and the silence budgets it implies. A follower
+  // which took these from its own command line would declare a loss every tick
+  // against an authority pacing slower than it assumed -- a footgun which
+  // cannot exist if the value travels.
+  //
+  // Note what this is NOT: in this stand the wall pacing is not causal, because
+  // the tick is the only coordinate and one tick is one step. A project with
+  // authored durations converts them through the tick rate, which makes the
+  // rate causal and puts it in the compatibility fingerprint instead of here.
+  uint64_t tick_period_ms = 0;
+  uint64_t suspect_after_ms = 0;
+  uint64_t lost_after_ms = 0;
 };
 
 struct lab_recovery_plan {

@@ -475,6 +475,28 @@ FetchContent_Declare(
   OVERRIDE_FIND_PACKAGE
 )
 
+# Abseil is vendored for exactly one reason: protobuf requires it, and protobuf's
+# own dependency script prefers find_package(absl CONFIG), which on a machine
+# that has Abseil installed silently makes the build depend on SEVENTY-NINE
+# system shared libraries. A relocatable artifact cannot carry that, and the
+# vendored protobuf was only half vendored while it did.
+#
+# The version is the one protobuf 36.1 names in cmake/dependencies.cmake, so
+# this is the same Abseil protobuf would have fetched for itself. Declaring the
+# targets before protobuf is enough: its script starts with
+# `if (NOT TARGET absl::strings)` and skips the search entirely.
+FetchContent_Declare(
+  absl
+  GIT_REPOSITORY https://github.com/abseil/abseil-cpp.git
+  GIT_TAG        20250512.1
+  GIT_SHALLOW    TRUE
+  GIT_PROGRESS   TRUE
+  OVERRIDE_FIND_PACKAGE
+)
+set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
 FetchContent_Declare(
   protobuf
   GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
@@ -504,6 +526,7 @@ FetchContent_MakeAvailable(freetype)
 
 add_library(Freetype::Freetype ALIAS freetype-interface)
 
+FetchContent_MakeAvailable(absl)
 FetchContent_MakeAvailable(protobuf)
 
 include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
