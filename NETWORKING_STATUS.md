@@ -217,6 +217,47 @@ orders, run B had 294 late copies and 22 lost orders. More late copies meant *fe
 orders, because a late copy is evidence that an earlier copy of the same order had already
 been accepted.
 
+### Three runs sized the proposal lead, 2026-09-08
+
+The margin measurement paid for itself immediately. Three cross-build runs over the same 5G
+link, each in both directions:
+
+| run | lead | RTT mean | last copy's margin | late copies | orders lost | root reproducible across runs |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 4 | 28 ms | +0.6 | 511 / 294 | 90 / 22 | no |
+| 3 | 4 | 16 ms | +1.2 | 57 / 58 | 6 / 9 | no |
+| 2 | 8 | 17 ms | +5.2 | 3 / 11 | 0 / 2 | **yes** |
+
+The second run changed two variables at once — the lead doubled *and* the link roughly halved
+its round trip — so it could not settle anything by itself, and the third run was run purely
+to separate them. Both mattered: same lead with a better link cut losses tenfold (90 → 6),
+and same link with a bigger lead cut them fourfold again (6 → 0).
+
+What explains all three is `margin_k ≈ lead − k − RTT/tick_period`, checked against the
+histogram rather than assumed: run 3's nominal margins of +3.1/+2.1/+1.1 appear as buckets
++1 (456–470), +2 (654–663), +3 (589–611) and a tail at +4 (207–208), so each copy spreads
+over about two tick buckets and the jitter is ±1 tick. The controlling quantity is the
+**last** copy's margin and it has to exceed that jitter rather than merely be positive,
+which is why a nominal +0.6 lost fourteen percent of orders while the link dropped only 1.3%
+of packets. The rule `lead ≥ (w-1) + RTT/tick + jitter_ticks` ranks all three runs correctly
+and is now recorded in `NETWORKING.md` as a decision, together with what it costs: the lead
+*is* input delay, so this table is a latency-versus-lost-orders curve — 80 ms for about 1%,
+160 ms for none, on a 16 ms link.
+
+**And an integrity check fell out of it.** Cross-process agreement at a tick held in every
+run, as it must. But *reproducibility across runs* held only in run 2, the one which lost no
+orders: all four of its reports carry the identical root `152446983058193285` across both
+directions and both builds. The runs which lost orders agreed within each run and differed
+between them — correctly, because the input was not the same input. So a differing root
+between two runs of the same schedule is a free, precise indicator that input delivery was
+incomplete.
+
+One measurement artifact recorded so it is not read as an event later: `in_pps == 0` appears
+at exactly ticks 225 and 250 in two independent runs, and `quality_local == 0` on the first
+sample of every run. A network does not repeat itself to the tick; these are the backend's
+statistics intervals before they fill. "No data" and "no traffic" are different answers and
+the report must not blur them.
+
 ### Margin is now measured, and it sizes the one knob that matters
 
 The authority records, for every arriving copy, the target tick minus the tick it had

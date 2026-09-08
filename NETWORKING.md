@@ -953,6 +953,56 @@ packet halves the cost and buys redundancy for free: a lost packet does not
 stall the authority because the same intents arrive again in the next two. The
 tick window is therefore part of the encoding, not a policy above it.
 
+**The redundancy window is sized by margin, and the margin is measured.** The
+window only helps while its copies still arrive before their tick is sealed,
+and whether they do is a arithmetic rather than a hope. For a batch which
+repeats an order across `w` consecutive ticks, the margin of copy `k` against
+the seal is
+
+```text
+margin_k  ≈  lead − k − RTT / tick_period      (k = 0 … w-1)
+```
+
+where `lead` is how many ticks ahead the follower proposes. Three runs over a
+real 5G link confirm it, and NET-LAB-01's margin histogram is where the numbers
+come from:
+
+| lead | RTT | last copy's margin | late copies | orders lost |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 28 ms | +0.6 | 511 / 294 | 90 / 22 |
+| 4 | 16 ms | +1.2 | 57 / 58 | 6 / 9 |
+| 8 | 17 ms | +5.2 | 3 / 11 | 0 / 2 |
+
+The controlling quantity is the **last** copy's margin, and it must exceed the
+jitter, not merely be positive: the observed histogram spreads each copy across
+about two tick buckets, so a nominal `+0.6` puts the last copy past the seal
+most of the time and often the one before it too — which is why the first run
+lost fourteen percent of its orders while dropping only 1.3% of its packets.
+Hence the rule
+
+```text
+lead  ≥  (w - 1) + RTT / tick_period + jitter_ticks
+```
+
+which ranks all three runs correctly. **Its cost is the point**: the lead *is*
+input delay, `lead × tick_period`, so the measured ladder above is a
+latency-versus-lost-orders curve and the right lead is the smallest one that
+keeps orders landing — 80 ms of delay for about 1% loss, 160 ms for none, on a
+16 ms link. Deriving the lead automatically from a measured RTT is a later step
+and needs the RTT to be known before the first tick, which it is not: the
+backend's statistics need tens of seconds. Until then the authority declares
+the lead and it travels in the grant, because the authority is what seals the
+tick.
+
+**A free integrity check falls out of this.** Cross-process agreement on the
+state root at a tick holds whenever the protocol is correct, but
+**reproducibility across runs holds only when no order was lost** — the input
+is otherwise not the same input. The run with zero lost orders produced an
+identical root in both directions and in both builds; the runs which lost
+orders agreed within each run and differed between them. So a differing root
+between two runs of the same recorded schedule is a precise indicator that
+input delivery was incomplete, at no cost.
+
 **Quantization is for replication only; divergence detection uses exact bytes.**
 A quantum declared as a negative power of two makes the code a deterministic
 function of its input on every conforming platform, and makes decode-then-encode
