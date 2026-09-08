@@ -63,7 +63,7 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
   if (net::try_encode_credential(grant.credential, credential) != net::credential_status::accepted)
     return false;
   out.clear();
-  const size_t required = 1 + 40 + net::reconnect_credential_bytes + net::credential_mac_bytes;
+  const size_t required = 1 + 48 + net::reconnect_credential_bytes + net::credential_mac_bytes;
   if (out.capacity() < required) return false;
   net::state_writer w(out, false);
   w.u8(uint8_t(lab_message::reconnect_grant));
@@ -72,6 +72,7 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
   w.u64(grant.tick_period_ms);
   w.u64(grant.suspect_after_ms);
   w.u64(grant.lost_after_ms);
+  w.u64(grant.intent_lead_ticks);
   w.bytes(credential);
   w.bytes(grant.session_secret);
   return w.good();
@@ -85,6 +86,7 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
   const auto tick_period_ms = r.u64();
   const auto suspect_after_ms = r.u64();
   const auto lost_after_ms = r.u64();
+  const auto intent_lead_ticks = r.u64();
   const auto credential = r.take(net::reconnect_credential_bytes);
   const auto secret = r.take(net::credential_mac_bytes);
   if (!r.good() || r.position() != r.size()) return false;
@@ -93,13 +95,15 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
     return false;
   // An incoherent policy is refused at the boundary rather than handed to
   // `reconnect_policy::valid()` to discover later.
-  if (tick_period_ms == 0 || suspect_after_ms == 0 || lost_after_ms <= suspect_after_ms)
+  if (tick_period_ms == 0 || suspect_after_ms == 0 || lost_after_ms <= suspect_after_ms ||
+      intent_lead_ticks == 0)
     return false;
   out.issued_at = issued_at;
   out.final_tick = final_tick;
   out.tick_period_ms = tick_period_ms;
   out.suspect_after_ms = suspect_after_ms;
   out.lost_after_ms = lost_after_ms;
+  out.intent_lead_ticks = intent_lead_ticks;
   out.credential = decoded;
   std::copy(secret.begin(), secret.end(), out.session_secret.begin());
   return true;
@@ -133,6 +137,14 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
   if (value.target_tick < value.checkpoint_tick) return false;
   out = value;
   return true;
+}
+
+[[nodiscard]] inline bool decode_recovery_unavailable(const std::span<const std::byte> bytes,
+                                                      uint8_t& reason) {
+  net::state_reader r(bytes);
+  if (r.u8() != uint8_t(lab_message::recovery_unavailable)) return false;
+  reason = r.u8();
+  return r.good() && r.position() == r.size();
 }
 
 [[nodiscard]] inline bool encode_recovery_unavailable(const uint8_t reason,

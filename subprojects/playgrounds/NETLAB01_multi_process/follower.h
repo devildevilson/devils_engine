@@ -31,6 +31,20 @@ struct follower_counters {
   uint64_t replayed_ticks = 0;
   uint64_t chunks_received = 0;
   uint64_t stale_batches_sent = 0;
+  // The measurement that matters, as opposed to the ones that are easy. A
+  // redundant copy which arrives too late costs nothing, and the authority's
+  // `late` counter is dominated by exactly those; what a player would notice is
+  // an ORDER which never entered a canonical bundle at all.
+  uint64_t orders_landed = 0;
+  uint64_t orders_lost = 0;
+  // Proposals whose tick was crossed by a recovery replay rather than applied
+  // live. Their fate is not observed here, and saying so beats folding them
+  // into either of the two above.
+  uint64_t orders_unobserved = 0;
+  // Proposals for ticks the run ended before reaching. Not lost and not
+  // landed: the tick never happened, and folding them into either would make
+  // the accounting fail to close for a reason that is not a fault.
+  uint64_t orders_pending_at_exit = 0;
 };
 
 // What survives a process death. The ticket and the derived secret are the only
@@ -92,6 +106,9 @@ public:
     reply_.reserve(net::session_wire_max_message_bytes);
     credential_bytes_.reserve(net::reconnect_credential_bytes);
     proposals_.reserve(lab_intent_window);
+    // Deep enough for the lead plus slack; overflow is counted rather than
+    // silently dropping the record.
+    pending_orders_.reserve(32);
     batch_.reserve(lab_max_message_bytes);
     recovery_bundles_.reserve(128);
     deferred_.reserve(64);
@@ -128,6 +145,28 @@ public:
   }
   const lab_link::conditions& conditions() const noexcept {
     return measured_;
+  }
+  uint64_t superseded() const noexcept {
+    return link_.superseded();
+  }
+  // Live reading, for sampling during the run. `conditions()` is the one taken
+  // at the last tick, which is the right value for the final line and the wrong
+  // one for a time series.
+  lab_link::conditions measure_now() {
+    return connected_ ? link_.measure(peer_) : lab_link::conditions{};
+  }
+  // The pacing the AUTHORITY announced, which is the only true one: a
+  // follower's own `--tick-ms` is not used for anything and reporting it would
+  // be reporting the wrong quantity.
+  uint64_t announced_tick_period_ms() const noexcept {
+    return announced_tick_period_ms_;
+  }
+  uint64_t announced_lead_ticks() const noexcept {
+    return announced_lead_ticks_;
+  }
+  // Proposals still waiting for their tick when the run ended.
+  uint64_t orders_pending() const noexcept {
+    return uint64_t(pending_orders_.size());
   }
   size_t roster() const noexcept {
     return roster_;
@@ -291,7 +330,11 @@ private:
     }
     if (type == uint8_t(lab_message::recovery_unavailable)) {
       // "Recovery is impossible, join fresh" is a normal outcome, and this is
-      // the branch which measures the authority's retention budget.
+      // the branch which measures the authority's retention budget. The REASON
+      // has to travel and be reported: three different faults reach this branch
+      // and "impossible" alone cannot tell them apart.
+      verify_.require(decode_recovery_unavailable(bytes, unrecoverable_reason_),
+                      "unavailability did not decode");
       if (coordinator_) coordinator_->observe_unrecoverable(authority_now(local));
       unrecoverable_ = true;
       return;
@@ -332,6 +375,8 @@ private:
     anchor_ = int64_t(grant.issued_at) - int64_t(local);
     anchored_ = true;
     // Budgets announced by the authority, never assumed locally.
+    announced_tick_period_ms_ = grant.tick_period_ms;
+    announced_lead_ticks_ = grant.intent_lead_ticks;
     const uint64_t backoff = grant.tick_period_ms * 10 < 40 ? 40 : grant.tick_period_ms * 10;
     const net::reconnect_policy policy{
       .suspect_after = grant.suspect_after_ms,
@@ -370,7 +415,33 @@ private:
     propose_intents(local);
   }
 
+  // Did this tick's canonical bundle carry the order proposed for it?
+  void observe_order(const lab_bundle& bundle) {
+    for (auto it = pending_orders_.begin(); it != pending_orders_.end();) {
+      if (it->tick > bundle.tick) {
+        ++it;
+        continue;
+      }
+      if (it->tick < bundle.tick) {
+        // The tick went by without being applied live -- only possible across a
+        // recovery, and its bundles are not inspected here.
+        ++counters_.orders_unobserved;
+        it = pending_orders_.erase(it);
+        continue;
+      }
+      const bool landed = std::ranges::any_of(bundle.intents, [&](const net::intent& value) {
+        return value.kind == it->value.kind && value.cell_delta[0] == it->value.cell_delta[0] &&
+               value.code[0] == it->value.code[0];
+      });
+      if (landed) ++counters_.orders_landed;
+      else ++counters_.orders_lost;
+      it = pending_orders_.erase(it);
+    }
+  }
+
   void apply_live(const lab_bundle& bundle) {
+    traffic_started_ = true;
+    observe_order(bundle);
     verify_.require(bundle.tick == host_.state.tick + 1,
                     "authority bundles arrived out of tick order on a reliable lane");
     authority_run::apply_bundle(host_, bundle);
@@ -480,7 +551,7 @@ private:
   }
 
   void propose_intents(const uint64_t local) {
-    const uint64_t for_tick = host_.state.tick + intent_lead;
+    const uint64_t for_tick = host_.state.tick + announced_lead_ticks_;
     // Two cadences on purpose: one tick every window is SHARED by every
     // follower, so a bundle carrying several principals is guaranteed for any
     // roster size, and the rest are private, so single-principal ticks happen
@@ -501,6 +572,13 @@ private:
                       "an authored target was more cells away than the wire allows");
       if (proposals_.size() == proposals_.capacity()) proposals_.erase(proposals_.begin());
       proposals_.push_back({for_tick, value});
+      // Same record again, kept until its tick is committed, so the proposal's
+      // fate can be observed rather than inferred from copy counters.
+      if (pending_orders_.size() == pending_orders_.capacity()) {
+        ++counters_.orders_unobserved;
+        pending_orders_.erase(pending_orders_.begin());
+      }
+      pending_orders_.push_back({for_tick, value});
       last_proposed_ = for_tick;
       ++counters_.intents_proposed;
     }
@@ -518,7 +596,7 @@ private:
   }
 
   void send_batch(const uint64_t) {
-    send_batch_at(host_.state.tick + intent_lead);
+    send_batch_at(host_.state.tick + announced_lead_ticks_);
   }
 
   void send_batch_at(const uint64_t base) {
@@ -555,6 +633,14 @@ private:
 
   void drive_reconnect(const uint64_t local) {
     if (!coordinator_) return;
+    // The silence budget measures INTERRUPTED traffic, so it cannot start
+    // before traffic does. An authority waits for its whole roster before its
+    // clock starts, which across machines is however long the operator takes
+    // to launch the others; a follower admitted first would otherwise declare
+    // the session lost, reconnect, and be told there is no checkpoint — a
+    // failure whose every symptom points somewhere other than "the run has
+    // not begun".
+    if (!traffic_started_) return;
     // Past the final tick the authority is winding down on purpose. Counting
     // that silence as a loss would make both counters measure the shutdown
     // instead of the two failures the schedule actually injected.
@@ -644,6 +730,11 @@ public:
   bool unrecoverable() const noexcept {
     return unrecoverable_;
   }
+  // net::recovery_feasibility as an integer: 0 recoverable, 1 no_checkpoint,
+  // 2 history_gap, 3 target_before_checkpoint.
+  uint8_t unrecoverable_reason() const noexcept {
+    return unrecoverable_reason_;
+  }
   net::session_refusal_reason refusal() const noexcept {
     return refusal_;
   }
@@ -661,7 +752,7 @@ private:
     net::intent value;
   };
 
-  static constexpr uint64_t intent_lead = 4;
+
 
   lab_schedule schedule_;
   verifier verify_;
@@ -684,22 +775,28 @@ private:
   std::vector<replay_entry> recovery_bundles_;
   std::vector<lab_bundle> deferred_;
   std::vector<proposal> proposals_;
+  std::vector<proposal> pending_orders_;
   std::vector<net::intent> window_;
   std::filesystem::path ticket_path_;
   net::gns_peer peer_;
   lab_link::conditions measured_;
+
   uint32_t host_address_ = 0x7f000001;
   int64_t anchor_ = 0;
   uint64_t nonce_seed_ = 0, nonce_counter_ = 0;
   uint64_t checkpoint_filled_ = 0, last_proposed_ = 0, exit_request_ = 0, linger_until_ = 0;
   uint64_t final_tick_ = 0;
+  uint64_t announced_tick_period_ms_ = 0;
+  // Until the grant arrives there is nothing to propose for anyway.
+  uint64_t announced_lead_ticks_ = 4;
+  uint8_t unrecoverable_reason_ = 0;
   uint16_t port_ = 0;
   size_t roster_ = 0;
   net::session_refusal_reason refusal_ = net::session_refusal_reason::none;
   bool connected_ = false, connecting_ = false, has_ticket_ = false, resuming_ = false;
   bool anchored_ = false, awaiting_recovery_ = false, have_plan_ = false;
   bool failed_ = false, unrecoverable_ = false, pending_transport_loss_ = false;
-  bool stale_sent_ = false;
+  bool stale_sent_ = false, traffic_started_ = false;
 };
 
 static_assert(net::client_handshake_policy<follower_run>);

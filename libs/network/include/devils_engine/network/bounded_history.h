@@ -105,13 +105,24 @@ public:
            });
   }
 
+  // Retained entries in tick order; offset 0 is the oldest. Exposed because a
+  // binary search wants the index space rather than `entries()`: see the note
+  // on `checkpoint_ring::latest_at_or_before`.
+  const entry& at_offset(const size_t offset) const noexcept {
+    return at(offset);
+  }
+
   const entry* find_entry(const Tick& tick) const {
-    const auto values = entries();
-    const auto it = std::lower_bound(values.begin(), values.end(), tick,
-                                     [](const entry& value, const Tick& key) {
-                                       return value.tick < key;
-                                     });
-    return it != values.end() && (*it).tick == tick ? &*it : nullptr;
+    // Same reasoning as `latest_at_or_before`: no STL algorithm over the
+    // transform view, because what `iterator_traits` makes of that view's
+    // iterator is not the same answer on every standard library.
+    size_t low = 0, high = count_;
+    while (low < high) {
+      const size_t middle = low + (high - low) / 2;
+      if (at(middle).tick < tick) low = middle + 1;
+      else high = middle;
+    }
+    return low < count_ && at(low).tick == tick ? &at(low) : nullptr;
   }
 
   const Bundle* find(const Tick& tick) const {

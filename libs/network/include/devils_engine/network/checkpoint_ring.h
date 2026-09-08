@@ -76,15 +76,21 @@ public:
     return history_.find(tick);
   }
 
+  // Binary search over the INDEX SPACE, not over `entries()`. A classic STL
+  // algorithm on a `views::transform` range depends on what
+  // `iterator_traits` makes of that view's iterator, and libstdc++ 14 answers
+  // `output_iterator_tag` for exactly this one — after which `std::upper_bound`
+  // compiles and silently returns the wrong element. The index space needs no
+  // iterator machinery at all, so the question cannot arise.
   const entry* latest_at_or_before(const Tick& tick) const {
-    const auto& values = history_.entries();
-    auto it = std::upper_bound(
-      values.begin(), values.end(), tick,
-      [](const Tick& key, const entry& value) {
-        return key < value.tick;
-      });
-    if (it == values.begin()) return nullptr;
-    return &*std::prev(it);
+    const size_t count = history_.retained_count();
+    size_t low = 0, high = count;
+    while (low < high) {
+      const size_t middle = low + (high - low) / 2;
+      if (tick < history_.at_offset(middle).tick) high = middle;
+      else low = middle + 1;
+    }
+    return low == 0 ? nullptr : &history_.at_offset(low - 1);
   }
 
   [[nodiscard]] history_store_result try_store(const Tick& tick, const Blob& blob) {

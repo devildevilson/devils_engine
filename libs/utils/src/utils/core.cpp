@@ -111,6 +111,17 @@ std::string get_cpu_name() noexcept {
   return proc_name;
 }
 
+// CRC32C по Кастаньоли. Инструкция SSE4.2 и программный проход дают ОДНИ И ТЕ ЖЕ
+// биты: полином определён стандартом, а `_mm_crc32_u64` над memcpy-загрузкой
+// обрабатывает байты в том же порядке, что побайтовый проход на little-endian.
+// Поэтому здесь не «быстрая и медленная версии с разным результатом», а одна
+// величина двумя способами — иначе смена базовой архитектуры сдвигала бы любое
+// значение, выведенное из этой функции.
+//
+// Ветка нужна потому, что интринсики CRC32 требуют SSE4.2, а сборка с
+// DEVILS_ENGINE_ARCH=OFF его не включает: безусловный вызов ломал сборку под
+// машину без AVX целиком.
+#if defined(__SSE4_2__) || defined(_MSC_VER)
 uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {
   uint64_t crc = 0xffffffffu;
   size_t i = 0;
@@ -126,17 +137,31 @@ uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {
   if (i + sizeof(uint32_t) <= len) {
     uint32_t chunk = 0;
     std::memcpy(&chunk, data + i, sizeof(uint32_t));
-    crc = _mm_crc32_u32(crc, chunk);
+    crc = _mm_crc32_u32(static_cast<uint32_t>(crc), chunk);
     i += sizeof(uint32_t);
   }
 
   // 1 байт
   for (; i < len; ++i) {
-    crc = _mm_crc32_u8(crc, data[i]);
+    crc = _mm_crc32_u8(static_cast<uint32_t>(crc), data[i]);
   }
 
   return static_cast<uint32_t>(crc ^ 0xffffffffu); // финальный XOR
 }
+#else
+uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {
+  // Отражённый полином Кастаньоли: 0x1edc6f41 в обратном порядке битов.
+  constexpr uint32_t reflected_polynomial = 0x82f63b78u;
+  uint32_t crc = 0xffffffffu;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= data[i];
+    for (int bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ (reflected_polynomial & (0u - (crc & 1u)));
+    }
+  }
+  return crc ^ 0xffffffffu;
+}
+#endif
 
 uint32_t crc32c(const std::span<const uint8_t>& data) noexcept {
   return crc32c(data.data(), data.size());

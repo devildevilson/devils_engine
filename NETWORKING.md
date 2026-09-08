@@ -1872,8 +1872,21 @@ the pacing and silence budgets travel in the grant so a follower cannot assume t
 went from eighty-five direct shared-library dependencies to four by vendoring Abseil (protobuf preferred the
 system copy, so the vendored protobuf was only half vendored) and linking the C++ runtime statically. The
 remaining dynamic dependencies are glibc and OpenSSL's `libcrypto.so.3`, which GNS requires because it offers
-only OpenSSL or libsodium for AES-GCM/SHA-256. The measured glibc floor is 2.38 and no change to this
-project's code can lower it; building against an older glibc is a packaging decision.
+only OpenSSL or libsodium for AES-GCM/SHA-256. The measured floors are glibc 2.38 and libstdc++ from GCC 15, the
+latter set by a single `std::format` symbol; building against an older toolchain is a packaging decision
+rather than a code one.
+
+Two ISA decisions belong here rather than in the journal. First, the deployable artifact is built with
+`DEVILS_ENGINE_ARCH=OFF`, because the default `AVX` puts unconditional AVX in every engine target and a server
+without it faults on the first such instruction; the option existed but had never been exercised, and
+`utils::crc32c` called SSE4.2 intrinsics unconditionally, so the baseline configuration did not build at all
+until that function gained a portable path proven bit-identical to the intrinsic one. Second, **the C++ runtime
+and glibc stay dynamically linked on purpose**: a static libstdc++ carries the *build host's* ISA choices, and
+this host's distribution builds for x86-64-v3, so its `libstdc++.a` holds unconditional AVX with no runtime
+dispatch. The target's own copies are built for the target's baseline, which is the property we want and do
+not control. The measured effect of the two together is 3,014 unconditional AVX instructions reduced to zero,
+with the state root unchanged across the ISA change — the integer-only causal state's first cross-ISA
+evidence.
 
 Remaining for this task: a second machine on a controlled LAN, recorded real RTT/jitter/loss — which the stand
 measured to need a run tens of seconds long, not merely a remote one — and a project-sized checkpoint.

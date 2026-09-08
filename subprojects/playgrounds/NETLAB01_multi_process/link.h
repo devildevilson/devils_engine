@@ -211,6 +211,13 @@ public:
 
   // Consumes at most one native pump's worth of messages. The lease is released
   // as soon as the consumer returns, so no payload outlives this call.
+  // How many unreliable frames the backend discarded because a newer one in the
+  // same lane had already arrived. On a jittery link this is where a redundant
+  // intent copy goes, and without counting it the copy's fate is invisible.
+  uint64_t superseded() const noexcept {
+    return superseded_;
+  }
+
   template <class Consumer>
   size_t receive(Consumer&& consumer) {
     size_t total = 0;
@@ -219,6 +226,7 @@ public:
       const auto result = transport_.receive(input);
       if (result.status != net::gns_status::ok)
         utils::error{}("NET-LAB-01: receive refused, status {}", unsigned(result.status));
+      superseded_ += result.superseded;
       if (result.count == 0) break;
       for (size_t i = 0; i < result.count; ++i) {
         consumer(input[i].peer(), input[i].lane(), input[i].payload());
@@ -263,6 +271,7 @@ private:
   net::gns_transport transport_;
   net::gns_listener listener_;
   net::gns_peer pending_;
+  uint64_t superseded_ = 0;
   std::vector<std::byte> scratch_;
 };
 

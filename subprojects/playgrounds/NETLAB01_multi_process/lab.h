@@ -288,6 +288,11 @@ struct lab_grant {
   uint64_t tick_period_ms = 0;
   uint64_t suspect_after_ms = 0;
   uint64_t lost_after_ms = 0;
+  // How far ahead a follower should propose. Same reasoning as the pacing: it
+  // is the authority's decision, because the authority is what seals the tick,
+  // and an operator who set it on one side only would be silently running two
+  // different protocols.
+  uint64_t intent_lead_ticks = 0;
 };
 
 struct lab_recovery_plan {

@@ -52,6 +52,10 @@ struct lab_schedule {
   // do, which proves it caught up but not that it participates again. 0 keeps
   // the run's length fixed.
   uint64_t resume_tail_ticks = 0;
+  // Ticks ahead the follower proposes. 4 was chosen for a laboratory loopback;
+  // on a real link it is the whole margin budget, so it has to be adjustable
+  // without a rebuild.
+  uint64_t intent_lead_ticks = 4;
 
   // A scheduled failure names a roster position, and a reduced roster may not
   // have it. Asking that question in one place is the fix for a whole class of
@@ -123,8 +127,24 @@ inline constexpr uint64_t lab_linger_ms = 400;
 // retries, and that only works if the client is told.
 inline constexpr uint64_t lab_refusal_grace_ms = 250;
 
+// How many ticks of margin each arriving intent copy had: the target tick minus
+// the tick the authority had already committed. A positive margin means the
+// copy beat the seal; zero or negative means it was late. This is the number
+// which sizes the proposal lead, and without it "orders were lost" cannot be
+// told apart from "orders arrived too late", which the first real network run
+// showed are different failures with the same symptom.
+inline constexpr size_t lab_margin_buckets = 9;
+inline constexpr int lab_margin_lowest = -3; // bucket 0 is "-3 or worse"
+
+inline size_t lab_margin_bucket(const int64_t margin) noexcept {
+  if (margin <= lab_margin_lowest) return 0;
+  const int64_t offset = margin - lab_margin_lowest;
+  return offset >= int64_t(lab_margin_buckets) ? lab_margin_buckets - 1 : size_t(offset);
+}
+
 struct authority_counters {
   uint64_t bundles_sent = 0;
+  std::array<uint64_t, lab_margin_buckets> margin{};
   uint64_t joins_refused_no_capacity = 0;
   uint64_t multi_principal_ticks = 0;
   uint64_t intents_accepted = 0;
@@ -178,6 +198,10 @@ public:
 
   // Real conditions per live session, measured from the backend rather than
   // assumed from the fact that this is loopback.
+  uint64_t superseded() const noexcept {
+    return link_.superseded();
+  }
+
   lab_link::conditions measure(const size_t roster) {
     if (auto* session = session_by_roster(roster); session != nullptr && session->peer_live)
       return link_.measure(session->peer);
@@ -198,6 +222,9 @@ public:
   }
   bool started() const noexcept {
     return started_;
+  }
+  size_t admitted() const noexcept {
+    return admitted_count_;
   }
 
   // One pass of the authority's owner loop. Returns false once the scheduled
@@ -454,6 +481,7 @@ private:
     grant.tick_period_ms = schedule_.tick_period_ms;
     grant.suspect_after_ms = schedule_.suspect_ms();
     grant.lost_after_ms = schedule_.lost_ms();
+    grant.intent_lead_ticks = schedule_.intent_lead_ticks;
     verify_.require(net::issue_reconnect_ticket(ticket, mac_, credential_scratch_,
                                                 grant.credential) ==
                       net::credential_status::accepted,
@@ -591,6 +619,9 @@ private:
   // "redundant" now means same principal, same kind, same tick. The same kind
   // from a different principal is a different order.
   void admit_intent(const uint64_t tick, const uint64_t principal, const net::intent& value) {
+    // Recorded for every arriving copy, accepted or late, because the useful
+    // question is the SHAPE of the margin distribution and not just its sign.
+    ++counters_.margin[lab_margin_bucket(int64_t(tick) - int64_t(host_.state.tick))];
     if (tick <= host_.state.tick) {
       ++counters_.intents_late;
       return;

@@ -1,5 +1,6 @@
 #include "authority.h"
 #include "follower.h"
+#include "report.h"
 
 #include <chrono>
 #include <cstdio>
@@ -53,6 +54,9 @@ struct options {
   // exact endpoint and the followers are told it outright.
   std::string endpoint;
   std::filesystem::path ticket;
+  // Where the run's record goes. Empty means no file; the report is otherwise
+  // written on every exit path, including the failing ones.
+  std::filesystem::path report;
   size_t index = 0;
   size_t followers = 0;   // 0 = the scenario's own count
   // Overrides the scenario's run length. A LAN session wants a longer run than
@@ -62,6 +66,12 @@ struct options {
   uint64_t tick_ms = 0;
   uint64_t suspect_ms = 0;
   uint64_t lost_ms = 0;
+  // How long a process waits before giving up on the run. The harness spawns
+  // everything at once and a minute is plenty; an operator starting processes
+  // on several machines by hand needs minutes, so the default differs by mode
+  // rather than being one number that is wrong for one of them.
+  uint64_t deadline_s = 0;
+  uint64_t intent_lead = 0;
   bool resume = false;
   bool quiet = false;
 };
@@ -70,6 +80,11 @@ struct endpoint_value {
   uint32_t host = 0;
   uint16_t port = 0;
 };
+
+std::chrono::seconds wall_deadline(const options& opts) {
+  if (opts.deadline_s != 0) return std::chrono::seconds(opts.deadline_s);
+  return std::chrono::seconds(opts.endpoint.empty() ? 60 : 900);
+}
 
 std::string dotted_quad(const uint32_t host) {
   return std::to_string((host >> 24) & 0xffu) + '.' + std::to_string((host >> 16) & 0xffu) + '.' +
@@ -133,6 +148,7 @@ lab_schedule schedule_with(const options& opts) {
   // number, because `lab_schedule` asks "does this failure hit anyone" rather
   // than assuming a full roster.
   if (opts.followers != 0) schedule.followers = std::min(opts.followers, lab_max_followers);
+  if (opts.intent_lead != 0) schedule.intent_lead_ticks = opts.intent_lead;
   return schedule;
 }
 
@@ -231,9 +247,87 @@ int run_authority(const options& opts) {
     return EXIT_FAILURE;
   }
 
-  const auto deadline = std::chrono::steady_clock::now() + 60s;
+  // The report is filled as the run goes and written on EVERY exit path,
+  // including the failing ones: a failed run is when its record is wanted most.
+  lab_report report;
+  describe_build(report);
+  describe_compatibility(report);
+  report.set("run.role", std::string_view("authority"));
+  report.set("run.scenario", opts.scenario);
+  report.set("run.endpoint", dotted_quad(host_address) + ":" + std::to_string(bound.port));
+  report.set("run.ephemeral_bind", uint64_t(bound.ephemeral ? 1 : 0));
+  report.set("run.followers_expected", uint64_t(schedule.followers));
+  report.set("run.tick_period_ms", schedule.tick_period_ms);
+  report.set("run.final_tick_scheduled", schedule.final_tick);
+  report.set("run.suspect_ms", schedule.suspect_ms());
+  report.set("run.lost_ms", schedule.lost_ms());
+  report.set("run.checkpoint_every", schedule.checkpoint_every);
+  const uint64_t wall_origin = monotonic_ms();
+
+  const auto finish = [&](const std::string_view outcome, const int code) {
+    report.set("run.outcome", outcome);
+    report.set("run.wall_ms", monotonic_ms() - wall_origin);
+    report.set("state.tick", authority.host().state.tick);
+    report.set("state.root", lab_root(authority.host()));
+    report.set("state.final_tick_announced", authority.final_tick());
+    const auto& c = authority.counters();
+    report.set("session.admissions", c.admissions);
+    report.set("session.resumes_from_hold", c.resumes_from_hold);
+    report.set("session.resumes_by_migration", c.resumes_by_migration);
+    report.set("session.refusals", c.refusals);
+    report.set("session.joins_refused_no_capacity", c.joins_refused_no_capacity);
+    report.set("session.recoveries_planned", c.recoveries_planned);
+    report.set("session.checkpoint_chunks_sent", c.chunks_sent);
+    report.set("session.replay_bundles_sent", c.replay_bundles_sent);
+    report.set("bundles.sent", c.bundles_sent);
+    report.set("bundles.multi_principal_ticks", c.multi_principal_ticks);
+    report.set("copies.accepted", c.intents_accepted);
+    report.set("copies.duplicate", c.intents_duplicate);
+    report.set("copies.late", c.intents_late);
+    report.set("copies.refused", c.intents_refused);
+    report.set("copies.superseded", authority.superseded());
+    // The margin distribution: how many ticks of slack each arriving copy had
+    // against the seal. `plus1` and up beat it; `zero` and below were late.
+    // This is what sizes --intent-lead.
+    static constexpr const char* names[lab_margin_buckets] = {
+      "minus3_or_worse", "minus2", "minus1", "zero",
+      "plus1", "plus2", "plus3", "plus4", "plus5_or_better"};
+    const auto& margin = authority.counters().margin;
+    uint64_t total = 0, late_side = 0;
+    for (size_t i = 0; i < lab_margin_buckets; ++i) {
+      report.set(std::string("margin.") + names[i], margin[i]);
+      total += margin[i];
+      if (i <= 3) late_side += margin[i];
+    }
+    if (total != 0) report.set("margin.late_fraction", double(late_side) / double(total));
+    report.set("run.intent_lead_ticks", schedule.intent_lead_ticks);
+    report.summarize_link();
+    if (!opts.report.empty() && !report.write(opts.report))
+      std::cerr << "NET-LAB-01 authority: cannot write " << opts.report << '\n';
+    return code;
+  };
+
+  const auto deadline = std::chrono::steady_clock::now() + wall_deadline(opts);
   bool announced_start = false;
+  // Waiting for a roster to assemble across machines is the normal state for
+  // minutes, and a silent process is indistinguishable from a hung one.
+  auto next_report = std::chrono::steady_clock::now();
   while (authority.step()) {
+    if (const uint64_t tick = authority.host().state.tick; report.due(tick)) {
+      report.mark_sampled(tick);
+      const auto measured = authority.measure(0);
+      report.sample({tick, monotonic_ms() - wall_origin, measured.ping_ms,
+                     measured.quality_local, measured.quality_remote,
+                     measured.in_packets_per_second, measured.out_packets_per_second,
+                     measured.pending_reliable_bytes});
+    }
+    if (!authority.started() && !opts.quiet &&
+        std::chrono::steady_clock::now() >= next_report) {
+      std::cout << "authority waiting: admitted " << authority.admitted() << " of "
+                << schedule.followers << " followers\n";
+      std::cout.flush();
+      next_report = std::chrono::steady_clock::now() + 5s;
+    }
     // The marker belongs to the local harness. Writing it in a distributed run
     // would drop a file into whatever directory the operator happened to be in.
     if (!opts.rendezvous.empty() && authority.started() && !announced_start) {
@@ -243,7 +337,7 @@ int run_authority(const options& opts) {
     if (std::chrono::steady_clock::now() >= deadline) {
       std::cerr << "NET-LAB-01 authority: wall deadline reached at tick "
                 << authority.host().state.tick << '\n';
-      return EXIT_FAILURE;
+      return finish("wall_deadline", EXIT_FAILURE);
     }
     std::this_thread::sleep_for(1ms);
   }
@@ -289,8 +383,9 @@ int run_authority(const options& opts) {
             << " ephemeral_bind=" << (bound.ephemeral ? 1 : 0)
             << " multi_principal=" << counters.multi_principal_ticks
             << " no_capacity=" << counters.joins_refused_no_capacity
-            << " announced_final=" << authority.final_tick() << '\n';
-  return EXIT_SUCCESS;
+            << " announced_final=" << authority.final_tick()
+            << " superseded=" << authority.superseded() << '\n';
+  return finish("completed", EXIT_SUCCESS);
 }
 
 int run_intruder(const options& opts) {
@@ -354,12 +449,73 @@ int run_follower(const options& opts) {
   }
 
   follower_run follower(schedule, opts.index, host_address, port, ticket, opts.resume);
-  const auto deadline = std::chrono::steady_clock::now() + 60s;
+
+  lab_report report;
+  describe_build(report);
+  describe_compatibility(report);
+  report.set("run.role", std::string_view("follower"));
+  report.set("run.scenario", opts.scenario);
+  report.set("run.roster", uint64_t(opts.index));
+  report.set("run.endpoint", dotted_quad(host_address) + ":" + std::to_string(port));
+  report.set("run.resumed", uint64_t(opts.resume ? 1 : 0));
+  const uint64_t wall_origin = monotonic_ms();
+
+  const auto finish = [&](const std::string_view outcome, const int code) {
+    report.set("run.outcome", outcome);
+    report.set("run.wall_ms", monotonic_ms() - wall_origin);
+    report.set("state.tick", follower.host().state.tick);
+    report.set("state.root", lab_root(follower.host()));
+    report.set("state.final_tick_announced", follower.final_tick());
+    const auto& c = follower.counters();
+    report.set("session.reconnects", c.reconnects);
+    report.set("session.recoveries", c.recoveries);
+    report.set("session.replayed_ticks", c.replayed_ticks);
+    report.set("session.transport_losses", c.transport_losses);
+    report.set("session.silence_losses", c.silence_losses);
+    report.set("session.warnings", c.warnings);
+    report.set("session.refusal", uint64_t(follower.refusal()));
+    report.set("session.unrecoverable", uint64_t(follower.unrecoverable() ? 1 : 0));
+    report.set("session.unrecoverable_reason", uint64_t(follower.unrecoverable_reason()));
+    report.set("bundles.applied", c.bundles_applied);
+    report.set("bundles.deferred", c.bundles_deferred);
+    report.set("checkpoint.chunks_received", c.chunks_received);
+    // The quantity that matters, kept apart from the copy counters it is easy
+    // to confuse it with.
+    report.set("orders.proposed", c.intents_proposed);
+    report.set("orders.landed", c.orders_landed);
+    report.set("orders.lost", c.orders_lost);
+    report.set("orders.unobserved", c.orders_unobserved);
+    report.set("orders.pending_at_exit", follower.orders_pending());
+    // The denominator is what was actually decided, not what was proposed:
+    // a proposal whose tick never arrived cannot have been lost.
+    const uint64_t decided = c.orders_landed + c.orders_lost;
+    if (decided != 0)
+      report.set("orders.landed_fraction", double(c.orders_landed) / double(decided));
+    report.set("run.tick_period_ms_announced", follower.announced_tick_period_ms());
+    report.set("run.intent_lead_ticks_announced", follower.announced_lead_ticks());
+    report.set("copies.batches_sent", c.batches_sent);
+    report.set("copies.superseded", follower.superseded());
+    describe_conditions(report, "link.final", follower.conditions());
+    report.summarize_link();
+    if (!opts.report.empty() && !report.write(opts.report))
+      std::cerr << "NET-LAB-01 follower: cannot write " << opts.report << '\n';
+    return code;
+  };
+
+  const auto deadline = std::chrono::steady_clock::now() + wall_deadline(opts);
   while (follower.step()) {
+    if (const uint64_t tick = follower.host().state.tick; report.due(tick)) {
+      report.mark_sampled(tick);
+      const auto measured = follower.measure_now();
+      report.sample({tick, monotonic_ms() - wall_origin, measured.ping_ms,
+                     measured.quality_local, measured.quality_remote,
+                     measured.in_packets_per_second, measured.out_packets_per_second,
+                     measured.pending_reliable_bytes});
+    }
     if (std::chrono::steady_clock::now() >= deadline) {
       std::cerr << "NET-LAB-01 follower: wall deadline reached at tick "
                 << follower.host().state.tick << '\n';
-      return EXIT_FAILURE;
+      return finish("wall_deadline", EXIT_FAILURE);
     }
     std::this_thread::sleep_for(1ms);
   }
@@ -375,18 +531,19 @@ int run_follower(const options& opts) {
               << " root=" << lab_root(follower.host())
               << " exit=scheduled_death\n";
     std::cout.flush();
-    return int(follower.exit_request());
+    return finish("scheduled_death", int(follower.exit_request()));
   }
   if (follower.failed()) {
     std::cerr << "NET-LAB-01 follower: abandoned at tick " << follower.host().state.tick
               << ", refusal=" << unsigned(follower.refusal())
               << ", unrecoverable=" << follower.unrecoverable()
+              << ", reason=" << unsigned(follower.unrecoverable_reason())
               << ", transport_loss=" << counters.transport_losses
               << ", silence_loss=" << counters.silence_losses
               << ", reconnects=" << counters.reconnects
               << ", recoveries=" << counters.recoveries
               << ", warnings=" << counters.warnings << '\n';
-    return EXIT_FAILURE;
+    return finish("abandoned", EXIT_FAILURE);
   }
 
   verify.require(follower.host().state.tick == follower.final_tick(),
@@ -425,11 +582,16 @@ int run_follower(const options& opts) {
             << " replayed=" << counters.replayed_ticks
             << " chunks=" << counters.chunks_received
             << " stale_sent=" << counters.stale_batches_sent
+            << " orders_landed=" << counters.orders_landed
+            << " orders_lost=" << counters.orders_lost
+            << " orders_unobserved=" << counters.orders_unobserved
+            << " orders_lost=" << counters.orders_lost
+            << " superseded=" << follower.superseded()
             << " announced_final=" << follower.final_tick()
             << " ping_ms=" << measured.ping_ms
             << " quality=" << measured.quality_local
             << " in_pps=" << measured.in_packets_per_second << '\n';
-  return EXIT_SUCCESS;
+  return finish("completed", EXIT_SUCCESS);
 }
 
 // ------------------------------------------------------------------- harness
@@ -563,6 +725,48 @@ size_t verify_scenario(const std::string& self, const std::string& scenario, ver
   return child_checks;
 }
 
+void print_usage(const char* self) {
+  std::cout <<
+    "NET-LAB-01 multi-process session stand.\n"
+    "\n"
+    "  " << self << " --verify [--quiet]\n"
+    "        Spawn every process locally and assert the whole outcome.\n"
+    "\n"
+    "  " << self << " --authority --listen HOST:PORT [options]\n"
+    "  " << self << " --follower  --connect HOST:PORT --index N [options]\n"
+    "        One run across machines. Start the authority first; it prints the\n"
+    "        endpoint and then waits for --followers peers before its clock starts.\n"
+    "\n"
+    "Options:\n"
+    "  --followers N     peers the authority waits for (default 3, max 3).\n"
+    "                    Launching one follower by hand means --followers 1.\n"
+    "  --index N         which roster position this follower claims. Each is a\n"
+    "                    distinct identity; two followers must not share one.\n"
+    "  --tick-ms N       authority pacing. Travels to the followers in the grant.\n"
+    "  --intent-lead N   ticks ahead followers propose (default 4). Set it on the\n"
+    "                    AUTHORITY only: it travels in the grant, because the\n"
+    "                    authority is what seals the tick. On a real link this is\n"
+    "                    the whole margin budget; size it from the margin.* fields\n"
+    "                    of a previous run's report.\n"
+    "  --final-tick N    run length, in ticks. Give a LAN run tens of seconds.\n"
+    "  --deadline-s N    give up after this long (default 60 local, 900 across\n"
+    "                    machines).\n"
+    "  --suspect-ms N    override the derived silence budgets.\n"
+    "  --lost-ms N\n"
+    "  --address A.B.C.D interface for the local rendezvous mode.\n"
+    "  --rendezvous DIR  local mode: the authority publishes its port in DIR.\n"
+    "  --ticket PATH     where a follower keeps its reconnect ticket.\n"
+    "  --resume          rejoin using a persisted ticket.\n"
+    "  --scenario NAME   continuous (default) or killed.\n"
+    "  --quiet\n"
+    "\n"
+    "Every process ends with one line containing tick= and root=. The run\n"
+    "succeeded when every root is equal at the same tick.\n"
+    "\n"
+    "The session is deliberately unauthenticated (IP_AllowWithoutAuth):\n"
+    "standalone GameNetworkingSockets has no certificate authority.\n";
+}
+
 int run_verify(const std::string& self, const options& opts) {
   verifier verify;
   size_t child_checks = 0;
@@ -595,12 +799,21 @@ int main(const int argc, const char* const* argv) {
     else if (arg == "--listen" && i + 1 < argc) opts.endpoint = argv[++i];
     else if (arg == "--connect" && i + 1 < argc) opts.endpoint = argv[++i];
     else if (arg == "--ticket" && i + 1 < argc) opts.ticket = argv[++i];
+    else if (arg == "--report" && i + 1 < argc) opts.report = argv[++i];
+    else if (arg == "--intent-lead" && i + 1 < argc)
+      opts.intent_lead = uint64_t(std::stoull(argv[++i]));
     else if (arg == "--followers" && i + 1 < argc)
       opts.followers = size_t(std::stoul(argv[++i]));
     else if (arg == "--tick-ms" && i + 1 < argc) opts.tick_ms = uint64_t(std::stoull(argv[++i]));
     else if (arg == "--suspect-ms" && i + 1 < argc)
       opts.suspect_ms = uint64_t(std::stoull(argv[++i]));
     else if (arg == "--lost-ms" && i + 1 < argc) opts.lost_ms = uint64_t(std::stoull(argv[++i]));
+    else if (arg == "--deadline-s" && i + 1 < argc)
+      opts.deadline_s = uint64_t(std::stoull(argv[++i]));
+    else if (arg == "--help" || arg == "-h") {
+      print_usage(argv[0]);
+      return EXIT_SUCCESS;
+    }
     else utils::error{}("NET-LAB-01: unknown argument '{}'", arg);
   }
 

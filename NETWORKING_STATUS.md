@@ -65,18 +65,32 @@ ABI. The root build now declares Abseil at the version protobuf 36.1 names for i
 ahead of protobuf, which is sufficient: protobuf's script opens with
 `if (NOT TARGET absl::strings)` and skips its search entirely.
 
-With that, plus `-static-libstdc++ -static-libgcc` and `-Wl,--as-needed` on the playground
-target, the artifact is down to **four** entries:
+With that, plus `-Wl,--as-needed` on the playground target, the artifact is down to **six**
+entries:
 
 ```
-ld-linux-x86-64.so.2   libc.so.6   libm.so.6   libcrypto.so.3
+ld-linux-x86-64.so.2  libc.so.6  libm.so.6  libstdc++.so.6  libgcc_s.so.1  libcrypto.so.3
 ```
 
 `libzstd.so.1` was ours, not transitive — reached through a corner of `devils_utils` the
 stand never calls, and removed by `--as-needed`. `zstd`, `zlib` and brotli in the earlier
-`ldd` output were *Arch's libcrypto's* dependencies, so they follow whatever OpenSSL the
-target machine has. Size went 5.1 MB → 8.7 MB, which is the seventy-nine libraries moving
-inside.
+`ldd` output were the *host libcrypto's* dependencies, so they follow whatever OpenSSL the
+target machine has. Size 5.1 MB → 6.2 MB.
+
+**Statically linking the C++ runtime was tried, and it is a trap worth naming.** The
+distribution's own copies of glibc/libstdc++ are built for the target's CPU baseline, which
+is precisely why they should stay dynamic; a static libstdc++ carries the *build host's* ISA
+choices instead. This host runs CachyOS, whose packages are built for x86-64-v3, so its
+`libstdc++.a` holds ~18,000 unconditional AVX instructions with no runtime dispatch — and an
+artifact linking it could not run on a CPU without AVX no matter what `DEVILS_ENGINE_ARCH`
+said about our own code. That also explains why `qemu-x86_64` refuses every AVX-less model
+below.
+
+The price of keeping it dynamic is a libstdc++ floor of **GLIBCXX_3.4.36 (GCC 15)**, and
+exactly **one symbol** sets it: `std::basic_format_arg<...>::_M_handle_unrecognized()`,
+emitted by any use of `std::format`. Without it the floor would be GLIBCXX_3.4.32 — GCC 13,
+i.e. Ubuntu 24.04 and Debian 13. One symbol costs two GCC generations, so that is the first
+place to look if the target machines turn out to be older.
 
 **OpenSSL stays dynamic and that is a real constraint.** GNS offers only OpenSSL or
 libsodium for AES-GCM/SHA-256 — there is no bundled option for that pair, and the machine
@@ -95,6 +109,203 @@ references, protobuf 10, Abseil 2, **the engine libraries 0**. So this project's
 cannot lower it, and demoting the dependencies to C++17 would risk an ABI split with the
 C++23 engine (Abseil's `string_view` aliasing). Building against an older glibc in a
 container is the cure, and it is a packaging decision rather than a code one.
+
+### The pinned toolchain, and the two defects reaching it exposed
+
+The fleet is Debian 13: glibc 2.41, libstdc++ from GCC 14 (`GLIBCXX_3.4.33`), OpenSSL 3.5.7 —
+and, decoded from its `OPENSSL_ia32cap=0x80202001479bfffd`, a CPU with **SSE2 and SSE3 and
+nothing else**: no SSSE3, SSE4.1, SSE4.2, POPCNT, AES-NI, XSAVE or AVX. That makes the
+`crc32c` fix above a runtime necessity rather than a build convenience — the SSE4.2 CRC32
+instruction would have faulted on this machine.
+
+The artifact needed `GLIBCXX_3.4.36` and the fleet has `3.4.33`, so the deployable build is
+**pinned to GCC 14** (`gcc14`, 14.3.1). No container is required, and the reason is worth
+recording: the libstdc++ floor comes from the *headers* that emit the references, not from
+the host's runtime, and linking against a newer `libstdc++.so` is harmless because a symbol
+keeps the version it was introduced with. The glibc floor *does* come from the host, but
+2.38 ≤ 2.41 already. Docker would only be needed to lower the glibc floor below what this
+host provides.
+
+The pinned build is `-DCMAKE_CXX_COMPILER=g++-14 -DDEVILS_ENGINE_ARCH=OFF` with the runtime
+dynamic. Result: `GLIBCXX_3.4.32` (a version to spare against the fleet), `CXXABI_1.3.15`,
+`GLIBC_2.38`, `OPENSSL_3.0.0`, 5.8 MB, six dynamic dependencies, and above SSE3 only 2,160
+`tzcnt` — which decodes as `bsf` without BMI1, so it cannot fault, and `__builtin_ctz(0)`
+is undefined anyway so nothing depends on the difference.
+
+**Defect: `utils::info`/`warn` named spdlog's format-string type instead of asking spdlog.**
+They hard-coded `std::format_string<Args...>`, but spdlog uses that type only when the
+standard library advertises `__cpp_lib_format >= 202207L` and falls back to a plain
+`std::string_view` otherwise. Measured: GCC 16 reports 202304 and accepts it, GCC 14 reports
+202110 and does not, so the wrapper compiled on one standard library and not on another.
+Fixed by deferring to `spdlog::format_string_t<Args...>`. The other four `std::format_string`
+uses (`utils::error`, `catalogue::log_line`, `trace_line`) format through `std::format`
+themselves and hand spdlog a finished string, so they do not depend on its alias.
+
+**Defect, and the serious one: a classic STL algorithm over a `views::transform` range.**
+`checkpoint_ring::latest_at_or_before` ran `std::upper_bound` over `bounded_history::entries()`,
+which is `views::iota | views::transform`. What `std::iterator_traits` makes of that view's
+iterator is not the same answer on every standard library: **libstdc++ 14 answers
+`output_iterator_tag`**, after which `std::upper_bound` still compiles and silently returns
+the wrong element. The consequence in the stand was total and looked like something else
+entirely — `assess_recovery` received no checkpoint, answered `no_checkpoint`, and *every*
+reconnect was told recovery was impossible. `bounded_history::find_entry` had the same shape
+and was merely lucky. Both now binary-search the **index space**, which needs no iterator
+machinery, so the question cannot arise. NET-04's own test caught it: one assertion of 168
+under GCC 14, green under GCC 16.
+
+Closed a diagnostic gap while chasing it: the stand reported "recovery impossible" without
+the reason, though three distinct faults reach that branch. The reason now travels in the
+message and is printed.
+
+**"CPU ISA level is lower than required" — the marker, not the code.** The first artifact was
+refused by the target's `ld.so` with that message despite carrying no non-baseline
+instruction. `ld.so` checks the ELF property `GNU_PROPERTY_X86_ISA_1_NEEDED`, and the linker
+**propagates it from the shared libraries it links against** instead of deriving it from the
+code — so on a host whose libc is built for x86-64-v3, every binary linked there inherits a
+v3 requirement. Measured decisively: a plain `int main(){return 0;}` compiled on this host
+reports `ISA needed: x86-64-baseline, x86-64-v2, x86-64-v3` with its own
+`ISA used: x86-64-baseline`, and this host's `libc.so.6`/`libm.so.6` carry exactly that
+marker. The requirement describes the build host; the target loads its own baseline libc.
+
+`-Wl,-z,x86-64-baseline` is the intended fix and is unusable here — binutils 2.47 aborts
+with an internal error in `_bfd_x86_elf_merge_gnu_properties` — so the target drops the note
+after linking. Checked first: the note holds only ISA markers and `feature used: x86, x87,
+XMM`, no CET properties, so nothing is lost; if CET is ever enabled the step must become
+lowering the level rather than stripping.
+
+With the marker gone the artifact's non-baseline instructions were re-attributed one more
+time, and every owner is a zlib-ng function with an explicit ISA suffix (`adler32_avx512`,
+`inflate_fast_avx2`, `crc32_fold_vpclmulqdq`, `adler32_ssse3`, …) chosen from CPUID, plus the
+single `xgetbv` in zlib-ng's probe which its source guards behind the OSXSAVE bit the target
+lacks. Ordinary code contributes only `tzcnt`, which decodes as `bsf` without BMI1.
+
+### Both directions over a 5G link, and the asymmetry it exposed, 2026-09-08
+
+Runs in both directions with reports, the remote side on a 5G connection. Pairing the four
+reports by state root shows what they actually were, and it is more than was asked for:
+
+```
+run A   authority = remote (GCC 14, ISA baseline)   root 137152892415853530  @3000
+        follower  = local  (GCC 16, ISA avx)        root 137152892415853530  @3000
+run B   authority = local  (GCC 16, ISA avx)        root 8522686143933819458 @3000
+        follower  = remote (GCC 14, ISA baseline)   root 8522686143933819458 @3000
+```
+
+Every compatibility fingerprint is identical across all four reports. So these are
+**cross-build, cross-ISA, cross-machine exchanges in both directions with matching state
+roots** — which is NET-LAB-02's central claim, arrived at as a side effect of pinning a
+toolchain for the deployable artifact.
+
+**The interesting part is what the reports disagree about.** The link was effectively the
+same in both runs — ping p50 27–29 ms, p90 33–34 ms, max 38–45 ms, `quality_local` tenth
+percentile 0.95–0.98 — yet the orders told a different story:
+
+| | copies that never arrived | orders lost | forced by lateness alone |
+| --- | ---: | ---: | ---: |
+| run A (authority on 5G) | 26 of 2001 (1.3%) | 90 | **at least 64** |
+| run B (follower on 5G) | 44 of 2001 (2.2%) | 22 | 0 |
+
+Run B lost *more packets* while losing *four times fewer orders*. Since an order dies only
+if every one of its three copies dies or arrives late, and run A lost only 26 copies, at
+least 64 of its 90 lost orders were **purely late**. The difference is timing margin, not
+link loss — and the run had no measurement of margin at all, which is why the cause had to
+be reconstructed by arithmetic.
+
+`copies.late` also behaved exactly opposite to intuition, which is the clearest possible
+vindication of separating it from `orders.lost`: run A had 511 late copies and 90 lost
+orders, run B had 294 late copies and 22 lost orders. More late copies meant *fewer* lost
+orders, because a late copy is evidence that an earlier copy of the same order had already
+been accepted.
+
+### Margin is now measured, and it sizes the one knob that matters
+
+The authority records, for every arriving copy, the target tick minus the tick it had
+already committed: positive beat the seal, zero or negative was late. On loopback with the
+default four-tick lead the three copies of an order land at exactly `+4, +3, +2` — copy *k*
+has margin `lead - k` — and `margin.late_fraction` is 0. On a link with 30 ms round trip
+that whole distribution shifts down by one and a half to two ticks, which puts the third
+copy at the seal and the second one marginal. That is the mechanism behind run A's numbers,
+and it is now visible rather than inferred.
+
+So the proposal lead became a knob, `--intent-lead`, and it **travels in the grant** for the
+same reason the pacing does: the authority is what seals the tick, and an operator who set
+it on one side only would be running two different protocols without being told. Verified:
+set on the authority alone, the follower reports the announced value and the margins move
+with it — at a lead of eight every copy lands in the `plus5_or_better` bucket.
+
+What the knob costs is the honest part: the lead **is** input delay. Sizing it from
+`margin.late_fraction` is how to buy the least delay that keeps orders landing, instead of
+guessing a number.
+
+### The stand passed over a real network, 2026-09-08
+
+Two machines, ping ~30 ms, 3000 ticks at 20 ms. Both runs agreed:
+
+```
+run 1 (authority = GCC 14 artifact)   authority tick=3000 root=14034182923505186525
+                                      follower  tick=3000 root=14034182923505186525
+run 2 (authority = GCC 16 artifact)   authority tick=3000 root=11665558108087288258
+                                      follower  tick=3000 root=11665558108087288258
+```
+
+With a real reconnect on each (`transport_loss=1 reconnects=1 recoveries=1 replayed=5`) and,
+for the first time, link statistics that mean something: `ping_ms=30`, `quality=0.988`,
+`in_pps=50`. Note what is *not* reproducible here and should not be: the two runs have
+different roots, because they had different inputs — 599 versus 609 accepted intents. The
+root is a cross-process agreement at a tick, not a golden value, once the input depends on a
+lossy network.
+
+**And the run produced a number that needed explaining rather than celebrating: `late=383`,
+against `late=1` on loopback.** Reconciling the counters shows why it is the wrong quantity
+to look at: 648 orders proposed, each carried in three consecutive batches, of which 599
+were accepted, 806 dropped as duplicates and 383 dropped as late. The late ones are
+overwhelmingly *redundant copies* of orders that had already been accepted from an earlier
+copy — the window working as designed. What the counters could not answer is the question
+that matters: 599 of 648 is 92.4%, so **were 7.6% of the player's orders actually lost?**
+
+So the stand now measures orders rather than copies. The follower keeps each proposal until
+its tick is committed and checks whether the canonical bundle for that tick carried it:
+`orders_landed`, `orders_lost`, and `orders_unobserved` for proposals whose tick was crossed
+by a recovery replay rather than applied live — three answers instead of folding an
+unobserved fate into either of the other two. The transport's `superseded` count is also
+reported now: a redundant copy discarded by the backend because a newer frame in the same
+unreliable lane had already arrived is where a copy goes on a jittery link, and it was
+previously invisible. On loopback the accounting closes exactly: 133 proposed, 133 landed,
+0 lost, 0 superseded.
+
+This is the same lesson this project keeps relearning: an exact value of the wrong quantity
+stays the wrong quantity. `late` was cheap to count and `orders_lost` is what a player would
+notice.
+
+### Driving it by hand across machines, and what that found
+
+Ping ~30 ms between machines. The transport and the handshake worked on the first attempt —
+the follower's refusals were session-layer answers, not connectivity — but the run exposed
+three rough edges in driving the stand by hand across machines, one of them a real defect.
+
+**Defect: the silence budget started before the traffic did.** The authority does not start
+its clock until the whole roster is admitted, which across machines is however long the
+operator takes to launch the others. A follower admitted first therefore sat in silence,
+crossed `lost_after`, reconnected, and was told `no_checkpoint` — a failure whose every
+symptom points somewhere other than "the run has not begun". The budget measures
+*interrupted* traffic, so it cannot start before traffic does; it is now armed by the first
+applied bundle. Reproduced locally with a twelve-second gap between two followers, which
+now completes with both roots equal.
+
+The other two: the wall deadline was 60 s, a number sized for the harness rather than for a
+human starting processes on several machines — now 900 s in endpoint mode, with
+`--deadline-s` to override — and the authority printed nothing while waiting, which is
+indistinguishable from a hang, so it now reports `authority waiting: admitted M of N
+followers` every five seconds. `--help` did not exist at all and an unknown argument was
+fatal.
+
+Not a defect but worth documenting, because it looks like one: re-running a follower with
+the same `--index` within the hold window (20 s) is refused with `no_capacity`. The hold
+belongs to that session's owner, who is expected to return with `--resume`; a fresh join
+does not displace it.
+
+**Identity now holds across three axes**: Debug/Release, AVX/baseline ISA, and GCC 16/GCC 14
+all produce `8518737655127057956` at tick 70 and `13531786226404380819` at tick 42.
 
 ### Finding each other without a shared directory
 
@@ -124,6 +335,61 @@ not the assertion: `lab_schedule` now asks "does this failure hit anyone", and t
 proposal cadence has one tick per window **shared** by every follower so a multi-principal
 bundle is guaranteed for any roster size.
 
+### No AVX on the target — the default build assumed it
+
+The servers the artifact is meant for have no AVX, and the root `DEVILS_ENGINE_ARCH`
+defaults to `AVX`: every engine target was getting `-mavx` and `GLM_FORCE_AVX`. The option
+already supports `OFF`, so the portable artifact is a configure flag rather than a change,
+but the result has to be *checked* rather than assumed, and the check needs two numbers to
+be readable.
+
+Measured, both builds side by side:
+
+| | `ARCH=AVX` | `ARCH=OFF` |
+| --- | ---: | ---: |
+| VEX instructions, total | 3,971 | **957** |
+| — zlib-ng, dispatched from CPUID | 957 | 957 |
+| — **unconditional** | **3,014** | **0** |
+
+The 957 are the expected residue and identical in both builds: zlib-ng compiles
+`adler32_avx512`, `crc32_fold_vpclmulqdq`, `inflate_fast_avx2` and siblings as separate
+functions and chooses between them from CPUID at runtime, so they exist at any baseline and
+never execute on a CPU without the feature. A residual count made entirely of such symbols
+is the success signature; a hit in the project's own code is not. In the `AVX` build the
+3,014 unconditional ones are the stand's own loops plus inlined `std::filesystem` and
+`std::string` — a `SIGILL` on the first one reached.
+
+**And the state root is identical between the two builds** — `8518737655127057956` at tick
+70, `13531786226404380819` at tick 42 — which is the integer-only causal state paying off
+across a change of instruction set rather than merely across a change of optimizer. It is
+the campaign's first cross-ISA evidence.
+
+**`DEVILS_ENGINE_ARCH=OFF` did not build, and that was a defect rather than a configuration
+mistake.** `libs/utils/src/utils/core.cpp` called `_mm_crc32_u64/u32/u8` unconditionally —
+SSE4.2 intrinsics enabled only incidentally, because `-mavx` implies SSE4.2 — so the
+baseline configuration failed to compile `devils_utils` at all and had evidently never been
+exercised. `utils::crc32c` now has a portable byte-wise path under `#if !defined(__SSE4_2__)`,
+verified bit-identical to the intrinsic one across 301 lengths (0..300): CRC32C is a
+standard-defined value, so the two are one quantity computed two ways rather than a fast and
+a slow answer. The function has no callers anywhere in the engine or the projects, so
+nothing existing could shift. Two latent narrowings in the intrinsic path (a `uint64_t` crc
+passed into `unsigned int` parameters) and a missing `_MSC_VER` case were fixed alongside —
+on Windows `<immintrin.h>` was never included and the function relied on `<windows.h>`
+happening to pull `<intrin.h>` in.
+
+Recorded while auditing that: **the artifact links zlib-ng only because `devils_utils`
+does**, and the stand compresses nothing — 59 deflate/inflate symbols and all those AVX512
+paths are dead weight. Removing them means splitting `devils_utils`, an engine change
+rather than a playground one.
+
+**The emulator route was tried and does not work on this host, which is worth writing down
+so it is not tried again.** `qemu-x86_64 -cpu max` runs fine, but every AVX-less model —
+`qemu64`, `Nehalem`, `Westmere`, `core2duo`, `Opteron_G3/G5`, and `max` with the AVX bits
+subtracted — dies with an illegal instruction on a *statically linked* `int main(){return
+0;}`. The fault is in this host's own glibc, not in the tested binary, so qemu-user here
+cannot answer the question at all. Static attribution of VEX instructions to symbols is the
+available check; the real one is the target machines.
+
 ### Verification
 
 The copied artifact was run from a directory with no build tree in sight, over an explicit
@@ -144,8 +410,8 @@ Release, across repeated runs, and across a loopback and a real non-loopback int
 (`192.168.122.1`):
 
 ```
-continuous  tick=70  root=15053296469727158310    admissions=5  multi_principal=7
-killed      tick=42  root=12358525782810267697    announced_final 30 -> 42
+continuous  tick=70  root=8518737655127057956    admissions=5  multi_principal=7
+killed      tick=42  root=13531786226404380819    announced_final 30 -> 42
 ```
 
 **Provenance is the whole content of "several followers"** — not N connections, but the
