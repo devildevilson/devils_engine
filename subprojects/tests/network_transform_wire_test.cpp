@@ -163,7 +163,8 @@ TEST_CASE("network relevant set update survives its wire trip") {
 
   net::relevant_set_mirror mirror(8);
   auto bytes = prepared(net::relevant_set_update_max_bytes);
-  REQUIRE(net::try_encode_relevant_set_update(first_generation, changes, bytes) ==
+  REQUIRE(net::try_encode_relevant_set_update(first_generation, changes,
+                                             net::relevant_set_scope::diff, bytes) ==
           net::transform_wire_status::ok);
   net::relevant_set_update_view view;
   auto decoded = prepared_changes(16);
@@ -183,7 +184,8 @@ TEST_CASE("network relevant set update survives its wire trip") {
   CHECK(changes[0] == net::slot_change{30, 0, net::slot_operation::enter});
   CHECK(changes[1] == net::slot_change{0, 1, net::slot_operation::leave});
 
-  REQUIRE(net::try_encode_relevant_set_update(generation, changes, bytes) ==
+  REQUIRE(net::try_encode_relevant_set_update(generation, changes,
+                                             net::relevant_set_scope::diff, bytes) ==
           net::transform_wire_status::ok);
   CHECK(bytes.size() == net::relevant_set_update_bytes(changes));
   CHECK(bytes.size() == 3 + 11 + 3);
@@ -220,12 +222,14 @@ TEST_CASE("network relevant set update survives its wire trip") {
   SUBCASE("a handle of zero cannot travel in either direction") {
     const std::array<net::slot_change, 1> forged{
       net::slot_change{0, 2, net::slot_operation::enter}};
-    CHECK(net::try_encode_relevant_set_update(generation, forged, bytes) ==
+    CHECK(net::try_encode_relevant_set_update(generation, forged,
+                                            net::relevant_set_scope::diff, bytes) ==
           net::transform_wire_status::invalid_layout);
     auto tampered = prepared(net::relevant_set_update_max_bytes);
     const std::array<net::slot_change, 1> honest{
       net::slot_change{7, 2, net::slot_operation::enter}};
-    REQUIRE(net::try_encode_relevant_set_update(generation, honest, tampered) ==
+    REQUIRE(net::try_encode_relevant_set_update(generation, honest,
+                                              net::relevant_set_scope::diff, tampered) ==
             net::transform_wire_status::ok);
     for (size_t index = 3 + 2; index < tampered.size(); ++index)
       tampered[index] = std::byte(0);
@@ -244,15 +248,49 @@ TEST_CASE("network relevant set update survives its wire trip") {
   }
 
   SUBCASE("a reconnecting client adopts the full set at its generation") {
+    // A restarted process comes back with an empty mirror at generation zero,
+    // so a diff is useless to it: the only thing it can apply is the whole set
+    // at whatever generation the authority has reached. Byte zero says which of
+    // the two this message is, because they are read differently.
     net::relevant_set_mirror rejoined(8);
     auto full = prepared_changes(16);
     set.publish_full(full);
     REQUIRE(full.size() == 3);
-    CHECK(rejoined.adopt(set.generation(), full) == net::transform_wire_status::ok);
+
+    auto full_bytes = prepared(net::relevant_set_update_max_bytes);
+    REQUIRE(net::try_encode_relevant_set_update(set.generation(), full,
+                                                net::relevant_set_scope::full, full_bytes) ==
+            net::transform_wire_status::ok);
+    net::relevant_set_update_view full_view;
+    auto full_decoded = prepared_changes(16);
+    REQUIRE(net::try_decode_relevant_set_update(full_bytes, full_view, full_decoded) ==
+            net::transform_wire_status::ok);
+    CHECK(full_view.scope == net::relevant_set_scope::full);
+    CHECK(full_view.generation == set.generation());
+
+    // The diff would be refused by this mirror, and that refusal is the reason
+    // the full scope has to exist rather than being a convenience.
+    CHECK(rejoined.apply(full_view.generation, full_decoded) ==
+          net::transform_wire_status::generation_gap);
+    CHECK(rejoined.adopt(full_view.generation, full_decoded) == net::transform_wire_status::ok);
     CHECK(rejoined.generation() == set.generation());
     CHECK(rejoined.size() == set.size());
     for (uint16_t slot = 0; slot < set.capacity(); ++slot)
       CHECK(rejoined.handle_at(slot) == set.handle_at(slot));
+
+    // An empty diff says nothing; an empty full set says "you are relevant to
+    // nothing", which a receiver must be able to hear.
+    auto empty = prepared(net::relevant_set_update_max_bytes);
+    CHECK(net::try_encode_relevant_set_update(9, {}, net::relevant_set_scope::diff, empty) ==
+          net::transform_wire_status::empty_frame);
+    REQUIRE(net::try_encode_relevant_set_update(9, {}, net::relevant_set_scope::full, empty) ==
+            net::transform_wire_status::ok);
+    REQUIRE(net::try_decode_relevant_set_update(empty, full_view, full_decoded) ==
+            net::transform_wire_status::ok);
+    CHECK(full_view.scope == net::relevant_set_scope::full);
+    CHECK(full_view.count == 0);
+    CHECK(rejoined.adopt(full_view.generation, full_decoded) == net::transform_wire_status::ok);
+    CHECK(rejoined.size() == 0);
   }
 }
 
@@ -576,15 +614,24 @@ TEST_CASE("network transform gate keeps the latest value per class") {
   // it: presentation must not extrapolate from nothing.
   CHECK(gate.exceeded_max_age(0, policy));
 
-  CHECK(gate.commit(100, 60) == net::transform_frame_acceptance::accepted);
-  CHECK(gate.commit(100, 60) == net::transform_frame_acceptance::duplicate);
-  CHECK(gate.commit(94, 60) == net::transform_frame_acceptance::stale);
-  CHECK(gate.commit(106, 60) == net::transform_frame_acceptance::accepted);
-  CHECK(gate.commit(400, 60) == net::transform_frame_acceptance::too_far_ahead);
-  CHECK(gate.newest() == 106);
+  CHECK(gate.commit(100) == net::transform_frame_acceptance::accepted);
+  CHECK(gate.commit(100) == net::transform_frame_acceptance::duplicate);
+  CHECK(gate.commit(94) == net::transform_frame_acceptance::stale);
+  CHECK(gate.commit(106) == net::transform_frame_acceptance::accepted);
+  // A jump forward is accepted, and that is the point: a receiver which fell
+  // behind through loss or a reconnect must not be able to freeze the class by
+  // refusing everything that follows. NET-LAB-01 froze one for 91 consecutive
+  // frames when this gate still had a forward window.
+  CHECK(gate.commit(400) == net::transform_frame_acceptance::accepted);
+  CHECK(gate.newest() == 400);
+  CHECK(gate.commit(399) == net::transform_frame_acceptance::stale);
+  gate.reset();
+  CHECK_FALSE(gate.newest().has_value());
+  CHECK(gate.commit(106) == net::transform_frame_acceptance::accepted);
 
   CHECK_FALSE(gate.exceeded_max_age(106 + policy.max_age_ticks, policy));
   CHECK(gate.exceeded_max_age(107 + policy.max_age_ticks, policy));
+  CHECK_FALSE(gate.exceeded_max_age(100, policy));
   // A class which declared no bound never reports one.
   CHECK_FALSE(gate.exceeded_max_age(100000, layouts.cadence(class_refresh)));
 }

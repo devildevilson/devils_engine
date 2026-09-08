@@ -105,6 +105,16 @@ enum class transform_wire_status : uint8_t {
 
 enum class slot_operation : uint8_t { leave = 0, enter = 1 };
 
+// A membership message either merges into what the receiver has or replaces it.
+// Byte zero says which, because the two are read differently: a diff is only
+// meaningful against exactly the previous generation, while a full set is the
+// whole truth at its own generation and is the only thing a receiver which
+// lost its mirror can use. A process which restarted comes back with an empty
+// mirror at generation zero, so without this the authority could only ever
+// hand it diffs it cannot apply — which is what NET-LAB-01 discovered the
+// moment a killed follower rejoined.
+enum class relevant_set_scope : uint8_t { diff, full };
+
 struct slot_change {
   // The project's entity handle, opaque here. Zero is reserved as "no entity"
   // so that a free slot has a representation which cannot be confused with a
@@ -321,15 +331,20 @@ namespace detail {
 
 [[nodiscard]] inline transform_wire_status encode_relevant_set_update_body(
   const uint16_t generation, const std::span<const slot_change> changes,
-  std::vector<std::byte>& out) {
+  const relevant_set_scope scope, std::vector<std::byte>& out) {
   out.clear();
-  if (changes.empty()) return transform_wire_status::empty_frame;
+  // An empty diff is nothing to say. An empty FULL set is a statement — "you
+  // are relevant to nothing" — and a receiver which never hears it keeps
+  // showing entities it should have dropped.
+  if (changes.empty() && scope == relevant_set_scope::diff)
+    return transform_wire_status::empty_frame;
   const size_t required = relevant_set_update_bytes(changes);
   if (required > relevant_set_update_max_bytes) return transform_wire_status::too_large;
   if (out.capacity() < required) return transform_wire_status::buffer_too_small;
 
   state_writer w(out, false);
-  w.u8(uint8_t(hot_message_type::relevant_set_update));
+  w.u8(uint8_t(scope == relevant_set_scope::full ? hot_message_type::relevant_set_full
+                                                 : hot_message_type::relevant_set_update));
   w.u16(generation);
   for (const auto& change : changes) {
     if (change.operation == slot_operation::enter && change.handle == 0)
@@ -353,15 +368,16 @@ namespace detail {
 // membership change the sender itself rejected.
 [[nodiscard]] inline transform_wire_status try_encode_relevant_set_update(
   const uint16_t generation, const std::span<const slot_change> changes,
-  std::vector<std::byte>& out) {
-  const auto status = detail::encode_relevant_set_update_body(generation, changes, out);
+  const relevant_set_scope scope, std::vector<std::byte>& out) {
+  const auto status = detail::encode_relevant_set_update_body(generation, changes, scope, out);
   if (status != transform_wire_status::ok) out.clear();
   return status;
 }
 
 struct relevant_set_update_view {
-  uint16_t generation = 0;
   size_t count = 0;
+  uint16_t generation = 0;
+  relevant_set_scope scope = relevant_set_scope::diff;
 };
 
 namespace detail {
@@ -374,7 +390,12 @@ namespace detail {
   if (bytes.size() < relevant_set_update_header_bytes) return transform_wire_status::truncated;
 
   state_reader r(bytes);
-  if (r.u8() != uint8_t(hot_message_type::relevant_set_update))
+  const auto type = r.u8();
+  if (type == uint8_t(hot_message_type::relevant_set_update))
+    view.scope = relevant_set_scope::diff;
+  else if (type == uint8_t(hot_message_type::relevant_set_full))
+    view.scope = relevant_set_scope::full;
+  else
     return transform_wire_status::wrong_message_type;
   view.generation = r.u16();
   view.count = 0;
@@ -853,30 +874,38 @@ namespace detail {
 // Applying a frame: staleness, declared age, and the correction threshold.
 // ---------------------------------------------------------------------------
 
-enum class transform_frame_acceptance : uint8_t { accepted, duplicate, stale, too_far_ahead };
+enum class transform_frame_acceptance : uint8_t { accepted, duplicate, stale };
 
 // Latest-value semantics per class. A frame older than the newest applied one
 // carries nothing a receiver wants, so it is stale rather than useful — and
 // staleness is per class, because two classes of different cadence legitimately
 // sit at different ticks at the same moment.
+//
+// There is deliberately NO forward window here, and that is a correction rather
+// than an omission. A sequence-space window (`state_frame_window`) needs one
+// because low bits wrap and a distant sequence is ambiguous. This gate compares
+// ABSOLUTE ticks, already widened against what the receiver knows, so a jump
+// forward is unambiguous — and refusing it is worse than useless: a receiver
+// which fell behind, by loss or by a reconnect, would find every later frame
+// "too far ahead" and freeze the class permanently. NET-LAB-01 froze one for 91
+// consecutive frames after a rejoin before this was taken out. Whether a tick
+// far ahead of the RECEIVER'S OWN progress is plausible at all is the caller's
+// question, because only the caller knows its own tick.
 class transform_frame_gate {
 public:
   [[nodiscard]] std::optional<uint64_t> newest() const noexcept {
     return newest_;
   }
 
-  [[nodiscard]] transform_frame_acceptance classify(
-    const uint64_t tick, const uint64_t max_forward_ticks) const noexcept {
+  [[nodiscard]] transform_frame_acceptance classify(const uint64_t tick) const noexcept {
     if (!newest_) return transform_frame_acceptance::accepted;
     if (tick == *newest_) return transform_frame_acceptance::duplicate;
-    if (tick < *newest_) return transform_frame_acceptance::stale;
-    return tick - *newest_ <= max_forward_ticks ? transform_frame_acceptance::accepted
-                                                : transform_frame_acceptance::too_far_ahead;
+    return tick < *newest_ ? transform_frame_acceptance::stale
+                           : transform_frame_acceptance::accepted;
   }
 
-  transform_frame_acceptance commit(const uint64_t tick,
-                                    const uint64_t max_forward_ticks) noexcept {
-    const auto result = classify(tick, max_forward_ticks);
+  transform_frame_acceptance commit(const uint64_t tick) noexcept {
+    const auto result = classify(tick);
     if (result == transform_frame_acceptance::accepted) newest_ = tick;
     return result;
   }

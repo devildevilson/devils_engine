@@ -52,6 +52,22 @@ struct lab_schedule {
   // do, which proves it caught up but not that it participates again. 0 keeps
   // the run's length fixed.
   uint64_t resume_tail_ticks = 0;
+  // One membership publication deliberately delayed by a tick, so the frames
+  // which reference its generation arrive BEFORE the message that gives their
+  // slots meaning. Nothing about loopback produces that race on its own — the
+  // reliable lane is the higher-priority one and there is no loss to reorder
+  // anything — and a refusal branch nothing ever reaches is not a verified
+  // refusal. 0 disables it.
+  // The tick has to be one where a publication AND a frame send both fall due,
+  // or there is nothing to race: membership publishes every
+  // `lab_relevance_every_ticks` and the near class every three ticks, so the
+  // race can only be staged where those coincide.
+  uint64_t membership_delay_tick = 60;
+  size_t membership_delay_follower = 2;
+  // The other half of the same race: one frame built against the PREVIOUS
+  // generation and sent after the current membership has already landed.
+  uint64_t stale_generation_tick = 64;
+  size_t stale_generation_follower = 2;
   // Ticks ahead the follower proposes. 4 was chosen for a laboratory loopback;
   // on a real link it is the whole margin budget, so it has to be adjustable
   // without a rebuild.
@@ -76,6 +92,12 @@ struct lab_schedule {
   }
   [[nodiscard]] bool staleness_tested() const noexcept {
     return hits_roster(stale_batch_tick, stale_batch_follower);
+  }
+  [[nodiscard]] bool delays_membership() const noexcept {
+    return hits_roster(membership_delay_tick, membership_delay_follower);
+  }
+  [[nodiscard]] bool sends_stale_generation() const noexcept {
+    return hits_roster(stale_generation_tick, stale_generation_follower);
   }
 
   // Joins plus exactly the reconnects the roster can actually produce.
@@ -112,6 +134,11 @@ inline lab_schedule lab_killed_schedule() {
   value.self_exit_tick = 20;
   value.self_exit_follower = 0;
   value.stale_batch_tick = 0;
+  // This scenario ends at tick 30, long before the injections below would fire.
+  // A schedule naming a tick the run never reaches is the same class of bug as
+  // one naming a roster position the run never launched.
+  value.membership_delay_tick = 0;
+  value.stale_generation_tick = 0;
   value.resume_tail_ticks = 12;
   return value;
 }
@@ -158,6 +185,29 @@ struct authority_counters {
   uint64_t chunks_sent = 0;
   uint64_t replay_bundles_sent = 0;
   uint64_t refusals = 0;
+  // HOT-02 on the wire. Bytes are counted as PAYLOAD handed to the transport:
+  // the per-packet overhead is the transport's and the link's own statistics
+  // report it, so adding a guess here would double-count it.
+  uint64_t membership_updates = 0;
+  uint64_t membership_full_sets = 0;
+  uint64_t membership_bytes = 0;
+  uint64_t membership_changes = 0;
+  uint64_t relevance_enters = 0;
+  uint64_t relevance_leaves = 0;
+  uint64_t relevance_exhausted = 0;
+  uint64_t frames_sent = 0;
+  uint64_t frame_bytes = 0;
+  uint64_t frame_records = 0;
+  // Consecutive runs of occupied slots a full pass had to be split into. One
+  // run means the set is still dense; many means churn has holed it, and the
+  // dense mode's whole saving is the index it can then no longer omit.
+  uint64_t dense_runs = 0;
+  uint64_t dense_run_records = 0;
+  uint64_t frames_over_budget = 0;
+  // Sampled where it matters — at publication — so the mean is over
+  // publications and not over ticks that published nothing.
+  uint64_t relevance_size_sum = 0;
+  uint64_t relevance_publications = 0;
 };
 
 class authority_run {
@@ -171,11 +221,24 @@ public:
     size_t roster = 0;
     net::gns_peer peer;
     std::vector<std::byte> transfer_bytes;
+    // Who this client is allowed to know about. Per session, because that is
+    // what relevance means: the slot indices in its frames are meaningless to
+    // anyone else.
+    net::relevant_set relevance{lab_relevant_capacity};
     size_t transfer_offset = 0;
     bool used = false;
     bool peer_live = false;
     bool quiet = false;
     bool transfer_active = false;
+    // A peer which came back is a peer whose mirror may be empty, so the next
+    // membership message it gets has to be the whole set rather than a diff.
+    bool owes_full_set = false;
+    // The scheduled one-tick delay, held here rather than dropped: dropping a
+    // reliable ordered message would break the generation chain, which is a
+    // different fault from the race being staged.
+    std::vector<std::byte> delayed_membership;
+    bool membership_delayed = false;
+    bool stale_generation_sent = false;
   };
 
   explicit authority_run(const lab_schedule& schedule)
@@ -189,6 +252,10 @@ public:
     bundle_scratch_.reserve(lab_max_message_bytes);
     decoded_intents_.reserve(lab_max_intents_per_tick * (lab_intent_window + 1));
     pending_.reserve(lab_max_intents_per_tick * lab_max_intent_lead * lab_max_followers);
+    membership_scratch_.reserve(lab_entity_count + lab_relevant_capacity);
+    samples_.reserve(lab_relevant_capacity);
+    ordered_slots_.reserve(lab_relevant_capacity);
+    frame_scratch_.reserve(lab_max_message_bytes);
     journal_.recycle(std::vector<lab_intent_record>(lab_max_intents_per_tick * lab_max_followers));
   }
 
@@ -441,6 +508,11 @@ private:
     session.peer_live = true;
     session.quiet = false;
     session.transfer_active = false;
+    // Any newly attached connection gets the whole set once. For a fresh join
+    // the diff and the full set are the same thing; for a rejoin they are not,
+    // and the authority cannot tell whether the peer across a new connection
+    // still holds the mirror it had.
+    session.owes_full_set = true;
     holds_.release(session.session);
     if (!started_ && admitted_count_ >= schedule_.followers) {
       started_ = true;
@@ -703,6 +775,236 @@ private:
 
     apply_schedule(tick, now);
     broadcast_bundle(bundle);
+    replicate_transforms(tick);
+  }
+
+  // ------------------------------------------------- relevant set and frames
+
+  void replicate_transforms(const uint64_t tick) {
+    for (auto& session : sessions_) {
+      if (!session.used || !session.peer_live || session.quiet) continue;
+      // Membership first, and on the reliable lane: a frame refers to slots by
+      // the generation this publication produces. The frame may still overtake
+      // it — that is a different lane — which is exactly what the follower's
+      // mismatch counters measure.
+      // A delayed publication goes out first thing on the following tick, so
+      // the frames that raced it have already left.
+      if (!session.delayed_membership.empty()) {
+        (void)link_.send(session.peer, lab_lane_control, session.delayed_membership);
+        session.delayed_membership.clear();
+      }
+      if (tick % lab_relevance_every_ticks == 0 || session.owes_full_set)
+        publish_relevance(session, tick);
+      send_frames(session, tick);
+      if (schedule_.sends_stale_generation() && tick == schedule_.stale_generation_tick &&
+          session.roster == schedule_.stale_generation_follower &&
+          !session.stale_generation_sent)
+        send_stale_generation_frame(session, tick);
+    }
+  }
+
+  void publish_relevance(session_slot& session, const uint64_t tick) {
+    const double center = lab_view_center(host_.state);
+    // Hysteresis: an entity enters nearer than it has to leave. Without it the
+    // set dithers at the boundary and every dither is a membership message and
+    // a pop on the client.
+    for (size_t index = 0; index < lab_entity_count; ++index) {
+      const uint64_t handle = lab_entity_handle(index);
+      const double distance = lab_entity_distance(index, tick, center);
+      const bool present = session.relevance.slot_of(handle).has_value();
+      if (!present && distance <= lab_relevance_enter_units) {
+        const auto result = session.relevance.enter(handle);
+        if (result.status == net::slot_admission::assigned) ++counters_.relevance_enters;
+        else if (result.status == net::slot_admission::capacity_exhausted)
+          ++counters_.relevance_exhausted;
+        continue;
+      }
+      if (present && distance > lab_relevance_leave_units) {
+        if (session.relevance.leave(handle)) ++counters_.relevance_leaves;
+      }
+    }
+
+    // The delay below can only race something if there IS a publication at that
+    // tick, and a short run's set may not have changed at all. So the schedule
+    // forces one: the occupant of the highest slot leaves, which the next
+    // publication will put back on its own.
+    if (schedule_.delays_membership() && tick == schedule_.membership_delay_tick &&
+        session.roster == schedule_.membership_delay_follower && !session.membership_delayed) {
+      for (uint16_t slot = session.relevance.capacity(); slot-- > 0;) {
+        const uint64_t handle = session.relevance.handle_at(slot);
+        if (handle == 0) continue;
+        if (session.relevance.leave(handle)) ++counters_.relevance_leaves;
+        break;
+      }
+    }
+
+    membership_scratch_.clear();
+    uint16_t generation = session.relevance.generation();
+    auto scope = net::relevant_set_scope::diff;
+    if (session.owes_full_set) {
+      // The generation still advances through publish(), so the full set is the
+      // CURRENT set at the current generation rather than a message with a
+      // generation of its own.
+      generation = session.relevance.publish(membership_scratch_);
+      session.relevance.publish_full(membership_scratch_);
+      scope = net::relevant_set_scope::full;
+      session.owes_full_set = false;
+    } else {
+      generation = session.relevance.publish(membership_scratch_);
+      if (membership_scratch_.empty()) return;
+    }
+
+    scratch_.reserve(net::relevant_set_update_max_bytes);
+    const auto status =
+      net::try_encode_relevant_set_update(generation, membership_scratch_, scope, scratch_);
+    verify_.require(status == net::transform_wire_status::ok,
+                    "the relevant set did not encode");
+    if (schedule_.delays_membership() && tick == schedule_.membership_delay_tick &&
+        session.roster == schedule_.membership_delay_follower && !session.membership_delayed) {
+      session.membership_delayed = true;
+      session.delayed_membership.assign(scratch_.begin(), scratch_.end());
+    } else {
+      verify_.require(link_.send(session.peer, lab_lane_control, scratch_) ==
+                        lab_send_result::sent,
+                      "membership could not be sent on the reliable lane");
+    }
+    if (scope == net::relevant_set_scope::full) ++counters_.membership_full_sets;
+    else ++counters_.membership_updates;
+    counters_.membership_bytes += scratch_.size();
+    counters_.membership_changes += membership_scratch_.size();
+    counters_.relevance_size_sum += session.relevance.size();
+    ++counters_.relevance_publications;
+  }
+
+  // Occupied slots, nearest first. `near` takes the head of that order and
+  // `far` the tail, so the two classes partition the set instead of overlapping.
+  void collect_relevant(const session_slot& session, const uint64_t tick) {
+    const double center = lab_view_center(host_.state);
+    ordered_slots_.clear();
+    for (uint16_t slot = 0; slot < session.relevance.capacity(); ++slot) {
+      const uint64_t handle = session.relevance.handle_at(slot);
+      if (handle == 0) continue;
+      const auto index = lab_entity_index(handle);
+      verify_.require(index.has_value(), "a relevant set held a handle no entity owns");
+      ordered_slots_.push_back({lab_entity_distance(*index, tick, center), *index, slot});
+    }
+    std::sort(ordered_slots_.begin(), ordered_slots_.end(),
+              [](const ranked_slot& l, const ranked_slot& r) {
+                if (l.distance != r.distance) return l.distance < r.distance;
+                return l.slot < r.slot;
+              });
+  }
+
+  void send_frames(session_slot& session, const uint64_t tick) {
+    std::array<uint8_t, 4> due{};
+    const size_t count = transforms_.due_classes(tick, due);
+    if (count == 0) return;
+    collect_relevant(session, tick);
+    if (ordered_slots_.empty()) return;
+
+    for (size_t i = 0; i < count; ++i) {
+      const uint8_t class_id = due[i];
+      if (class_id == lab_class_refresh) {
+        send_dense_runs(session, tick, class_id);
+        continue;
+      }
+      const size_t head = class_id == lab_class_near
+                            ? 0
+                            : (ordered_slots_.size() < lab_near_slots ? ordered_slots_.size()
+                                                                      : lab_near_slots);
+      const size_t tail = class_id == lab_class_near
+                            ? (ordered_slots_.size() < lab_near_slots ? ordered_slots_.size()
+                                                                      : lab_near_slots)
+                            : ordered_slots_.size();
+      if (head >= tail) continue;
+
+      // The budget decides how much of the class travels this opportunity, and
+      // the class is ordered by distance, so what gets cut is the far end.
+      const auto plan = net::plan_transform_send(lab_transform_fields,
+                                                 net::transform_frame_mode::sparse, tail - head,
+                                                 transforms_.cadence(class_id));
+      if (!plan.complete) ++counters_.frames_over_budget;
+      if (plan.records == 0) continue;
+
+      samples_.clear();
+      for (size_t k = head; k < head + plan.records; ++k)
+        samples_.push_back(lab_entity_sample(ordered_slots_[k].index, tick,
+                                             ordered_slots_[k].slot));
+      // Sparse frames carry their slots and must ascend; distance order does
+      // not, so the frame is sorted by slot after the budget chose the set.
+      std::sort(samples_.begin(), samples_.end(),
+                [](const net::transform_sample& l, const net::transform_sample& r) {
+                  return l.slot < r.slot;
+                });
+      send_frame(session, class_id, tick, net::transform_frame_mode::sparse, samples_);
+    }
+  }
+
+  // A full pass in dense mode, which carries no slot indices at all — and can
+  // therefore only cover CONSECUTIVE slots. Counting the runs measures how
+  // holed churn has left the set, which is the same thing as measuring what the
+  // dense mode is still worth.
+  void send_dense_runs(session_slot& session, const uint64_t tick, const uint8_t class_id) {
+    const uint16_t capacity = session.relevance.capacity();
+    uint16_t slot = 0;
+    while (slot < capacity) {
+      if (session.relevance.handle_at(slot) == 0) {
+        ++slot;
+        continue;
+      }
+      samples_.clear();
+      while (slot < capacity && session.relevance.handle_at(slot) != 0 &&
+             samples_.size() < size_t(lab_relevant_capacity)) {
+        const auto index = lab_entity_index(session.relevance.handle_at(slot));
+        verify_.require(index.has_value(), "a relevant set held a handle no entity owns");
+        samples_.push_back(lab_entity_sample(*index, tick, slot));
+        ++slot;
+      }
+      ++counters_.dense_runs;
+      counters_.dense_run_records += samples_.size();
+      send_frame(session, class_id, tick, net::transform_frame_mode::dense, samples_);
+    }
+  }
+
+  // One frame built against the generation before the current one, after the
+  // current membership has landed. A client must drop it: its slots mean what
+  // they meant under a set which has already been replaced.
+  void send_stale_generation_frame(session_slot& session, const uint64_t tick) {
+    collect_relevant(session, tick);
+    if (ordered_slots_.empty() || session.relevance.generation() == 0) return;
+    samples_.clear();
+    samples_.push_back(lab_entity_sample(ordered_slots_.front().index, tick,
+                                         ordered_slots_.front().slot));
+    frame_scratch_.reserve(lab_max_message_bytes);
+    const auto status = net::try_encode_transform_frame(
+      lab_class_near, tick, uint16_t(session.relevance.generation() - 1),
+      net::transform_frame_mode::sparse, lab_frame_origin, samples_, transforms_,
+      frame_scratch_);
+    verify_.require(status == net::transform_wire_status::ok,
+                    "the deliberately stale frame did not encode");
+    if (link_.send(session.peer, lab_lane_transform, frame_scratch_) == lab_send_result::sent)
+      session.stale_generation_sent = true;
+  }
+
+  void send_frame(const session_slot& session, const uint8_t class_id, const uint64_t tick,
+                  const net::transform_frame_mode mode,
+                  const std::span<const net::transform_sample> samples) {
+    frame_scratch_.reserve(lab_max_message_bytes);
+    const auto status = net::try_encode_transform_frame(
+      class_id, tick, session.relevance.generation(), mode, lab_frame_origin, samples,
+      transforms_, frame_scratch_);
+    verify_.require(status == net::transform_wire_status::ok, "a transform frame did not encode");
+    const auto result = link_.send(session.peer, lab_lane_transform, frame_scratch_);
+    if (result != lab_send_result::sent) {
+      // Latest-value traffic may be dropped by its own lane's budget; that is
+      // the class working as declared, not a fault.
+      verify_.require(result == lab_send_result::backpressure || result == lab_send_result::no_peer,
+                      "the transform lane refused a frame for a live peer");
+      return;
+    }
+    ++counters_.frames_sent;
+    counters_.frame_bytes += frame_scratch_.size();
+    counters_.frame_records += samples.size();
   }
 
   void broadcast_bundle(const lab_bundle& bundle) {
@@ -895,7 +1197,16 @@ private:
   std::array<session_slot, lab_max_followers> sessions_;
   std::vector<lab_intent_record> pending_;
   std::vector<net::intent> decoded_intents_;
-  std::vector<std::byte> scratch_, bundle_scratch_, reply_, challenge_message_;
+  std::vector<std::byte> scratch_, bundle_scratch_, reply_, challenge_message_, frame_scratch_;
+  net::transform_layout_table transforms_ = lab_transform_layouts();
+  std::vector<net::slot_change> membership_scratch_;
+  std::vector<net::transform_sample> samples_;
+  struct ranked_slot {
+    double distance = 0;
+    size_t index = 0;
+    uint16_t slot = 0;
+  };
+  std::vector<ranked_slot> ordered_slots_;
   net::gns_peer admission_peer_;
   session_slot* admitted_ = nullptr;
   uint64_t nonce_seed_ = 0, nonce_counter_ = 0;

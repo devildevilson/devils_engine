@@ -81,35 +81,46 @@ public:
   void summarize_link() {
     int ping_min = 0, ping_max = 0;
     double ping_sum = 0, quality_sum = 0, quality_min = 0;
-    size_t counted = 0;
+    // Two counters, not one. The backend reports a negative reading for "no
+    // interval yet", and ping and quality do not become available on the same
+    // sample — dividing the quality sum by the ping count diluted the mean with
+    // rows it had deliberately skipped, which read as a degraded link on a
+    // loopback run that never lost a packet.
+    size_t ping_counted = 0, quality_counted = 0;
     for (const auto& row : samples_) {
-      if (row.ping_ms < 0) continue;
-      if (counted == 0) {
-        ping_min = ping_max = row.ping_ms;
-        quality_min = row.quality_local;
+      if (row.ping_ms >= 0) {
+        if (ping_counted == 0) ping_min = ping_max = row.ping_ms;
+        ping_min = row.ping_ms < ping_min ? row.ping_ms : ping_min;
+        ping_max = row.ping_ms > ping_max ? row.ping_ms : ping_max;
+        ping_sum += row.ping_ms;
+        ++ping_counted;
       }
-      ping_min = row.ping_ms < ping_min ? row.ping_ms : ping_min;
-      ping_max = row.ping_ms > ping_max ? row.ping_ms : ping_max;
-      ping_sum += row.ping_ms;
       if (row.quality_local >= 0) {
+        if (quality_counted == 0) quality_min = row.quality_local;
         quality_sum += row.quality_local;
         quality_min = row.quality_local < quality_min ? row.quality_local : quality_min;
+        ++quality_counted;
       }
-      ++counted;
     }
     set("link.samples", uint64_t(samples_.size()));
     set("link.samples_dropped", dropped_samples_);
-    if (counted == 0) {
+    set("link.samples_with_ping", uint64_t(ping_counted));
+    set("link.samples_with_quality", uint64_t(quality_counted));
+    if (ping_counted == 0) {
       // "No data" is a different answer from "no loss", and the report has to
       // say which one it is.
       set("link.ping_ms", std::string_view("no-data"));
+    } else {
+      set("link.ping_ms.min", uint64_t(ping_min));
+      set("link.ping_ms.max", uint64_t(ping_max));
+      set("link.ping_ms.mean", ping_sum / double(ping_counted));
+    }
+    if (quality_counted == 0) {
+      set("link.quality_local", std::string_view("no-data"));
       return;
     }
-    set("link.ping_ms.min", uint64_t(ping_min));
-    set("link.ping_ms.max", uint64_t(ping_max));
-    set("link.ping_ms.mean", ping_sum / double(counted));
     set("link.quality_local.min", quality_min);
-    set("link.quality_local.mean", quality_sum / double(counted));
+    set("link.quality_local.mean", quality_sum / double(quality_counted));
   }
 
   [[nodiscard]] bool write(const std::filesystem::path& path) const {

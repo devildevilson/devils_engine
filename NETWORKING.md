@@ -1077,6 +1077,226 @@ registry indices are not stabilized: the same build would then behave
 differently in two sessions, and the correction threshold is derived from the
 quantum. Stability by refusal again.
 
+### Where an intent comes from, and what the wire carries
+
+Two kinds of intent exist in this engine and only one of them travels. `act::intent` is the thinker→ECS seam:
+GOAP, an FSM or a script produces it and the ECS consumes it in a deterministic apply phase sorted by actor
+id. `network::intent` is the client→authority seam and carries strictly less — no actor, no provenance,
+quantized fields only.
+
+```
+CLIENT                                       │ wire │   AUTHORITY
+                                             │      │
+platform input → bindings → player intent    │      │
+  │                                          │      │
+  ├─ predicted sim: act::intent → apply      │      │
+  │    (own entity only, replayable)         │      │
+  │                                          │      │
+  └─ network::intent (kind + tick offset     │      │
+       + quantized axes/turn; NO actor)      │      │
+         │ try_encode_intent_batch,          │      │
+         │ last w ticks repeated             │      │
+         └──── unreliable, one packet ───────┼─────►│ try_decode_intent_batch
+                                             │      │   refuse unknown kind / bad index
+                                             │      │ intent_absolute_tick(receiver_tick)
+                                             │      │ tick_journal window: sealed → too late,
+                                             │      │   far future → refused
+                                             │      │        │
+                                             │      │  ┌─────┴──── ONE SEAM ────────────┐
+                                             │      │  │ network::intent → act::intent   │
+                                             │      │  │ actor from the CONNECTION       │
+                                             │      │  │ provenance set locally          │
+                                             │      │  │ ownership, legality, rate here  │
+                                             │      │  └─────┬───────────────────────────┘
+                                             │      │        │
+GOAP / FSM on the authority ─────────────────┼──────┼──► act::intent (never on the wire)
+                                             │      │        │
+                                             │      │  seal bundle: canonical order,
+                                             │      │  principal first, empty is explicit
+                                             │      │        │
+                                             │      │  apply phase, sorted by actor id
+                                             │      │        │
+                                             │      │  ECS mutates → new state at tick t
+                                             │      │        │
+relevant_set_mirror ◄──── reliable ordered ──┼──────┼── relevant_set.publish() diff
+transform frames    ◄──── unreliable seq ────┼──────┼── frames per cadence class
+state root          ◄──── every 20-100 ticks ┼──────┼── state_digest
+  │                                          │      │
+  ├─ generation matches? else drop           │      │
+  ├─ evaluate_correction in CODE space       │      │
+  │    within one quantum → ignore           │      │
+  └─ beyond → replay_to() from checkpoint_ring, reapplying local input
+```
+
+Three properties of that picture are deliberate.
+
+**A GOAP intent never reaches the wire.** The authority computes it, so sending it would be sending something
+the receiver already has; and a client-supplied `source_action` is exactly the provenance HOT-01 refuses to
+carry. What travels is the intent's *consequence* — a transform frame. In a future deterministic-lockstep
+profile AI intents would be recomputed from identical state on every peer rather than networked, which is the
+same conclusion by a different route.
+
+**The actor is never read from the wire.** It comes from the connection, at the translation seam, next to the
+ownership and rate checks. This is the single most load-bearing line in the upstream path: a client-supplied
+actor is the classic ownership forgery.
+
+**Nothing above mutates a simulation from a transport callback.** Decoding produces values in caller-owned
+storage, the journal accepts them for a tick, and the tick boundary applies them — which is what makes the
+whole path replayable and what NET-LAB-01 asserts across processes.
+
+### What actually fits in one packet
+
+Taken from the pinned GNS 1.6.0 source rather than from folklore. `MTU_PacketSize` defaults to 1300 and is a
+configured constant, not a discovered path MTU:
+
+| Quantity | Bytes | Where it comes from |
+| --- | ---: | --- |
+| UDP payload (GNS headers + encrypted payload + tag) | 1300 | `MTU_PacketSize`, capped by `k_cbSteamNetworkingSocketsMaxUDPMsgLen` |
+| plaintext per packet, all messages together | 1232 | `MTU_PacketSize − (1300 − 1248) − 16` |
+| largest message that will not fragment | **1132** | `maxPlaintextPayloadSend − 100` reserve |
+| on the wire, IPv4 | 1328 | + 20 IP + 8 UDP |
+| overhead per packet | **96** | 1328 − 1232, i.e. 7.2% |
+
+Two traps live in those numbers.
+
+**The exposed `MTU_DataSize` overstates the no-fragment size by 68 bytes.** GNS answers that config query with
+`MTU_PacketSize − 100` = 1200, while the threshold its own sender uses is `maxPlaintext − 100` = 1132. A
+project which sizes its messages by the exposed value fragments every message between 1133 and 1200 bytes —
+and a fragmented unreliable frame is lost whole when any fragment is lost.
+
+**1328 bytes on the wire does not cross every path.** The IPv6 minimum MTU is 1280, and tunnels (PPPoE 1492,
+WireGuard ~1420, double-tunnelled mobile APNs lower still) cut further; this is why QUIC settled on a
+1200-byte floor. At a conservative `MTU_PacketSize` of 1172 the no-fragment message is 1004 bytes — **below
+the 1024-byte cap this library declares**. The cap must therefore be derived per connection from the
+transport's real no-fragment size, with the declared constant serving only as an upper bound.
+
+Also configured, and worth knowing before a full-set refresh: `SendRateMin` and `SendRateMax` both default to
+256 KB/s, so the token bucket is a fixed rate with about one packet of burst allowance rather than an
+estimator.
+
+### The levers, in the order measurement puts them
+
+The HOT-02 ladder ranked relevance and cadence far above encoding. Inside the encoding bucket the ranking
+depends on which regime the class is in, and the regime is decided by 96 bytes per packet:
+
+| Relevant entities | baseline | one send per tick instead of two | declared bit widths (~9 B/record) | both |
+| ---: | ---: | ---: | ---: | ---: |
+| 9 | 4 280 B/s | **2 050 (2.09x)** | 4 132 (1.04x) | 1 922 |
+| 96 | 9 903 B/s | 7 673 (1.29x) | 8 511 (1.16x) | 6 301 |
+| 999 | 72 454 B/s | 70 224 (1.03x) | **56 894 (1.27x)** | 54 684 |
+
+**At party scale you are paying for packet headers, not for fields.** With nine relevant entities the payload
+is 1 400 bytes of 4 280 — two thirds of the bill is 96 bytes times the send count, so coalescing two classes
+into one send is worth 2.1x while bit packing is worth 1.04x. Only past a few hundred relevant entities does
+the field width start to dominate. A bit packer is therefore a decision about the crowded case, and the
+crowded case is exactly the one relevance is supposed to prevent.
+
+The lever neither of those columns contains is **delta against a baseline the client has acknowledged**, which
+`replication.h` already has the machinery for. At 10 Hz an entity moving 6 m/s travels about 614 quanta, so a
+position delta needs 11 bits against 24 for an absolute lattice point: about 2x, larger than bit packing and
+compression together. Its price is per-client baseline retention and an absolute fallback when no
+acknowledgement is recent enough, which is why it is a later slice rather than part of the frame format.
+
+### Compression measured, not assumed
+
+600 sparse frames of 96 quantized entities moving smoothly inside a 200 m region, 519 bytes average:
+
+| Method | Ratio | Note |
+| --- | ---: | --- |
+| zstd level 1, each frame independently | **1.001** | expands: a frame header and nothing to find |
+| zstd level 1, 16 KiB trained dictionary, each frame independently | **0.854** | keeps per-frame independence |
+| zstd level 1, all frames as one stream | 0.851 | loses independence |
+| zstd level 19, one stream | 0.801 | and about 5 MB/s |
+
+Three conclusions. **Compression without a dictionary is negative** on this data, because quantization already
+removed the redundancy an entropy coder lives on. **A trained static dictionary recovers everything the stream
+would give** — 0.854 against 0.851 — without the coupling that makes streaming unusable here: a lost
+unreliable frame would poison the shared history and every later frame with it. And **the levers are not
+additive**: a delta against a baseline and declared bit widths remove precisely the bytes the dictionary was
+finding, so 15% and 20% and 100% do not compose into 65%.
+
+zstd is therefore right for the reliable bulk classes — full world checkpoints, where the data is repetitive
+and delivery is ordered anyway, and where `utils::compression`'s `fast` level already belongs — and wrong for
+transform frames unless a trained dictionary and a "compressed only if smaller" flag come with it.
+
+### Budget at 10, 100 and 1000 players
+
+Players are the expensive class: their input is unpredictable, so nothing about them can be extrapolated, they
+are always salient to each other, and their transforms cannot be slowed down without visible lag. The
+downstream model is HOT-02's rung 4 with the packet accounting above; the upstream is HOT-01's batch with a
+four-tick redundancy window at 60 Hz, which is 1 860 bytes of payload and 7 620 bytes on the wire — **the
+packet overhead is four times the payload it carries**.
+
+| Players | Relevant each | Down per client | Server egress | Server ingress | Packets/s in+out |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 9 | 34 kbit/s | 0.3 Mbit/s | 0.6 Mbit/s | 900 |
+| 100 | 99 | 81 kbit/s | 8.1 Mbit/s | 6.1 Mbit/s | 9 100 |
+| 1000 | 999 | 580 kbit/s | **580 Mbit/s** | 61 Mbit/s | 139 000 |
+| 1000 | capped at 96 | 79 kbit/s | **79 Mbit/s** | 61 Mbit/s | 91 000 |
+
+**Relevance is what turns N² into N×K.** Ten players cost the same either way, a hundred barely differ, and a
+thousand differ by 7.3x — half a gigabit against seventy-nine megabits. That is the whole argument for a
+relevant set, and it is an argument about hosting cost, not about elegance.
+
+**The second bill is packets, not bytes.** A thousand players sending at 60 Hz is 60 000 inbound datagrams per
+second before the server has decided anything, and the inbound figure does not shrink with relevance because
+each client only ever sends its own input. Lowering the client's send rate to 30 Hz halves it and costs one
+tick of input latency; batching outbound classes into one send per tick removes a third of the egress
+packets.
+
+**A thousand players is a partition problem, not a bandwidth problem.** With relevance capped the bandwidth is
+affordable, but one authority still simulates a thousand unpredictable actors at 60 Hz and touches 91 000
+datagrams a second. The answer at that scale is spatial partition — several authorities over disjoint regions
+with handover — which is why `SERVER-01` is on the roadmap ahead of any thousand-player experiment.
+
+### Networking culling is not occlusion culling
+
+Both answer "what does this viewer not need", but the failure modes are opposite, and the differences decide
+the algorithm:
+
+- **It is per client and never trusts the client.** A camera-driven set lets a client widen its own set by
+  lying about where it looks. Relevance is computed from what the authority knows: the client's own entity.
+- **A false negative is a pop, a false positive is only bytes.** Occlusion culling may be aggressive because a
+  wrong answer costs one frame; a networking set that is too tight makes an entity appear with no
+  interpolation history, so relevance is deliberately conservative and hysteretic — enter at R, leave at
+  1.2R — because churn costs membership traffic and a visible pop each way.
+- **It is graded, not binary.** The useful output is not in/out but a cadence class: near entities at 10 Hz,
+  far ones at 2 Hz, then out. Binary culling wastes the cheapest available saving.
+- **Precise occlusion is the wrong tool.** There is no depth buffer on a server and per-client visibility
+  tests per tick are unaffordable. The coarse form is what works: zones and portals — which `PF09`'s
+  connectivity data already describes — so relevance becomes "zones within N portal hops", which is also the
+  correct answer indoors, where a sphere is badly wrong.
+- **It is a disclosure boundary.** Everything in the set is, in effect, given to the client: the classic
+  wallhack is a replication decision. So the set is the security surface, and coarse zone occlusion has a
+  second justification beyond bandwidth.
+- **The set changes slower than the transforms do.** Recomputing membership every few ticks and transforms
+  every tick is not an approximation but the natural cadence split, and it is why membership is a separate
+  class with its own generation.
+
+The shape this library expects, then: a spatial index over candidates (`utils::grid`, `aabb_tree` or
+`kd_tree`) around the client's own entity, a priority per candidate from distance, recency, speed and whether
+it is player-driven, the top K taken within the byte budget through `plan_transform_send`, the result diffed
+against `relevant_set` and published as membership, and only then frames. Priority exists precisely because
+the budget can refuse: choosing who is cut is the project's decision, never the codec's.
+
+### A latest-value gate must not have a forward window
+
+`state_frame_window` (NET-07) refuses a sequence too far ahead, and it must: sequence low bits wrap, so a
+distant sequence is ambiguous and could be a forgery or a wrap. A transform frame is different in a way that
+inverts the conclusion. Its tick is ABSOLUTE, widened against what the receiver already knows, so a jump
+forward carries no ambiguity — and refusing it is actively harmful: a receiver which fell behind through loss
+or a reconnect finds every later frame "too far ahead" and never accepts another. NET-LAB-01 froze one class
+for 91 consecutive frames this way.
+
+So the gate accepts anything newer, calls an equal tick a duplicate and an older one stale, and has no window
+at all. Whether a tick far beyond the RECEIVER'S OWN progress is plausible is the caller's question, because
+only the caller knows where it is — and the basis for that question is the furthest tick the AUTHORITY is
+known to have reached, not the receiver's own applied tick: a rejoining peer legitimately receives frames for
+ticks far past anything it has applied while its checkpoint is still in flight.
+
+The general rule this is an instance of: **a bound copied from a sequence space into a tick space changes
+meaning.** One protects against wrap ambiguity; the other only prevents recovery.
+
 ### Replication cadence is project data
 
 Intent and transform cadence are independent. Intents are proposed/closed every simulation tick; transforms can
@@ -1132,6 +1352,13 @@ dense record's 11, but a sparse frame sends only what changed, so at this profil
 change set reaches 81 of 96 slots — 84%. Dense addressing therefore earns its place only on the periodic
 complete pass that the declared maximum staleness demands, which is the opposite of where a "keyframe"
 instinct would put it.
+
+**The ladder was confirmed on a real link.** NET-LAB-01 carried the class between separate processes at
+50 Hz with a mean relevant set of 16.5, and the observed payload was 3 514 B/s per follower against 3 577
+modelled — within 2%. Membership came in at 6.3% of the two against 6.5% predicted, and a full dense pass took
+1.14 runs on average despite 697 enters and 628 leaves, so reusing the lowest free slot really does keep the
+set packed. What the arithmetic cannot predict is the per-packet overhead, which belongs to the transport, so
+a report must keep payload and packets apart rather than adding a guess to the first.
 
 **Shape is session identity; cadence deliberately is not.** A peer reading a record with a different field set
 produces a plausible wrong world rather than an error, so the declared shapes are fingerprinted and belong in
@@ -1917,9 +2144,12 @@ Done with `network/fixed_point.h`, `network/intent_wire.h` and `network_intent_w
   frame lane are different lanes, so either can be ahead.
 - Derive the correction threshold from the declared quantum and compare in code space, so no epsilon appears.
 
-Done with `network/transform_wire.h` and `network_transform_wire_test`. The measured ladder and the
-mode crossover are below; carrying the class over real sockets belongs to the lab item, exactly as HOT-01's
-intent class was closed as a primitive and then driven by NET-LAB-01.
+Done with `network/transform_wire.h` and `network_transform_wire_test`, and carried over real UDP by
+NET-LAB-01: a per-session relevant set on the reliable lane, frames on the unreliable one, three cadence
+classes and a periodic full pass between separate processes. Driving it there found three defects in the
+primitive — a forward window that could freeze a class permanently, a format that could not express a full set
+to a restarted process, and a message-type collision — and confirmed the ladder to within 2% of the observed
+payload. A primitive nobody has driven is a primitive whose footguns are still loaded.
 
 ### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 

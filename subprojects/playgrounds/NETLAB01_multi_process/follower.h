@@ -45,6 +45,32 @@ struct follower_counters {
   // landed: the tick never happened, and folding them into either would make
   // the accounting fail to close for a reason that is not a fault.
   uint64_t orders_pending_at_exit = 0;
+  // HOT-02 as observed on this link.
+  uint64_t membership_updates = 0;
+  uint64_t membership_full_sets = 0;
+  uint64_t membership_bytes = 0;
+  uint64_t membership_changes = 0;
+  uint64_t frames_received = 0;
+  uint64_t frame_bytes = 0;
+  uint64_t frame_records = 0;
+  uint64_t samples_verified = 0;
+  // The two halves of the two-lane race, counted apart because they mean
+  // opposite things. AHEAD: the unreliable frame overtook the reliable
+  // membership that gives its slots meaning. BEHIND: the frame was built
+  // against a set this client has already replaced.
+  uint64_t frames_generation_ahead = 0;
+  uint64_t frames_generation_behind = 0;
+  uint64_t frames_before_first_set = 0;
+  uint64_t frames_stale = 0;
+  uint64_t frames_duplicate = 0;
+  // A tick far beyond this follower's own progress is not a latest-value
+  // sample, it is nonsense. Only the receiver can ask that question, because
+  // only the receiver knows where it is.
+  uint64_t frames_implausible_tick = 0;
+  // Nonzero would mean the quantizer disagreed between two builds or two
+  // machines, which is the whole reason the payload is verifiable at all.
+  uint64_t corrections_needed = 0;
+  uint64_t max_age_exceeded = 0;
 };
 
 // What survives a process death. The ticket and the derived secret are the only
@@ -113,6 +139,11 @@ public:
     recovery_bundles_.reserve(128);
     deferred_.reserve(64);
     incoming_.intents.reserve(lab_max_intents_per_tick);
+    // Decoding never grows caller storage, so the capacity is declared here or
+    // the message is refused. A full set is the largest membership message this
+    // stand can receive.
+    membership_scratch_.reserve(lab_entity_count + lab_relevant_capacity);
+    samples_.reserve(lab_relevant_capacity);
     if (resume) {
       verify_.require(load_ticket(ticket_path_, ticket_),
                       "a resuming follower could not read the ticket it persisted");
@@ -306,6 +337,18 @@ private:
   void on_session_message(const uint16_t lane, const std::span<const std::byte> bytes,
                           const uint64_t local) {
     const auto type = uint8_t(bytes[0]);
+    if (type == uint8_t(net::hot_message_type::relevant_set_update) ||
+        type == uint8_t(net::hot_message_type::relevant_set_full)) {
+      verify_.require(lane == lab_lane_control,
+                      "membership arrived off the reliable ordered lane");
+      on_relevant_set(bytes);
+      return;
+    }
+    if (type == uint8_t(net::hot_message_type::transform_frame)) {
+      verify_.require(lane == lab_lane_transform, "a transform frame arrived off its own lane");
+      on_transform_frame(bytes);
+      return;
+    }
     if (type == uint8_t(lab_message::bundle)) {
       if (!decode_bundle(bytes, incoming_)) {
         verify_.require(false, "authority sent a bundle this follower cannot decode");
@@ -322,6 +365,7 @@ private:
     }
     if (type == uint8_t(lab_message::recovery_plan)) {
       verify_.require(decode_recovery_plan(bytes, plan_), "recovery plan did not decode");
+      if (plan_.target_tick > authority_tick_seen_) authority_tick_seen_ = plan_.target_tick;
       checkpoint_bytes_.assign(plan_.checkpoint_bytes, std::byte{});
       checkpoint_filled_ = 0;
       recovery_bundles_.clear();
@@ -392,9 +436,129 @@ private:
     }
   }
 
+  // ------------------------------------------------------- relevant set and frames
+
+  void on_relevant_set(const std::span<const std::byte> bytes) {
+    net::relevant_set_update_view view;
+    const auto status = net::try_decode_relevant_set_update(bytes, view, membership_scratch_);
+    verify_.require(status == net::transform_wire_status::ok,
+                    "the authority sent a relevant set this follower cannot decode");
+    // A full set replaces; a diff merges and is only meaningful against exactly
+    // the previous generation. This process may be a brand-new one whose mirror
+    // is empty, which is why the scope has to be on the wire.
+    const auto applied = view.scope == net::relevant_set_scope::full
+                           ? mirror_.adopt(view.generation, membership_scratch_)
+                           : mirror_.apply(view.generation, membership_scratch_);
+    verify_.require(applied == net::transform_wire_status::ok,
+                    "the membership lane delivered a generation this mirror cannot apply");
+    if (view.scope == net::relevant_set_scope::full) {
+      ++counters_.membership_full_sets;
+      // A full set means this client's view is being re-established, so what
+      // any class last knew is no longer the newest thing about it.
+      for (auto& gate : gates_) gate.reset();
+    } else {
+      ++counters_.membership_updates;
+    }
+    counters_.membership_bytes += bytes.size();
+    counters_.membership_changes += view.count;
+    have_set_ = true;
+  }
+
+  void on_transform_frame(const std::span<const std::byte> bytes) {
+    net::transform_frame_view view;
+    const auto status = net::try_decode_transform_frame(bytes, transforms_, mirror_,
+                                                       host_.state.tick, view, samples_);
+    if (status == net::transform_wire_status::generation_mismatch) {
+      // The refused view still reports the frame's own generation, which is the
+      // only way to tell an overtaking frame from a stale one.
+      if (!have_set_) ++counters_.frames_before_first_set;
+      else if (view.generation != mirror_.generation() &&
+               uint16_t(view.generation - mirror_.generation()) < 0x8000u)
+        ++counters_.frames_generation_ahead;
+      else
+        ++counters_.frames_generation_behind;
+      return;
+    }
+    verify_.require(status == net::transform_wire_status::ok,
+                    "the authority sent a transform frame this follower cannot decode");
+    // A sanity bound, and the basis for it is NOT this follower's own tick. A
+    // rejoining process legitimately receives frames for ticks far beyond
+    // anything it has applied — its checkpoint has not landed yet — and the
+    // first thing this check caught was that assumption of mine rather than any
+    // corrupt frame. The right basis is the furthest tick the AUTHORITY is
+    // known to have reached, which a bundle or a recovery plan establishes.
+    //
+    // Dropped rather than fatal: the class is latest-value, so accepting a
+    // nonsense future tick would poison the gate and every later frame with it,
+    // while the frame itself arrived over an authenticated connection and
+    // cannot have been tampered with in flight.
+    if (authority_tick_seen_ != 0 &&
+        view.tick > authority_tick_seen_ + lab_frame_future_slack_ticks) {
+      ++counters_.frames_implausible_tick;
+      return;
+    }
+    ++counters_.frames_received;
+    counters_.frame_bytes += bytes.size();
+    counters_.frame_records += view.count;
+
+    // The payload is verified whatever the gate decides: an entity's transform
+    // is a pure function of its index and the frame's own tick, so a late frame
+    // is still exactly checkable. What the gate decides is only whether this
+    // frame is the newest thing known about its class.
+    for (const auto& sample : samples_) {
+      const auto index = lab_entity_index(mirror_.handle_at(sample.slot));
+      verify_.require(index.has_value(), "a frame named a slot holding no known entity");
+      const std::array<double, 3> predicted{lab_entity_axis(*index, 0, view.tick),
+                                            lab_entity_axis(*index, 1, view.tick),
+                                            lab_entity_axis(*index, 2, view.tick)};
+      const auto verdict = net::evaluate_correction(lab_axis, 3, predicted, sample,
+                                                    net::correction_policy{});
+      if (verdict.needs_correction || verdict.worst_error_codes != 0) {
+        ++counters_.corrections_needed;
+        verify_.require(false,
+                        "an authoritative transform disagreed with the same computation here");
+      }
+      const auto turn = net::split_turn<uint16_t>(lab_entity_turn(*index, view.tick));
+      verify_.require(uint16_t(turn.code) == sample.turn,
+                      "an authoritative turn disagreed with the same computation here");
+      ++counters_.samples_verified;
+    }
+
+    // Latest-value, per class. The lane is plain unreliable, so an older frame
+    // really can arrive after a newer one; and staleness has to be per class
+    // because two cadences legitimately sit at different ticks at once.
+    switch (gate_for(view.class_id).commit(view.tick)) {
+      case net::transform_frame_acceptance::accepted: break;
+      case net::transform_frame_acceptance::duplicate: ++counters_.frames_duplicate; break;
+      case net::transform_frame_acceptance::stale: ++counters_.frames_stale; break;
+    }
+  }
+
+  net::transform_frame_gate& gate_for(const uint8_t class_id) {
+    verify_.require(class_id < gates_.size(), "a frame named a class with no gate");
+    return gates_[class_id];
+  }
+
+  // Declared staleness, checked once a tick rather than believed. A class which
+  // has not arrived within its bound is one presentation must stop
+  // extrapolating from, and this stand records how often that happened.
+  void observe_max_age() {
+    // An empty set is not a stale class: there is nothing to send and nothing
+    // to extrapolate, so asking the question at all would count a correct
+    // silence as a fault.
+    if (!have_set_ || mirror_.size() == 0) return;
+    for (const auto class_id : transforms_.classes()) {
+      if (gate_for(class_id).exceeded_max_age(host_.state.tick, transforms_.cadence(class_id)))
+        ++counters_.max_age_exceeded;
+    }
+  }
+
   // ------------------------------------------------------------------ bundles
 
   void on_bundle(const lab_bundle& bundle, const uint64_t local) {
+    // What the authority is known to have reached, whether or not this bundle
+    // can be applied yet.
+    if (bundle.tick > authority_tick_seen_) authority_tick_seen_ = bundle.tick;
     if (awaiting_recovery_) {
       // Reliable ordered delivery puts the replay range ahead of later bundles,
       // but the checkpoint travels on a lower-priority lane and can arrive
@@ -447,6 +611,7 @@ private:
     authority_run::apply_bundle(host_, bundle);
     lab_step(host_, bundle.tick);
     ++counters_.bundles_applied;
+    observe_max_age();
     maybe_self_exit();
   }
 
@@ -777,6 +942,11 @@ private:
   std::vector<proposal> proposals_;
   std::vector<proposal> pending_orders_;
   std::vector<net::intent> window_;
+  net::transform_layout_table transforms_ = lab_transform_layouts();
+  net::relevant_set_mirror mirror_{lab_relevant_capacity};
+  std::array<net::transform_frame_gate, 4> gates_{};
+  std::vector<net::slot_change> membership_scratch_;
+  std::vector<net::transform_sample> samples_;
   std::filesystem::path ticket_path_;
   net::gns_peer peer_;
   lab_link::conditions measured_;
@@ -786,6 +956,7 @@ private:
   uint64_t nonce_seed_ = 0, nonce_counter_ = 0;
   uint64_t checkpoint_filled_ = 0, last_proposed_ = 0, exit_request_ = 0, linger_until_ = 0;
   uint64_t final_tick_ = 0;
+  uint64_t authority_tick_seen_ = 0;
   uint64_t announced_tick_period_ms_ = 0;
   // Until the grant arrives there is nothing to propose for anyway.
   uint64_t announced_lead_ticks_ = 4;
@@ -796,7 +967,7 @@ private:
   bool connected_ = false, connecting_ = false, has_ticket_ = false, resuming_ = false;
   bool anchored_ = false, awaiting_recovery_ = false, have_plan_ = false;
   bool failed_ = false, unrecoverable_ = false, pending_transport_loss_ = false;
-  bool stale_sent_ = false, traffic_started_ = false;
+  bool stale_sent_ = false, traffic_started_ = false, have_set_ = false;
 };
 
 static_assert(net::client_handshake_policy<follower_run>);

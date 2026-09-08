@@ -301,6 +301,43 @@ int run_authority(const options& opts) {
     }
     if (total != 0) report.set("margin.late_fraction", double(late_side) / double(total));
     report.set("run.intent_lead_ticks", schedule.intent_lead_ticks);
+    // HOT-02 as SENT. Bytes are payload handed to the transport; the per-packet
+    // overhead belongs to the transport and `link.*` reports it separately, so
+    // adding a guess here would count it twice.
+    report.set("relevance.enters", c.relevance_enters);
+    report.set("relevance.leaves", c.relevance_leaves);
+    report.set("relevance.capacity_exhausted", c.relevance_exhausted);
+    report.set("membership.updates_sent", c.membership_updates);
+    report.set("membership.full_sets_sent", c.membership_full_sets);
+    report.set("membership.changes_sent", c.membership_changes);
+    report.set("membership.bytes_sent", c.membership_bytes);
+    report.set("transform.frames_sent", c.frames_sent);
+    report.set("transform.records_sent", c.frame_records);
+    report.set("transform.bytes_sent", c.frame_bytes);
+    report.set("transform.dense_runs", c.dense_runs);
+    report.set("transform.frames_over_budget", c.frames_over_budget);
+    if (c.frames_sent != 0)
+      report.set("transform.bytes_per_frame", double(c.frame_bytes) / double(c.frames_sent));
+    if (c.dense_runs != 0)
+      report.set("transform.records_per_dense_run",
+                 double(c.dense_run_records) / double(c.dense_runs));
+    if (c.relevance_publications != 0)
+      report.set("relevance.mean_size",
+                 double(c.relevance_size_sum) / double(c.relevance_publications));
+    // Observed bytes per second, per follower, so the figure is comparable with
+    // the arithmetic budget in NETWORKING.md rather than with itself.
+    const uint64_t wall = monotonic_ms() - wall_origin;
+    const uint64_t peers = schedule.followers == 0 ? 1 : schedule.followers;
+    if (wall != 0) {
+      const double seconds = double(wall) / 1000.0;
+      report.set("transform.bytes_per_second_per_peer",
+                 double(c.frame_bytes) / seconds / double(peers));
+      report.set("membership.bytes_per_second_per_peer",
+                 double(c.membership_bytes) / seconds / double(peers));
+      report.set("bundles.bytes_per_second_per_peer",
+                 double(c.bundles_sent) / seconds / double(peers) *
+                   double(1 + 8 + 1 + lab_bundle_intent_bytes));
+    }
     report.summarize_link();
     if (!opts.report.empty() && !report.write(opts.report))
       std::cerr << "NET-LAB-01 authority: cannot write " << opts.report << '\n';
@@ -495,6 +532,38 @@ int run_follower(const options& opts) {
     report.set("run.intent_lead_ticks_announced", follower.announced_lead_ticks());
     report.set("copies.batches_sent", c.batches_sent);
     report.set("copies.superseded", follower.superseded());
+    // HOT-02 as RECEIVED. The two generation counters are the measurement this
+    // slice exists for: they say whether an unreliable frame really overtakes
+    // the reliable membership that gives its slots meaning on a live link.
+    report.set("membership.updates_received", c.membership_updates);
+    report.set("membership.full_sets_received", c.membership_full_sets);
+    report.set("membership.changes_received", c.membership_changes);
+    report.set("membership.bytes_received", c.membership_bytes);
+    report.set("transform.frames_received", c.frames_received);
+    report.set("transform.records_received", c.frame_records);
+    report.set("transform.bytes_received", c.frame_bytes);
+    report.set("transform.samples_verified", c.samples_verified);
+    report.set("transform.generation_ahead", c.frames_generation_ahead);
+    report.set("transform.generation_behind", c.frames_generation_behind);
+    report.set("transform.before_first_set", c.frames_before_first_set);
+    report.set("transform.stale", c.frames_stale);
+    report.set("transform.duplicate", c.frames_duplicate);
+    report.set("transform.implausible_tick", c.frames_implausible_tick);
+    report.set("transform.corrections_needed", c.corrections_needed);
+    report.set("transform.max_age_exceeded", c.max_age_exceeded);
+    {
+      const uint64_t wall = monotonic_ms() - wall_origin;
+      if (wall != 0) {
+        const double seconds = double(wall) / 1000.0;
+        report.set("transform.bytes_per_second", double(c.frame_bytes) / seconds);
+        report.set("membership.bytes_per_second", double(c.membership_bytes) / seconds);
+      }
+      const uint64_t refused = c.frames_generation_ahead + c.frames_generation_behind +
+                               c.frames_before_first_set;
+      const uint64_t offered = c.frames_received + refused;
+      if (offered != 0)
+        report.set("transform.generation_refused_fraction", double(refused) / double(offered));
+    }
     describe_conditions(report, "link.final", follower.conditions());
     report.summarize_link();
     if (!opts.report.empty() && !report.write(opts.report))
@@ -565,6 +634,19 @@ int run_follower(const options& opts) {
   else verify.require(counters.recoveries == 0 && counters.reconnects == 0,
                       "an undisturbed follower was made to reconnect");
 
+  // HOT-02. A follower which verified no transform sample proves nothing about
+  // the downstream class, however green the rest of the run looks.
+  verify.require(counters.samples_verified > 0,
+                 "no transform sample was verified against its own computation");
+  verify.require(counters.corrections_needed == 0,
+                 "an authoritative transform disagreed with the same computation here");
+  if (schedule.delays_membership() && opts.index == schedule.membership_delay_follower)
+    verify.require(counters.frames_generation_ahead > 0,
+                   "a delayed membership message produced no overtaking frame");
+  if (schedule.sends_stale_generation() && opts.index == schedule.stale_generation_follower)
+    verify.require(counters.frames_generation_behind > 0,
+                   "a frame built against a replaced set was not refused");
+
   const auto measured = follower.conditions();
   std::cout << "follower checks=" << verify.checks
             << " roster=" << follower.roster()
@@ -582,6 +664,10 @@ int run_follower(const options& opts) {
             << " replayed=" << counters.replayed_ticks
             << " chunks=" << counters.chunks_received
             << " stale_sent=" << counters.stale_batches_sent
+            << " frames=" << counters.frames_received
+            << " samples=" << counters.samples_verified
+            << " gen_ahead=" << counters.frames_generation_ahead
+            << " gen_behind=" << counters.frames_generation_behind
             << " orders_landed=" << counters.orders_landed
             << " orders_lost=" << counters.orders_lost
             << " orders_unobserved=" << counters.orders_unobserved

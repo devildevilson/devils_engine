@@ -30,7 +30,7 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
 | SESSION-02 handshake wire format and ordered exchange | complete; 9/9 cases, 329/329 assertions in Debug and Release |
 | HOT-01 hot-path intent class and fixed point | complete; 10/10 cases, 325/325 assertions in Debug, Release and Clang |
-| HOT-02 transform frames and relevant set | complete; 10/10 cases, 582/582 assertions in GCC Debug and Release, syntax-clean under GCC 14, Clang/libstdc++ and Clang/libc++ |
+| HOT-02 transform frames and relevant set | complete; 10/10 cases, 598/598 assertions in GCC Debug and Release, and carried by NET-LAB-01 over real UDP between separate processes |
 | SESSION-03 reconnect credential | complete; 7/7 cases, 144/144 assertions in Debug, Release and Clang |
 | SESSION-04 automatic reconnect policy and recovery feasibility | complete; 7/7 cases, 173/173 assertions in Debug, Release and Clang |
 | Vendored protobuf for GNS | fixed; Linux and Windows now take protobuf from the same place |
@@ -42,11 +42,113 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
 | SESSION-01 strict compatibility/identity/recovery primitives | neutral slice complete; 6/6 cases, 76/76 assertions pass in Debug and Release |
 | Session wire handshake and challenge/response | complete as a neutral slice; see SESSION-02 below |
+| HOT-02 over the stand | complete; 2 981 samples verified against the receiver's own computation, 0 corrections, both halves of the two-lane generation race staged and refused |
 | Automatic transport reconnect and multi-process exchange | NET-LAB-01 slices 1-3 complete: authority + 3 followers + intruder as separate processes, all roots equal; artifact relocatable (4 shared deps, glibc 2.38 floor) and addressed by `--listen`/`--connect`; a second machine is the remaining gap |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## HOT-02 carried by NET-LAB-01 — observed against modelled, 2026-09-09
+
+The stand now runs the downstream class beside everything else it already carried: a per-session relevant set
+on the reliable ordered lane, transform frames on the unreliable one, three declared cadence classes, and a
+periodic full pass. The point of doing it here rather than in a test is that the arithmetic budget could not
+speak for a real link, and that a primitive nobody has driven is a primitive whose footguns are still loaded.
+
+### The payload is verifiable, which is what makes this more than byte counting
+
+The stand's causal state is one scalar, so the replicated table is DERIVED: an entity's transform is a pure
+function of its index and the tick, computed from integers by correctly-rounded double operations with no
+`<cmath>` call anywhere. A follower therefore recomputes what a frame should contain and compares in CODE
+space through `evaluate_correction`. What is deliberately not derivable is MEMBERSHIP — which entities are
+relevant follows the causal position, and a follower cannot compute it for a tick it has not reached — so the
+reliable lane carries the only part that actually informs.
+
+Result over a 600-tick Release run at 20 ms pacing, three followers, loopback: **2 981 samples verified, 0
+corrections needed**, and the same state root as the previous run of the same schedule. Zero corrections means
+the quantizer produced identical codes in two processes; the reproduced root means no order was lost, which is
+the free integrity check this campaign already relies on.
+
+### Observed bytes against the modelled ladder
+
+Mean relevant set 16.5 of a declared capacity of 32, 64 entities in the table, 50 Hz, three axes plus turn:
+
+| Quantity | Modelled | Observed |
+| --- | ---: | ---: |
+| transform payload per follower | 3 577 B/s | **3 514 B/s** |
+| membership payload per follower | ~250 B/s | **237 B/s** |
+| membership share of the two | 6.5% | **6.3%** |
+| records per dense run | 16.5 (one run) | **14.4 (1.14 runs per pass)** |
+
+**The arithmetic was within 2%.** That is the useful result: the ladder in NETWORKING.md can be trusted to
+size a budget, because the thing it predicts is the payload and the payload is what the codec controls. What
+it still cannot predict is the per-packet overhead, which belongs to the transport and which the link's own
+statistics report separately — the report keeps the two apart for exactly that reason.
+
+**Density survived churn.** 697 enters and 628 leaves over the run, and a full pass still took 1.14 dense runs
+on average. Reusing the lowest free slot keeps the set packed, so the dense mode's saving — the slot index it
+can omit — is not eroded by relevance turnover. That was an assumption in the header until this run.
+
+### The two-lane race, staged because loopback will not produce it
+
+On loopback the reliable lane is the higher-priority one and nothing is lost, so a frame never overtakes the
+membership that gives its slots meaning: the natural rate was **zero in both directions**. A refusal branch
+nothing reaches is not a verified refusal, so the schedule now stages both halves. One membership publication
+is DELAYED by a tick (held, not dropped — dropping a reliable ordered message would break the generation
+chain, which is a different fault), and the frames of that tick arrive first: `generation_ahead`. One frame is
+built against the previous generation and sent after the current membership has landed: `generation_behind`.
+Both are refused and counted, and the harness asserts each is non-zero for the follower the schedule names.
+
+Staging the delay taught its own lesson: it fires only where a publication and a frame send fall on the same
+tick, and only if the set actually changed. Membership publishes every four ticks and the near class every
+three, so the race can only be staged where those coincide — and in a short run the set may not have changed
+at all, so the schedule now forces one eviction at that tick. **A staged race needs both a message and a
+listener; naming a tick was not enough.**
+
+### Three defects the stand found in HOT-02 itself
+
+- **The frame gate's forward window could freeze a class permanently.** Copied in reasoning from
+  `state_frame_window`, where a window is necessary because sequence low bits wrap and a distant sequence is
+  ambiguous. A transform frame carries an ABSOLUTE tick, widened against what the receiver knows, so a jump
+  forward is unambiguous — and refusing it meant a follower which fell behind found every later frame "too far
+  ahead" and never accepted another. The stand froze one class for **91 consecutive frames** after a rejoin.
+  The window and the `too_far_ahead` outcome are gone; whether a tick far ahead of the RECEIVER'S OWN progress
+  is plausible at all is the caller's question, because only the caller knows its own tick.
+- **The format could not express a full set, so a restarted process could never be told anything.** A rejoining
+  process comes back with an empty mirror at generation zero, and a diff is only meaningful against exactly
+  the previous generation — `relevant_set_mirror::adopt` existed for that path but nothing on the wire could
+  say "this is the whole set". Byte zero now says which of the two a membership message is
+  (`relevant_set_full`), and an empty full set is a legitimate statement — "you are relevant to nothing" —
+  where an empty diff is not.
+- **The stand's own message classes collided with the engine's.** `lab_message` had taken 64..67 from the
+  authority range before HOT-02 claimed 64..66 for membership and frames. The type byte space is shared by
+  every class on a connection, so the stand's classes moved to 96..99. Silent until both were on one lane at
+  once, and an argument for byte zero deciding everything.
+
+### And one the stand found in its own assumption
+
+The receiver's sanity bound on a frame's tick was written against the follower's OWN tick. A rejoining
+follower legitimately receives frames for ticks far beyond anything it has applied, because its checkpoint has
+not landed yet — so the first thing that check caught was my assumption rather than any corrupt frame. The
+basis is now the furthest tick the AUTHORITY is known to have reached, which a bundle or a recovery plan
+establishes, and an implausible frame is dropped and counted rather than fatal: the connection is
+authenticated, so a frame cannot have been tampered with in flight, while accepting a nonsense future tick
+would poison the latest-value gate and every frame after it.
+
+### What the format still lacks, measured rather than guessed
+
+A declared maximum staleness is a per-class bound, and a receiver evaluating it needs to know **which of its
+relevant entities belong to which class** — otherwise it cannot tell "the class went silent" from "the class
+has nothing for me". With a relevance radius that left fewer than `lab_near_slots` entities relevant, the far
+class had nothing to send and its age bound was exceeded on almost every tick; the counter was right and the
+stand's tuning was wrong. Membership carries a slot and a handle and no class, so today only the sender can
+answer that question. Naming the cadence class per slot in the membership message is the obvious fix and is
+left for a later slice rather than added on the way past.
+
+Verification: the full harness is **41/41 harness checks and 8 562 in-process checks across 11 processes**,
+both scenarios, all roots equal at the announced final tick. Focused networking set **134/134** in GCC Debug
+and Release.
 
 ## HOT-02 — transform frames and the relevant set, 2026-09-09
 
@@ -138,7 +240,7 @@ honest about what it is: it fixes the ORDER of the levers and the cost of each f
 speak for loss, jitter or lane contention. Carrying the class over real sockets belongs to the lab item,
 exactly as HOT-01's intent class was closed as a primitive and then driven by NET-LAB-01 over 5G.
 
-Verification: **10/10 cases, 582/582 assertions** in GCC Debug and Release; the header and test are
+Verification: **10/10 cases, 598/598 assertions** in GCC Debug and Release; the header and test are
 syntax-clean with `-Wall -Wextra` under GCC 14, Clang with libstdc++ and Clang with libc++. Focused networking
 set **134/134** in GCC Debug and Release; complete project suite **578/578** in GCC Debug.
 

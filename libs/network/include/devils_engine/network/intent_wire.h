@@ -42,6 +42,7 @@ enum class hot_message_type : uint8_t {
   // 192..255 for bulk transfer.
   relevant_set_update = 64,
   transform_frame = 65,
+  relevant_set_full = 66,
 };
 
 inline constexpr size_t intent_batch_header_bytes = 3;

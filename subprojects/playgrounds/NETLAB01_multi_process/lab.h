@@ -14,6 +14,7 @@
 #include <devils_engine/network/intent_wire.h>
 #include <devils_engine/network/reconnect.h>
 #include <devils_engine/network/session_wire.h>
+#include <devils_engine/network/transform_wire.h>
 #include <devils_engine/utils/sha256cpp.h>
 
 // NET-LAB-01, shared between the authority and the follower process.
@@ -236,18 +237,30 @@ inline net::intent lab_make_intent(const int64_t quanta, const int32_t base_key,
 // ranges HOT-01 reserved so a type byte still decides everything.
 
 enum class lab_message : uint8_t {
-  // Authority classes, 64..191.
-  bundle = 64,
-  reconnect_grant = 65,
-  recovery_plan = 66,
-  recovery_unavailable = 67,
+  // Authority classes, 64..191 — but NOT 64..66, which HOT-02 took for the
+  // relevant set and the transform frame. The type byte space is shared by
+  // every class on a connection, so a stand's own classes have to move when the
+  // engine claims a number: this collision was silent until both were on one
+  // lane at once, which is the argument for byte zero deciding everything.
+  bundle = 96,
+  reconnect_grant = 97,
+  recovery_plan = 98,
+  recovery_unavailable = 99,
   // Bulk, 192..255.
   checkpoint_chunk = 192,
 };
 
 inline constexpr uint16_t lab_lane_control = 0; // reliable ordered
 inline constexpr uint16_t lab_lane_bulk = 1;    // reliable, lower priority
-inline constexpr uint16_t lab_lane_intent = 2;  // unreliable sequenced
+inline constexpr uint16_t lab_lane_intent = 2;  // unreliable, client to authority
+// Transform frames, authority to client. The same lane index as the intent
+// proposals and deliberately so: a lane is a per-direction sending queue, so
+// the two never meet. What they must NOT share is a lane with another cadence
+// class, because dropping the older message is a per-lane property while
+// latest-value is per class — three classes on one sequenced lane would let the
+// fastest one starve the slowest. `transform_frame_gate` is the right place for
+// that decision, and this lane is plain unreliable so the gate can make it.
+inline constexpr uint16_t lab_lane_transform = 2;
 
 inline constexpr size_t lab_max_message_bytes = 1024;
 // Deliberately small. The point is not to model a megabyte: it is that the
@@ -420,6 +433,145 @@ inline std::optional<size_t> lab_roster_index(const std::span<const std::byte> c
   return std::nullopt;
 }
 
+// ------------------------------------------------------- replicated entities
+//
+// HOT-02's downstream class needs entities, and this stand's causal state is
+// one scalar. So the replicated table is DERIVED: an entity's transform is a
+// pure function of its index and the tick, which makes every frame VERIFIABLE
+// by a follower that never needed it. A stand which could only count bytes
+// would be measuring the wire and not the codec.
+//
+// What is NOT derivable is MEMBERSHIP: which entities are relevant follows the
+// causal position, and a follower has no way to compute it for a tick it has
+// not reached. That is the part which actually informs, and it is the part the
+// reliable lane carries.
+//
+// Every number below is produced from integers by correctly-rounded double
+// operations and no `<cmath>` call at all. That is the point: the follower
+// recomputes the same doubles and the same split, so a nonzero error would
+// mean the quantizer disagreed between two builds or two machines — which is
+// exactly what this stand exists to catch.
+
+inline constexpr size_t lab_entity_count = 64;
+inline constexpr uint16_t lab_relevant_capacity = 32;
+// Hysteresis, because churn costs a membership message and a visible pop each
+// way: an entity enters the set nearer than it has to leave it.
+// Tuned so the set is comfortably larger than `lab_near_slots`: with a radius
+// that left fewer than eight entities relevant, the FAR class never had
+// anything to send and its declared age bound was therefore exceeded on almost
+// every tick. The counter was right and the stand was wrong — see the note in
+// NETWORKING_STATUS.md about what a receiver cannot yet know.
+inline constexpr double lab_relevance_enter_units = 150.0;
+inline constexpr double lab_relevance_leave_units = 180.0;
+// The set changes slower than the transforms do, which is not an approximation
+// but the natural cadence split — and the reason membership is its own class.
+inline constexpr uint64_t lab_relevance_every_ticks = 4;
+
+inline constexpr uint64_t lab_entity_handle_base = UINT64_C(0x656e746974'0000); // "entit"
+
+inline constexpr uint64_t lab_entity_handle(const size_t index) noexcept {
+  return lab_entity_handle_base + uint64_t(index) + 1; // handle 0 is "no entity"
+}
+
+inline constexpr std::optional<size_t> lab_entity_index(const uint64_t handle) noexcept {
+  if (handle <= lab_entity_handle_base) return std::nullopt;
+  const uint64_t index = handle - lab_entity_handle_base - 1;
+  if (index >= lab_entity_count) return std::nullopt;
+  return size_t(index);
+}
+
+// A bounded triangle wave: integers all the way to one division, so the result
+// is the same double on every conforming platform.
+inline double lab_entity_axis(const size_t index, const uint8_t axis, const uint64_t tick) {
+  const uint64_t seed = splitmix64(uint64_t(index) * 3 + uint64_t(axis) + 1);
+  const int64_t period = 96 + int64_t(seed % 160);
+  const int64_t phase = int64_t((seed >> 17) % uint64_t(period));
+  const int64_t position = int64_t((tick + uint64_t(phase)) % uint64_t(2 * period));
+  const int64_t saw = position < period ? position : 2 * period - position;
+  const double unit = double(saw) / double(period);              // 0..1
+  const double center = double(int64_t(seed % 1400) - 700) / 7.0; // -100..100
+  const double span = double(64 + int64_t((seed >> 31) % 192)) / 3.0;
+  return center + unit * span;
+}
+
+inline double lab_entity_turn(const size_t index, const uint64_t tick) {
+  const uint64_t seed = splitmix64(uint64_t(index) * 7 + 11);
+  const int64_t period = 64 + int64_t(seed % 128);
+  const int64_t position = int64_t((tick + (seed >> 23) % uint64_t(period)) % uint64_t(period));
+  return double(position) / double(period); // turns, 0..1
+}
+
+// How far ahead of its own tick a follower will believe a frame. The frame for
+// tick t leaves the authority immediately after the bundle for tick t and takes
+// a different lane, so a few ticks of lead are ordinary; a hundred are not.
+inline constexpr uint64_t lab_frame_future_slack_ticks = 16;
+
+// The frame's origin cell. Fixed at zero because the derived table is bounded:
+// an origin which chased the causal position would put a distant entity out of
+// the delta's reach, and out of reach is a relevance fault, not a coordinate to
+// clamp.
+inline constexpr net::transform_frame_origin lab_frame_origin{};
+
+inline net::transform_sample lab_entity_sample(const size_t index, const uint64_t tick,
+                                               const uint16_t slot) {
+  net::transform_sample sample;
+  sample.slot = slot;
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    const auto split = net::split_axis(lab_axis, lab_entity_axis(index, axis, tick));
+    sample.key[axis] = split.key;
+    sample.code[axis] = uint16_t(split.code);
+  }
+  sample.turn = uint16_t(net::split_turn<uint16_t>(lab_entity_turn(index, tick)).code);
+  return sample;
+}
+
+// Relevance follows the causal state, wrapped into the table's own span so the
+// set keeps churning however far the simulation wanders.
+inline double lab_view_center(const lab_state& state) {
+  const int64_t units = state.position >> 10;
+  const int64_t wrapped = ((units % 400) + 400) % 400 - 200;
+  return double(wrapped);
+}
+
+inline double lab_entity_distance(const size_t index, const uint64_t tick,
+                                  const double center) {
+  const double value = lab_entity_axis(index, 0, tick) - center;
+  return value < 0.0 ? -value : value;
+}
+
+// Three declared classes: the near ones often, the far ones half as often, and
+// a complete pass whose only job is to bound staleness. Intervals are in TICKS
+// here because one tick is one step in this stand; a project with authored
+// durations declares a frequency and derives the interval from its tick rate.
+inline constexpr uint8_t lab_class_near = 1;
+inline constexpr uint8_t lab_class_far = 2;
+inline constexpr uint8_t lab_class_refresh = 3;
+inline constexpr size_t lab_near_slots = 8;
+
+inline constexpr net::transform_field_layout lab_transform_fields{.axes = 3, .turn = true};
+
+inline net::transform_layout_table lab_transform_layouts() {
+  const std::array<net::transform_class_layout, 3> declared{{
+    {lab_transform_fields,
+     {.byte_budget = 256, .interval_ticks = 3, .phase_ticks = 0, .max_age_ticks = 12,
+      .priority = 2, .delivery = net::transform_delivery::unreliable_sequenced},
+     lab_class_near},
+    {lab_transform_fields,
+     {.byte_budget = 512, .interval_ticks = 6, .phase_ticks = 1, .max_age_ticks = 24,
+      .priority = 1, .delivery = net::transform_delivery::unreliable_sequenced},
+     lab_class_far},
+    {lab_transform_fields,
+     {.byte_budget = lab_max_message_bytes, .interval_ticks = 24, .phase_ticks = 5,
+      .max_age_ticks = 0, .priority = 0,
+      .delivery = net::transform_delivery::unreliable_sequenced},
+     lab_class_refresh},
+  }};
+  net::transform_layout_table table;
+  if (table.assign(declared) != net::transform_wire_status::ok)
+    utils::error{}("NET-LAB-01 transform layout table refused its own declaration");
+  return table;
+}
+
 // The declared numeric profile: the axis split, the code width and the causal
 // step. Every value here changes what a code MEANS, so every value belongs in
 // the fingerprint which refuses a differing peer before the first tick.
@@ -429,6 +581,11 @@ inline uint32_t lab_numeric_profile() {
   value = value * UINT32_C(16777619) ^ uint32_t(lab_axis.fraction_bits);
   value = value * UINT32_C(16777619) ^ uint32_t(net::fixed_axis<uint16_t>::code_bits);
   value = value * UINT32_C(16777619) ^ uint32_t(lab_step_quanta);
+  // The declared transform SHAPE, for the same reason the axis is here: a peer
+  // reading a record with a different field set produces a plausible wrong
+  // world rather than an error. The cadence is deliberately absent — a sender
+  // may change it mid-session and stay compatible.
+  value = value * UINT32_C(16777619) ^ lab_transform_layouts().shape_fingerprint();
   return value;
 }
 
