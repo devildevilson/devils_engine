@@ -82,9 +82,10 @@ inline bool load_ticket(const std::filesystem::path& path, follower_ticket_file&
 
 class follower_run {
 public:
-  follower_run(const lab_schedule& schedule, const uint16_t port,
-               const std::filesystem::path& ticket_path, const bool resume)
-    : schedule_(schedule), ticket_path_(ticket_path), port_(port) {
+  follower_run(const lab_schedule& schedule, const size_t roster, const uint32_t host_address,
+               const uint16_t port, const std::filesystem::path& ticket_path, const bool resume)
+    : schedule_(schedule), ticket_path_(ticket_path), host_address_(host_address), port_(port),
+      roster_(roster) {
     std::random_device source;
     nonce_seed_ = (uint64_t(source()) << 32) | uint64_t(source());
     scratch_.reserve(lab_max_message_bytes);
@@ -105,7 +106,11 @@ public:
       anchor_ = int64_t(ticket_.issued_at) - int64_t(monotonic_ms());
       anchored_ = true;
     }
-    verify_.require(link_.connect_to(port_), "follower could not open its first connection");
+    final_tick_ = schedule_.final_tick;
+    verify_.require(roster_ < lab_join_tokens.size(),
+                    "a follower was asked for a roster position which is not declared");
+    verify_.require(link_.connect_to(port_, host_address_),
+                    "follower could not open its first connection");
     peer_ = link_.pending();
   }
 
@@ -121,6 +126,15 @@ public:
   bool failed() const noexcept {
     return failed_;
   }
+  const lab_link::conditions& conditions() const noexcept {
+    return measured_;
+  }
+  size_t roster() const noexcept {
+    return roster_;
+  }
+  uint64_t final_tick() const noexcept {
+    return final_tick_;
+  }
   uint64_t exit_request() const noexcept {
     return exit_request_;
   }
@@ -132,8 +146,14 @@ public:
     drive_reconnect(local);
     if (exit_request_ != 0) return false;
     if (failed_) return false;
-    if (host_.state.tick >= schedule_.final_tick) {
-      if (linger_until_ == 0) linger_until_ = local + lab_linger_ms;
+    if (host_.state.tick >= final_tick_) {
+      if (linger_until_ == 0) {
+        // Sampled HERE, at the last tick, not after the loop: by then the
+        // linger has passed with no traffic and the backend reports a stale
+        // connection instead of the one that just carried the run.
+        measured_ = link_.measure(peer_);
+        linger_until_ = local + lab_linger_ms;
+      }
       return local < linger_until_;
     }
     return true;
@@ -159,7 +179,14 @@ private:
       }
       if (event.terminal) {
         connected_ = false;
-        if (host_.state.tick < schedule_.final_tick) ++counters_.transport_losses;
+        // A connection which dies during the handshake is terminal for the
+        // attempt: without this a client whose peer simply hung up would wait
+        // forever for a refusal that is never coming.
+        if (handshake_ && !handshake_->established()) {
+          failed_ = true;
+          return;
+        }
+        if (host_.state.tick < final_tick_) ++counters_.transport_losses;
         // A terminal handle stays OWNED until it is closed, so a reconnect
         // which does not close it finds the peer table full and spends its
         // attempts on a capacity refusal instead of on the network.
@@ -224,7 +251,12 @@ private:
     membership_.session = accepted.session;
     membership_.local_peer = accepted.local_peer;
     membership_.authority_peer = accepted.authority_peer;
-    membership_.principal = lab_principal;
+    // The principal is what the AUTHORITY granted, echoed back in the accept.
+    // A follower which used its own idea of who it is would not notice being
+    // admitted as somebody else.
+    membership_.principal = accepted.local_peer;
+    verify_.require(membership_.principal == lab_principal_of(roster_),
+                    "the authority admitted this follower under another principal");
     membership_.authority_epoch = accepted.authority_epoch;
     if (resuming_) ++counters_.reconnects;
     if (coordinator_) coordinator_->observe_admitted(authority_now(local));
@@ -287,6 +319,13 @@ private:
     ticket_.issued_at = grant.issued_at;
     ticket_.session = grant.credential.ticket.session;
     has_ticket_ = true;
+    // The run's end is the authority's to declare, and it can move: a late
+    // rejoin extends it. Taking the larger value means an extension is honored
+    // and a stale re-grant cannot shorten a run already under way.
+    if (grant.final_tick > final_tick_) {
+      final_tick_ = grant.final_tick;
+      linger_until_ = 0;
+    }
     // The expiry is in the authority's clock. Anchoring to the issue instant is
     // what makes the deadline the same deadline on both sides; without it the
     // two are unrelated numbers which happen to be milliseconds.
@@ -427,15 +466,21 @@ private:
 
   // The authored target. This is the only floating-point step in the whole
   // path, and it is confined to the one header HOT-01 put it in.
-  static double lab_authored_target(const uint64_t tick) {
-    const auto word = splitmix64(UINT64_C(0x746172676574) ^ tick);
+  static double lab_authored_target(const uint64_t tick, const size_t roster) {
+    // Per-follower, because three followers authoring the same target would
+    // make the canonical order across principals unobservable: the bundle
+    // would commit the same value whichever way it was sorted.
+    const auto word = splitmix64((UINT64_C(0x746172676574) + roster * 0x9e37) ^ tick);
     return -48.0 + double(word % 12000u) * 0.008;
   }
 
   void propose_intents(const uint64_t local) {
     const uint64_t for_tick = host_.state.tick + intent_lead;
-    if (for_tick > last_proposed_ && for_tick % 9 == 4) {
-      const auto split = net::split_axis(lab_axis, lab_authored_target(for_tick));
+    // Offsets chosen so that some ticks carry intents from SEVERAL principals
+    // and some from one: a schedule where they never collide would never
+    // exercise the cross-principal order at all.
+    if (for_tick > last_proposed_ && for_tick % 9 == (4 + roster_ % 2)) {
+      const auto split = net::split_axis(lab_axis, lab_authored_target(for_tick, roster_));
       verify_.require(!split.clamped, "an authored target left the declared fixed-point range");
       const int64_t quanta = (int64_t(split.key) << 16) | int64_t(split.code);
       const int32_t base_key = int32_t(host_.state.position >> 16);
@@ -449,7 +494,7 @@ private:
       ++counters_.intents_proposed;
     }
     if (schedule_.stale_batch_tick != 0 && host_.state.tick == schedule_.stale_batch_tick &&
-        !stale_sent_) {
+        roster_ == schedule_.stale_batch_follower && !stale_sent_) {
       stale_sent_ = true;
       send_batch_at(host_.state.tick - 2);
       ++counters_.stale_batches_sent;
@@ -502,7 +547,7 @@ private:
     // Past the final tick the authority is winding down on purpose. Counting
     // that silence as a loss would make both counters measure the shutdown
     // instead of the two failures the schedule actually injected.
-    if (host_.state.tick >= schedule_.final_tick) return;
+    if (host_.state.tick >= final_tick_) return;
     const uint64_t now = authority_now(local);
     // Which budget declared the loss is visible only at the transition: a
     // coordinator entering `lost` from `live`/`suspect` inside poll was told by
@@ -539,7 +584,7 @@ private:
     connected_ = false;
     handshake_.reset();
     resuming_ = true;
-    if (!link_.connect_to(port_)) {
+    if (!link_.connect_to(port_, host_address_)) {
       connecting_ = false;
       return;
     }
@@ -548,7 +593,9 @@ private:
   }
 
   void maybe_self_exit() {
-    if (schedule_.self_exit_tick == 0 || host_.state.tick != schedule_.self_exit_tick) return;
+    if (schedule_.self_exit_tick == 0 || host_.state.tick != schedule_.self_exit_tick ||
+        roster_ != schedule_.self_exit_follower)
+      return;
     verify_.require(has_ticket_, "a follower about to die holds no ticket to come back with");
     verify_.require(save_ticket(ticket_path_, ticket_),
                     "a follower about to die could not persist its ticket");
@@ -563,9 +610,9 @@ public:
     if (!resuming_ || !has_ticket_) {
       // First join: the injected policy's token. Nothing here is a design for
       // real identity.
-      out.assign(reinterpret_cast<const std::byte*>(lab_join_token.data()),
-                 reinterpret_cast<const std::byte*>(lab_join_token.data()) +
-                   lab_join_token.size());
+      const auto& token = lab_join_tokens[roster_];
+      out.assign(reinterpret_cast<const std::byte*>(token.data()),
+                 reinterpret_cast<const std::byte*>(token.data()) + token.size());
       return true;
     }
     // Reconnect: the entitlement is replayable by design, so what proves the
@@ -588,6 +635,9 @@ public:
   }
   net::session_refusal_reason refusal() const noexcept {
     return refusal_;
+  }
+  bool established() const noexcept {
+    return handshake_.has_value() && handshake_->established();
   }
 
 private:
@@ -626,10 +676,14 @@ private:
   std::vector<net::intent> window_;
   std::filesystem::path ticket_path_;
   net::gns_peer peer_;
+  lab_link::conditions measured_;
+  uint32_t host_address_ = 0x7f000001;
   int64_t anchor_ = 0;
   uint64_t nonce_seed_ = 0, nonce_counter_ = 0;
   uint64_t checkpoint_filled_ = 0, last_proposed_ = 0, exit_request_ = 0, linger_until_ = 0;
+  uint64_t final_tick_ = 0;
   uint16_t port_ = 0;
+  size_t roster_ = 0;
   net::session_refusal_reason refusal_ = net::session_refusal_reason::none;
   bool connected_ = false, connecting_ = false, has_ticket_ = false, resuming_ = false;
   bool anchored_ = false, awaiting_recovery_ = false, have_plan_ = false;

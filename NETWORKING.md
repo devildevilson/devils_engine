@@ -973,6 +973,60 @@ The cure for divergence itself is fixed point inside the simulation, not on the
 wire — the `act::real_t` typedef and the NUM branch below. Wire quantization
 only guarantees that replication does not make it worse.
 
+### Choosing the quantum: range, not bandwidth
+
+For a given code width the quantum costs **nothing**. `fixed_axis` requires
+`cell_shift + fraction_bits == code_bits`, so the quantum and the cell size are
+an exact trade against each other at a fixed three bytes per axis:
+
+| fraction bits | quantum | cell | reach of the ±127-cell delta | bytes/axis |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 62.5 mm | 4096 m | 520 km | 3 |
+| 8 | 3.9 mm | 256 m | 32.5 km | 3 |
+| 10 | 0.98 mm | 64 m | 8.1 km | 3 |
+| 12 | 0.24 mm | 16 m | 2.0 km | 3 |
+| 14 | 0.061 mm | 4 m | 0.5 km | 3 |
+
+So a finer quantum is not a bandwidth decision but a **reach** decision. What
+moves bytes is the code width (a `uint8` axis is two bytes and loses eight bits
+from the same budget), the number of axes, and above all the packet count.
+
+The reason a shooter wants a fine quantum is therefore not smoothness of
+motion. It is that the quantum sets the **dead band of divergence detection**:
+a client compares against one quantum and ignores an error inside it, because
+snapping onto a quantized authoritative value injects up to half a quantum even
+with no divergence at all. A 62 mm quantum is 62 mm in which a real divergence
+is invisible while the correction stays silent; a 0.24 mm quantum is a threshold
+below which divergence is indistinguishable from the format. That is the whole
+argument, and it is free in bytes.
+
+Note also which message class actually needs it. In a server-authoritative
+shooter the client's intent carries **no position at all** — a client-supplied
+position is the ownership forgery this section already refuses — so the fine
+knobs are `turn` and the authority's transform frames (HOT-02), not the intent's
+point. A `uint16` turn is 0.0055° per step, about 8.5 times finer than one pixel
+at 90° FOV on 1920; a `uint8` turn is 1.4° per step, thirty times coarser than a
+pixel and visibly wrong. Where an intent genuinely carries a point (an
+order-a-unit-there game, `tile_frontier`), what it needs is not precision but
+**semantics** — a cell or an entity, per the audit finding about screen
+coordinates — so a coarse quantum or no point at all is the right answer there.
+
+Consequently a quantum is declared **per replicated data class**: intent point,
+transform point and turn are three different requirements, and one global
+quantum would force the coarsest of them onto all three.
+
+**A quantum is session identity.** Two peers with different quanta decode the
+same codes into different world values: a systematic, silent disagreement which
+no digest can localize, because it appears in the state and not in the codec. So
+every declared quantum, the code width and the causal step belong in
+`session_compatibility::numeric_profile`, which refuses a differing peer before
+the first tick. Deriving that value rather than writing a literal is not
+bookkeeping — NET-LAB-01 carried a literal and would have admitted such a peer.
+Negotiating the quantum at runtime is explicitly rejected for the same reason
+registry indices are not stabilized: the same build would then behave
+differently in two sessions, and the correction threshold is derived from the
+quantum. Stability by refusal again.
+
 ### Replication cadence is project data
 
 Intent and transform cadence are independent. Intents are proposed/closed every simulation tick; transforms can
@@ -1332,7 +1386,7 @@ NET-00 contract (complete)
                                           -> HOT-02 transform frames + relevant set
                                      -> SESSION-03 reconnect credential
                                           -> SESSION-04 automatic transport reconnect
-                                -> NET-LAB-01 multi-process loopback/LAN (first slice complete)
+                                -> NET-LAB-01 multi-process loopback/LAN (slices 1-2 complete)
                                 -> NET-LAB-02 compatible cross-build exchange
                                      -> SERVER-01 headless authority
                                           -> TF-NET-01 online authoritative float stand
@@ -1784,7 +1838,7 @@ Done with a written GNS/Yojimbo comparison; maintaining both production adapters
 
 Done independently of gameplay UDP.
 
-### NET-LAB-01 — real multi-process loopback and LAN (`M`, first slice complete 2026-09-08)
+### NET-LAB-01 — real multi-process loopback and LAN (`M`, slices 1-2 complete 2026-09-08)
 
 - Run the same fake simulation/session fixture as separate authority and follower processes.
 - Start with OS loopback, then several followers on one machine, then several machines on a controlled LAN.
@@ -1795,17 +1849,26 @@ Done independently of gameplay UDP.
 Done when multiple independent processes converge under the same assertions as NET-06 and all failures carry a
 replayable logical-message trace.
 
-The first slice is `subprojects/playgrounds/NETLAB01_multi_process`: one authority and one follower as separate
-processes on loopback, carrying SESSION-02's handshake, SESSION-03's credential, SESSION-04's policy and
-HOT-01's intent class on the same wire. Its criterion is that two independent processes agree on the causal
-state root at the same tick after both scheduled failures. Three loss mechanisms are three code paths and the
-slice runs all three: an explicit close (the transport reports it, so the silence budget is skipped), a quiet
-window with no close (only the silence budget can notice), and a process death (a brand-new process rejoins on
-a ticket read from disk). Results, the properties it deliberately does not prove yet, and the design decisions
-it forced are in `NETWORKING_STATUS.md` and the playground's README.
+Slices 1-2 are `subprojects/playgrounds/NETLAB01_multi_process`: one authority, three followers and one
+intruder as separate processes, carrying SESSION-02's handshake, SESSION-03's credential, SESSION-04's policy
+and HOT-01's intent class on the same wire. The criterion is that every independent process agrees on the
+causal state root at the same tick after every scheduled failure. Three loss mechanisms are three code paths
+and the stand runs all three: an explicit close (the transport reports it, so the silence budget is skipped), a
+quiet window with no close (only the silence budget can notice), and a process death (a brand-new process
+rejoins on a ticket read from disk). One follower is deliberately left undisturbed, because otherwise nothing
+proves that a neighbour's recovery costs a bystander nothing.
 
-Remaining for this task: several followers on one machine, several machines on a controlled LAN, real
-RTT/jitter/loss recording and a project-sized checkpoint.
+The content of "several followers" turned out to be **provenance**: the canonical order across principals. A
+sealed bundle is ordered by principal first, since two peers whose packets interleave differently must still
+seal the same bytes; a redundant copy is same-principal/same-kind/same-tick, while the same kind from another
+principal is a different order. The principal comes from the credential, never from a peer-supplied field.
+
+Results, the properties the stand deliberately does not prove yet, and the design decisions it forced are in
+`NETWORKING_STATUS.md` and the playground's README.
+
+Remaining for this task: a second machine on a controlled LAN (the stand's `--address` is wired and proven on a
+non-loopback interface, but every process still runs on one host), recorded real RTT/jitter/loss — which the
+stand measured to need a run tens of seconds long, not merely a remote one — and a project-sized checkpoint.
 
 ### NET-LAB-02 — compatible and incompatible build exchange (`M-L`)
 

@@ -137,35 +137,43 @@ struct lab_blob_size {
 
 // The authority's ingress record. A wire intent carries a delta from the
 // batch's base tick, never an absolute tick, so the absolute tick the ingress
-// reconstructed has to travel beside it into the journal.
+// reconstructed has to travel beside it into the journal -- and so does the
+// PRINCIPAL, which the connection established and the peer never asserted.
 struct lab_intent_record {
   uint64_t tick = 0;
+  uint64_t principal = 0;
   net::intent value;
 
   bool operator==(const lab_intent_record&) const = default;
 };
 
-// Semantic order of intents inside one tick: kind, then the target quanta.
-// Arrival order has no gameplay meaning, so it must not survive into a bundle.
 struct lab_record_tick {
   uint64_t operator()(const lab_intent_record& record) const noexcept {
     return record.tick;
   }
 };
+
+// Semantic order inside one tick: PRINCIPAL first, then kind, then the target.
+// With several followers this is the whole difference between a canonical
+// bundle and a transcript of packet arrivals -- two peers whose packets
+// interleave differently must still seal the same bytes, and only a total order
+// keyed on something neither peer controls can promise that.
 struct lab_record_less {
   bool operator()(const lab_intent_record& l, const lab_intent_record& r) const noexcept {
+    if (l.principal != r.principal) return l.principal < r.principal;
     if (l.value.kind != r.value.kind) return l.value.kind < r.value.kind;
     if (l.value.cell_delta[0] != r.value.cell_delta[0])
       return l.value.cell_delta[0] < r.value.cell_delta[0];
     return l.value.code[0] < r.value.code[0];
   }
 };
-// One actor may hold one intent of a kind per tick. A second one is not a
-// second order, it is the same order arriving twice, and the ingress drops it
-// before the journal so sealing never faults on a duplicate.
+// One actor holds one intent of a kind per tick. A second one from the SAME
+// principal is not a second order, it is the same order arriving twice; from a
+// different principal it is a different order entirely. The ingress drops the
+// former before the journal, so sealing never faults on a duplicate.
 struct lab_record_equivalent {
   bool operator()(const lab_intent_record& l, const lab_intent_record& r) const noexcept {
-    return l.value.kind == r.value.kind;
+    return l.principal == r.principal && l.value.kind == r.value.kind;
   }
 };
 
@@ -263,6 +271,11 @@ struct lab_grant {
   // because `expires_at` is in the authority's units and two machines' monotonic
   // clocks share no origin.
   uint64_t issued_at = 0;
+  // Where this run ends, as the AUTHORITY currently intends it. A follower
+  // cannot hold this as a constant: a peer which rejoins late needs the run
+  // extended so that it plays again rather than merely catching up, and a
+  // session's length was never a client-side fact anyway.
+  uint64_t final_tick = 0;
 };
 
 struct lab_recovery_plan {
@@ -358,9 +371,49 @@ static_assert(net::credential_mac_policy<lab_authority_mac>);
 static_assert(net::credential_mac_policy<lab_follower_mac>);
 
 // The join credential stays an injected policy, per SESSION-01/03. This stand's
-// policy is a shared laboratory token: enough to prove the seam exists, and
-// deliberately not a design for real identity.
-inline constexpr std::string_view lab_join_token = "netlab01-join-token";
+// policy is a declared roster of laboratory tokens: enough to prove the seam
+// exists and to give each follower a distinct identity, and deliberately not a
+// design for real identity.
+//
+// Identity comes from the CREDENTIAL, not from a field a client fills in. A
+// follower which could name its own principal could name someone else's, which
+// is the same forgery as naming its own actor.
+inline constexpr size_t lab_max_followers = 3;
+
+inline constexpr std::array<std::string_view, lab_max_followers> lab_join_tokens{
+  "netlab01-join-token-0",
+  "netlab01-join-token-1",
+  "netlab01-join-token-2",
+};
+
+// Principals are the authority's own naming of who holds a session. They are
+// derived from the roster position, so a token maps to exactly one principal.
+inline constexpr uint64_t lab_principal_of(const size_t index) noexcept {
+  return UINT64_C(0x70726e63'6c616230) + index; // "prnclab0" + i
+}
+
+inline std::optional<size_t> lab_roster_index(const std::span<const std::byte> credential) {
+  for (size_t index = 0; index < lab_join_tokens.size(); ++index) {
+    const auto& token = lab_join_tokens[index];
+    const std::span<const std::byte> expected{
+      reinterpret_cast<const std::byte*>(token.data()), token.size()};
+    if (credential.size() != expected.size()) continue;
+    if (net::equal_in_constant_time(credential, expected)) return index;
+  }
+  return std::nullopt;
+}
+
+// The declared numeric profile: the axis split, the code width and the causal
+// step. Every value here changes what a code MEANS, so every value belongs in
+// the fingerprint which refuses a differing peer before the first tick.
+inline uint32_t lab_numeric_profile() {
+  uint32_t value = UINT32_C(0x4c414231); // "LAB1": integer causal state
+  value = value * UINT32_C(16777619) ^ uint32_t(lab_axis.cell_shift);
+  value = value * UINT32_C(16777619) ^ uint32_t(lab_axis.fraction_bits);
+  value = value * UINT32_C(16777619) ^ uint32_t(net::fixed_axis<uint16_t>::code_bits);
+  value = value * UINT32_C(16777619) ^ uint32_t(lab_step_quanta);
+  return value;
+}
 
 // ------------------------------------------------------------------- verifier
 
@@ -385,7 +438,12 @@ inline net::session_compatibility lab_compatibility(const uint32_t content_salt 
   value.protocol_version = 1;
   value.state_schema_fingerprint = lab_schema::schema_fingerprint();
   value.intent_schema_fingerprint = lab_registry().fingerprint();
-  value.numeric_profile = 1; // integer causal state; see the header comment
+  // The quantum is SESSION IDENTITY. Two peers with different quanta decode the
+  // same codes into different world values -- a systematic, silent
+  // disagreement no digest can localize, because it appears in the state and
+  // not in the codec. A literal profile number would have let such a peer
+  // through the handshake, so the profile is DERIVED from what is declared.
+  value.numeric_profile = lab_numeric_profile();
   utils::SHA256 hash;
   const std::string_view label = "netlab01-content-root";
   hash.update(label.data(), label.size());

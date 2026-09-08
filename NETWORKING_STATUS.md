@@ -42,13 +42,106 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
 | SESSION-01 strict compatibility/identity/recovery primitives | neutral slice complete; 6/6 cases, 76/76 assertions pass in Debug and Release |
 | Session wire handshake and challenge/response | complete as a neutral slice; see SESSION-02 below |
-| Automatic transport reconnect and multi-process exchange | NET-LAB-01 first slice complete: two processes on loopback, both roots equal in Debug and Release |
+| Automatic transport reconnect and multi-process exchange | NET-LAB-01 slices 1-2 complete: authority + 3 followers + intruder as separate processes, all roots equal in Debug and Release; a second machine is the remaining gap |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
 
-## NET-LAB-01 — the same session as two real processes, 2026-09-08
+## NET-LAB-01 slice 2 — several followers, 2026-09-08
+
+The stand now runs **one authority, three followers and one intruder** as separate
+processes, and its criterion is unchanged but now says more: every independent process
+agrees on the causal state root at the same tick. Golden values, stable in GCC Debug and
+Release, across repeated runs, and across a loopback and a real non-loopback interface
+(`192.168.122.1`):
+
+```
+continuous  tick=70  root=15053296469727158310    admissions=5  multi_principal=7
+killed      tick=42  root=12358525782810267697    announced_final 30 -> 42
+```
+
+**Provenance is the whole content of "several followers"** — not N connections, but the
+canonical order *across principals*. A sealed bundle is ordered by principal first, then
+kind, then target, because two peers whose packets interleave differently must still seal
+the same bytes, and only a total order keyed on something neither peer controls can promise
+that. Correspondingly "a redundant copy" now means same principal, same kind, same tick;
+the same kind from a different principal is a different order, not a duplicate. The
+authority verifies the principal ordering of every bundle it seals, and `multi_principal`
+counts the ticks which actually carried more than one — the followers' proposal cadences
+are offset on purpose, because a schedule where they never collided would exercise none of
+this.
+
+The principal itself comes from the **credential**, never from a field the peer fills in: a
+follower which could name its own principal could name someone else's, the same forgery as
+naming its own actor. The follower asserts that the principal it was admitted under is the
+one its roster position expects.
+
+**One follower is deliberately left alone.** A stand where every peer is disturbed cannot
+tell whether the undisturbed path survives a neighbour's recovery, so follower 2 reaches
+the same tick and root with zero reconnects while 0 and 1 recover, and that is asserted
+rather than observed. Each recovery is per-session: its own paced transfer, so one
+follower's checkpoint cannot stall another's bundles.
+
+### Two real defects the slice found
+
+- **A refusal must be delivered, not merely sent.** The authority closed the connection
+  immediately after handing the refusal to the transport, which discards it: the peer then
+  learns only that the connection died and retries, spending exactly the deadline that
+  SESSION-02's *terminal* refusal exists to protect. A refused connection is now held open
+  for a declared grace. The client was wrong in the mirror image — a connection which dies
+  during the handshake is now terminal for the attempt, because a client waiting for a
+  refusal that is never coming waits forever.
+- **The quantum is session identity, and the stand was not checking it.** Two peers with
+  different quanta decode the same codes into different world values: a systematic, silent
+  disagreement no digest can localize, because it appears in the state and not in the
+  codec. The stand carried a literal `numeric_profile = 1`, so such a peer would have
+  passed the handshake. It is now derived from the axis split, the code width and the
+  causal step. (This surfaced from the question of whether a finer quantum is worth it —
+  see the note on that below.)
+
+### Two things now declared rather than assumed
+
+- **The run's end belongs to the authority and can move.** A peer which rejoins at the very
+  end recovers and then has nothing to do, which proves it caught up but not that it
+  participates again. The grant therefore carries the final tick, a late rejoin extends the
+  run by a declared tail, and the extension is re-announced to everyone still playing. The
+  extension is a **fixed** end rather than "wherever we are plus a tail" — that is what
+  keeps the run length, and so the state root, identical in every run instead of a function
+  of how fast a process happened to start.
+- **The capacity refusal is reachable only by a valid, already-used credential**, which is
+  why a fourth process exists: an undeclared token is `identity_rejected`, a different
+  answer to a different question. The intruder is refused with `no_capacity` (11) and the
+  authority records it.
+
+### Link statistics: measured, and the measurement is the result
+
+The stand reads GNS's real-time status at the last tick — deliberately there rather than
+after the linger, where the backend reports a connection that has been idle. At the
+registered test's length it answers `quality=-1, in_pps=0`, which is the backend saying
+**no data**, not no loss: its end-to-end statistics come from a periodic exchange whose
+interval is longer than the whole run. A `--final-tick 6000` run (~25 s, 17,951 bundles)
+populates them: `quality=1`, `in_pps≈244`, `ping_ms=0`. A 5 s run does not. So a LAN
+measurement has to be **long, not merely remote** — a concrete requirement for the LAN
+slice rather than a defect here.
+
+`--address` is wired and proven on a real non-loopback interface, producing the identical
+state root. Every process still runs on one host, so nothing has crossed a wire with
+latency or loss yet; that and the Linux↔Windows exchange remain the gap.
+
+Verification: `NETLAB01_multi_process_verify` stays a registered CTest at 1.5 s, five
+consecutive Debug runs and three Release runs, **41/41 harness checks and ~1,350
+in-process checks across 11 processes** per run. The focused networking set is
+**124/124** in GCC Debug and Release.
+
+**Harness rule, learned the hard way three times:** every long-lived child is spawned
+before any child is collected. `collect` blocks until its child exits, so a spawn placed
+after one runs against a session which has already ended — and each time the symptom
+appeared somewhere else entirely (a follower stopping at the wrong tick, an intruder
+"neither admitted nor refused"). The one exception is the replacement follower, whose spawn
+is triggered by a death and is therefore deliberately late.
+
+## NET-LAB-01 slice 1 — the same session as two real processes, 2026-09-08
 
 `subprojects/playgrounds/NETLAB01_multi_process`. The first slice of the multi-process laboratory: one
 authority and one follower as separate operating-system processes over real UDP, carrying SESSION-02's
@@ -120,8 +213,8 @@ redundant intent window, `deferred=1..2` from bundles overtaking the checkpoint 
 
 The checkpoint is about sixty bytes, so the "bulk" in bulk lane is exercised as multi-message assembly and lane
 priority, **not as size**; a project-sized checkpoint belongs to the slice which attaches a real world. Several
-followers, several machines, recorded real RTT/jitter/loss and the Linux↔Windows exchange are the remaining
-NET-LAB-01/02 work. The anchor-avoids-the-transfer optimization is not implemented: the stand carries the
+followers are now done (slice 2 above); a second machine, recorded real RTT/jitter/loss and the Linux↔Windows
+exchange are the remaining NET-LAB-01/02 work. The anchor-avoids-the-transfer optimization is not implemented: the stand carries the
 confirmed anchor and the authority ignores it, exactly as the contract permits. The join credential is a shared
 laboratory token, because SESSION-01/03 deliberately left join identity an injected policy.
 
