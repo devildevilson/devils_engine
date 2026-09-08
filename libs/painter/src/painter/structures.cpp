@@ -766,6 +766,17 @@ static uint32_t parse_filter(const std::string_view& s, const std::string_view& 
   return VK_FILTER_LINEAR;
 }
 
+static uint32_t parse_mipmap(const std::string_view& s, const std::string_view& owner) {
+  if (s == "linear") {
+    return VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  }
+  if (s == "nearest") {
+    return VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  }
+  utils::error{}("Sampler '{}' has unknown mipmap mode '{}' (nearest|linear)", owner, s);
+  return VK_SAMPLER_MIPMAP_MODE_LINEAR;
+}
+
 static uint32_t parse_address(const std::string_view& s, const std::string_view& owner) {
   if (s == "repeat") {
     return VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -842,12 +853,7 @@ struct sampler_mirror {
     const uint32_t f = parse_filter(filter, name);
     s.mag_filter = f;
     s.min_filter = f;
-    s.mipmap_mode = mipmap == "linear" ? VK_SAMPLER_MIPMAP_MODE_LINEAR
-                  : mipmap == "nearest" ? VK_SAMPLER_MIPMAP_MODE_NEAREST
-                                        : UINT32_MAX;
-    if (s.mipmap_mode == UINT32_MAX) {
-      utils::error{}("Sampler '{}' has unknown mipmap mode '{}' (nearest|linear)", name, mipmap);
-    }
+    s.mipmap_mode = parse_mipmap(mipmap, name);
     const uint32_t a = parse_address(address, name);
     s.address_u = a;
     s.address_v = a;

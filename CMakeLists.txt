@@ -417,14 +417,14 @@ FetchContent_Declare(
 FetchContent_Declare(
   tavl
   GIT_REPOSITORY https://github.com/devildevilson/tavl.git
-  GIT_TAG        v1.0.2
+  GIT_TAG        v1.0.3
   OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
   devils_script
   GIT_REPOSITORY https://github.com/devildevilson/devils_script.git
-  GIT_TAG        v1.2.1
+  GIT_TAG        v1.3.1
   OVERRIDE_FIND_PACKAGE
 )
 
@@ -457,10 +457,14 @@ FetchContent_Declare(
   OVERRIDE_FIND_PACKAGE
 )
 
+# SYSTEM: `jc_voronoi.h` — сторонний одноголовочник, и его реализация компилируется В НАШЕЙ TU
+# (JC_VORONOI_IMPLEMENTATION в voronoi_tools.cpp). Без этого его собственные ворнинги (неиспользуемые
+# помощники обрезки) выглядят как наши и тонут в них настоящие.
 FetchContent_Declare(
   voronoi
   GIT_REPOSITORY https://github.com/JCash/voronoi.git
   GIT_TAG        v0.10.2
+  SYSTEM
   OVERRIDE_FIND_PACKAGE
 )
 

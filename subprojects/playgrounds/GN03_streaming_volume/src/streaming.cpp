@@ -379,8 +379,10 @@ bool vertex_arena::insert(const originator::chunk_key& key, const std::span<cons
     mirror_[chosen.first + i].chunk = uint16_t(slot);
   }
   if (needed > vertices.size()) {
-    std::memset(mirror_.data() + chosen.first + vertices.size(), 0,
-                (needed - vertices.size()) * sizeof(gpu_vertex));
+    // `fill_n` нулевой вершиной, а не `memset`: у `gpu_vertex` есть инициализаторы по умолчанию,
+    // поэтому тип не тривиально конструируем и побайтовая очистка — ворнинг компилятора. Результат
+    // тот же (вершина целиком из нулей), а сказано это через сам тип.
+    std::fill_n(mirror_.data() + chosen.first + vertices.size(), needed - vertices.size(), gpu_vertex{});
   }
   dirty_.push_back(chosen);
 
@@ -437,7 +439,7 @@ void vertex_arena::advance_frame() {
     if (taken != 0) {
       // Вырожденный треугольник — три совпавшие вершины. Нулевая вершина именно такова, и
       // растеризатор отбрасывает её по нулевой площади.
-      std::memset(mirror_.data() + it->region.first + it->done, 0, taken * sizeof(gpu_vertex));
+      std::fill_n(mirror_.data() + it->region.first + it->done, taken, gpu_vertex{});
       dirty_.push_back(block{it->region.first + it->done, taken});
       it->done += taken;
       budget -= taken;

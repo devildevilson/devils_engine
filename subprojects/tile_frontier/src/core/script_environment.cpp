@@ -1,11 +1,12 @@
 #include <cstdint>
 #include <string>
+#include <tuple>
 
 #include <devils_engine/act/building_blocks.h>
 #include <devils_engine/act/stat_accessors.h>
 #include <devils_engine/aesthetics/common.h> // entityid_t
 #include <devils_engine/aesthetics/world.h>
-#include <devils_engine/utils/core.h> // utils::warn
+#include <devils_engine/utils/core.h> // utils::warn / utils::error
 
 #include "actor_simulation.h" // компонент stats + actor_building_blocks()
 #include "script_environment.h"
@@ -33,8 +34,16 @@ static stats* get_actor_stats(entity_scope s) noexcept {
 
 static devils_script::system::options make_options() {
   devils_script::system::options opts;
+  // Начиная с devils_script 1.3.1 подбор перегрузки НЕ диагностичен: отбракованный кандидат
+  // не доходит ни до одного из этих двух обработчиков (внутри библиотеки `raise_error` помечен
+  // [[noreturn]] и бросает свой собственный тип). Значит каждое сообщение здесь — настоящий отказ
+  // разбора, и уровень ему полагается error, а не warn.
+  //
+  // Бросок отсюда библиотека ГЛУШИТ: перегрузка `parse`, принимающая tavl::parser, вызывает этот
+  // обработчик внутри своего catch и держит свой контракт «отказ = возвращаемое значение». Поэтому
+  // остановка загрузки живёт не тут, а в проверке возврата у compile_predicate/compile_effect.
   opts.error = [](const std::string& m) {
-    utils::warn("devils_script error: {}", m);
+    utils::error{}("devils_script: {}", m);
   };
   opts.warning = [](const std::string& m) {
     utils::warn("devils_script warning: {}", m);
@@ -72,12 +81,22 @@ act::compiled_script script_environment::compile(
   utils::error{}("script '{}': return type '{}' is not supported by tile_frontier", name, return_type);
 }
 
+// Эта перегрузка `parse` сообщает об отказе ВОЗВРАЩАЕМЫМ значением, а не исключением (см.
+// make_options), поэтому непроверенный возврат означает «принять полупустую программу за годную»:
+// компилятор скриптов отдал бы дальше контейнер, который загрузчик мозгов считает валидным.
+// Критично != предупреждение: у tavl предупреждения разбор не останавливают.
+static void require_parsed(const tavl::error& err, const std::string_view name) {
+  if (err.is_critical()) {
+    utils::error{}("script '{}': devils_script parse failed ({})", name, tavl::to_string(err.type));
+  }
+}
+
 devils_script::container script_environment::compile_predicate(
   const std::string_view name,
   tavl::parser& parser) const {
   devils_script::container program;
   devils_script::system::parse_context ctx;
-  sys.parse<bool, entity_scope>(name, parser, ctx, program);
+  require_parsed(std::get<1>(sys.parse<bool, entity_scope>(name, parser, ctx, program)), name);
   return program;
 }
 
@@ -86,7 +105,7 @@ devils_script::container script_environment::compile_effect(
   tavl::parser& parser) const {
   devils_script::container program;
   devils_script::system::parse_context ctx;
-  sys.parse<void, entity_scope>(name, parser, ctx, program);
+  require_parsed(std::get<1>(sys.parse<void, entity_scope>(name, parser, ctx, program)), name);
   return program;
 }
 
