@@ -26,6 +26,10 @@ function(devils_add_doctest target)
     TEST_PREFIX "${target}::"
     PROPERTIES LABELS devils_engine
   )
+
+  # Собираем имена здесь, а не переписываем список DEPENDS в корне: раньше он
+  # отставал молча, и новый тест просто не собирался целью devils_engine_test.
+  set_property(GLOBAL APPEND PROPERTY DEVILS_ENGINE_TEST_TARGETS ${target})
 endfunction()
 
 include("${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake")

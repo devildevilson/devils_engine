@@ -28,20 +28,20 @@ if (WIN32)
   if (MSVC)
   set_target_properties(glfw PROPERTIES
     IMPORTED_LOCATION
-      "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/glfw3.dll"
+      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/glfw3.dll"
     IMPORTED_IMPLIB
-      "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/glfw3dll.lib"
+      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/glfw3dll.lib"
     INTERFACE_INCLUDE_DIRECTORIES
-      "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
+      "${glfw3_SOURCE_DIR}/include"
   )
   else(MINGW)
   set_target_properties(glfw PROPERTIES
     IMPORTED_LOCATION
-      "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/glfw3.dll"
+      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/glfw3.dll"
     IMPORTED_IMPLIB
-      "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/libglfw3dll.a"
+      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/libglfw3dll.a"
     INTERFACE_INCLUDE_DIRECTORIES
-      "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
+      "${glfw3_SOURCE_DIR}/include"
   )
   endif()
 
@@ -69,11 +69,11 @@ target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_S
 target_include_directories(devils_input PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/input>")
 
 #target_include_directories(devils_input SYSTEM PRIVATE
-#  "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
+#  "${glfw3_SOURCE_DIR}/include"
 #)
 
 #target_link_directories(devils_input PUBLIC
-#  "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}"
+#  "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}"
 #)
 
 #if (MSVC)

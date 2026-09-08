@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-07.
+Last updated: 2026-09-08.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -34,19 +34,122 @@ recorded here only after it is reproduced by an executable test or directly obse
 | SESSION-03 reconnect credential | complete; 7/7 cases, 144/144 assertions in Debug, Release and Clang |
 | SESSION-04 automatic reconnect policy and recovery feasibility | complete; 7/7 cases, 173/173 assertions in Debug, Release and Clang |
 | Vendored protobuf for GNS | fixed; Linux and Windows now take protobuf from the same place |
-| Complete project suite | not run after adding SESSION-01/02; focused networking set is the verification scope |
-| Focused networking set | 145/145 in GCC Debug and Release, including real localhost UDP |
-| Second toolchain (Clang + libc++) | networking/serialization set passes; three portability defects fixed, `devils_script` one open |
+| Complete project suite | **568/568** in GCC Debug on 2026-09-08, the first complete run of this campaign |
+| Focused networking set | 124/124 by `ctest -R "network|NET0|NETLAB"` in GCC Debug and Release on 2026-09-08, including real localhost UDP and the multi-process stand |
+| Second toolchain (Clang + libc++) | networking/serialization set passes; all four portability defects now closed, the `devils_script` one upstream in v1.3.1 |
 | `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
 | NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
 | SESSION-01 strict compatibility/identity/recovery primitives | neutral slice complete; 6/6 cases, 76/76 assertions pass in Debug and Release |
 | Session wire handshake and challenge/response | complete as a neutral slice; see SESSION-02 below |
-| Automatic transport reconnect and multi-process exchange | not started; next multi-process laboratory work |
+| Automatic transport reconnect and multi-process exchange | NET-LAB-01 first slice complete: two processes on loopback, both roots equal in Debug and Release |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## NET-LAB-01 — the same session as two real processes, 2026-09-08
+
+`subprojects/playgrounds/NETLAB01_multi_process`. The first slice of the multi-process laboratory: one
+authority and one follower as separate operating-system processes over real UDP, carrying SESSION-02's
+handshake, SESSION-03's credential, SESSION-04's policy and HOT-01's intent class **on the same wire at once**.
+This is the first place those six closed slices meet.
+
+The criterion is one value, and it holds:
+
+```
+continuous  authority tick=70 root=10617983408498789030   follower tick=70 root=10617983408498789030
+killed      authority tick=48 root=2915615940752639234    follower tick=48 root=2915615940752639234
+```
+
+Both roots are **identical in GCC Debug and Release and across repeated runs**, which is a property of the
+state rather than luck: the causal state is integer-only and the tick is its only coordinate, so timing cannot
+enter it. That is deliberate and it is an attribution rule, not a simplification — this stand exists to blame a
+mismatch on the protocol, and a float world would let every failure be blamed on `libm` instead. The integers
+are also exactly what the wire carries: `(key << 16) | code` from a hot intent *is* the stored count of quanta,
+so the authority's decode seam performs no conversion, and the only floating-point step in the whole path is
+the follower turning an authored target into a split.
+
+### Three loss mechanisms are three code paths, and all three run
+
+- **Explicit close** (tick 20): the transport reports a terminal state, so the follower's silence budget is
+  skipped entirely and `session_hold_table` serves the resume. `from_hold=1`.
+- **Quiet window, no close** (tick 45): nothing reports anything, so only the silence budget can notice
+  (`warnings=1`, `silence_loss=1`). The resume then arrives **while the old connection is still nominally
+  alive**, and the session migrates. `migrated=1`.
+- **Process death**: the follower persists its ticket and leaves with `_exit(7)`; a brand-new process rejoins
+  on a ticket read from disk, with no state of its own and no confirmed anchor. Its recovery target equals the
+  retained checkpoint, so it is the documented zero-replayed-ticks case.
+
+Also measured rather than asserted on paper: `late=1` from a scripted stale batch, `duplicate=7` from the
+redundant intent window, `deferred=1..2` from bundles overtaking the checkpoint transfer, `chunks=8`.
+
+### What the stand forced, and found
+
+- **The authority's clock starts at the first admission.** The stand caught this in its first run: the follower
+  refused a bundle for tick 21 while expecting tick 1. A follower joining fresh has *no state*, so a session
+  which already advanced owes it a baseline transfer — a real requirement, and the next slice's. Pretending
+  tick zero is wherever the authority happens to be would have hidden it.
+- **A reconnect ticket's expiry is in the authority's clock, and that has to be said out loud.** Two machines'
+  monotonic clocks share no origin, so a client using `expires_at` directly is using an unrelated number which
+  happens to be milliseconds. The grant therefore carries the authority's issue instant and the follower
+  anchors to it. Without that anchor the shared deadline SESSION-04 relies on is not shared, and nothing in
+  `reconnect.h` can detect the difference — the library reads no clock, which is correct, and this is the cost.
+- **A resume can arrive while the old connection is still alive**, and refusing it because the session is "not
+  held" would strand a client whose path died in one direction only. The rule: the credential proves the
+  principal; an attached session **migrates** and its stale connection is closed, and only an unattached
+  session is looked up in the retention table. This is what the hold table's documented ordering means in
+  practice, and both branches now have a test.
+- **Pacing the bulk transfer is what makes the deferral path real.** One chunk per owner pass, because a sender
+  which blasts a whole checkpoint into the lane has not used the budget the lane declares. With the unpaced
+  blast the replay bundles and the chunks arrived together, `deferred` stayed 0, and the "bundles overtake the
+  bulk transfer" property was a comment rather than a result.
+- **The pinned GNS backend refuses a bind on port zero** (`backend_rejected`). `listen_any` therefore falls back
+  to a scan and reports which path it took, so the stand records a backend property instead of hiding it. The
+  rendezvous itself is a file: the authority publishes the port it actually got, which a fixed port cannot
+  guarantee and a scan alone makes flaky.
+- **A terminal handle stays owned until it is closed.** A reconnect which did not close it found the peer table
+  full and spent its attempts on a capacity refusal instead of on the network. The adapter documents this; the
+  stand is where it costs something.
+- Own defect worth recording because the shape recurs: the harness decoded a child's exit status as
+  `LAB_EXIT_CODE(LAB_PCLOSE(stream))`, and `WIFEXITED`/`WEXITSTATUS` are macros which evaluate their argument
+  more than once — so `pclose` ran several times and the parent died on a double free. A macro argument with a
+  side effect must be named first.
+
+### Deliberately not proven yet
+
+The checkpoint is about sixty bytes, so the "bulk" in bulk lane is exercised as multi-message assembly and lane
+priority, **not as size**; a project-sized checkpoint belongs to the slice which attaches a real world. Several
+followers, several machines, recorded real RTT/jitter/loss and the Linux↔Windows exchange are the remaining
+NET-LAB-01/02 work. The anchor-avoids-the-transfer optimization is not implemented: the stand carries the
+confirmed anchor and the authority ignores it, exactly as the contract permits. The join credential is a shared
+laboratory token, because SESSION-01/03 deliberately left join identity an injected policy.
+
+Verification: `NETLAB01_multi_process_verify` is a registered CTest, 1.5 s, passing five consecutive Debug runs
+and three Release runs. The focused networking set is **124/124** in GCC Debug and Release, and the complete
+`devils_engine` label is **568/568** in Debug (196 s) — the first whole-suite run of this campaign, made
+possible by the repaired verification target below. The per-process
+check counts vary between runs because a check fires per message and the message count depends on scheduling;
+the harness's own 14 checks are fixed.
+
+## Verification target repaired — the list was the defect, 2026-09-08
+
+`devils_engine_test` enumerated its `DEPENDS` by hand, and the hand had fallen **45 targets behind**: not only
+the four newest session/hot-path tests but every `originator_*`, `painter_*`, `aesthetics_*` and `catalogue_*`
+test added since the list was last touched. The failure mode is quiet in the worst way — the target runs
+`ctest -L devils_engine`, which selects tests by label regardless of the list, so on a fresh tree those tests
+are *selected but never built* and fail as missing executables, while on an already-built tree they pass and
+hide the gap entirely. That is why the count could drift this far unnoticed.
+
+Naming the four missing tests would have restored the same defect with a later expiry date, so the list is now
+derived: `devils_add_doctest` appends each target to a global `DEVILS_ENGINE_TEST_TARGETS` property, and the
+root target depends on that property plus an explicit remainder — the playgrounds and smokes which call
+`add_test` directly and therefore pass through no helper. The conditional `add_dependencies` for the two GNS
+tests is gone, because a conditionally registered doctest lands in the property exactly when it is registered.
+
+Confirmed in the generated build graph rather than by reading the CMake: `devils_engine_test.dir/all` now
+carries edges to `network_reconnect_test`, `originator_volume_test`, `GN05_constraint_collapse` and the GNS
+pair. `ctest -R "network|NET0"` is **123/123** in GCC Debug afterwards.
 
 ## SESSION-01 — strict compatibility, identity and recovery, 2026-09-06
 
@@ -329,11 +432,23 @@ the platform the cross-libm work needs next.
 | --- | --- | --- |
 | `utils/thread/stack_pool.h`, four `execute() const override` | overriding function laxer than the `noexcept` pure virtual base | fixed by adding `noexcept` |
 | `aesthetics/common.h`, `offsetof(class_container<T>, class_container<T>::obj)` | qualified member designator is a GCC extension | fixed to the unqualified member |
-| `devils_script` v1.2.1 `system_templates.h:1101` | static `get_user_function_type()` calls non-static `raise_error`; the error does not depend on the template parameters, so Clang diagnoses it at parse time | open, belongs upstream (`~/git/cpp/devils_script`); a temporary stub was used only to look for further defects behind it and has been reverted, so a Clang build of any `devils_script` consumer still fails here |
+| `devils_script` v1.2.1 `system_templates.h:1101` | static `get_user_function_type()` calls non-static `raise_error`; the error does not depend on the template parameters, so Clang diagnoses it at parse time | fixed upstream in v1.3.1, which the root `CMakeLists.txt` now pins: the call became a `static_assert`, which is what the position could legally do. Verified 2026-09-08 by a `clang++ -fsyntax-only` of `acumen_script_test.cpp` with the build's own flags — it parses clean, where before it failed inside the header. A complete Clang/libc++ build of the `tile_frontier` smokes is still not done |
 
 `libs/visage/CMakeLists.txt` and `libs/bindings/CMakeLists.txt` hardcode `${FETCHCONTENT_BASE_DIR}/nuklear-src`
 instead of `${nuklear_SOURCE_DIR}`. That is not a compiler defect, but it breaks any build tree which reuses
-fetched sources through `FETCHCONTENT_SOURCE_DIR_*`.
+fetched sources through `FETCHCONTENT_SOURCE_DIR_*`. Closed 2026-09-08 — and the count was wrong: **the same
+guess appeared in seven places, not two**, because the pattern `${FETCHCONTENT_BASE_DIR}/<name>-src` reproduces
+by copy. `libs/painter` and `libs/sound` guessed `stb-src`/`dr_libs-src`, `subprojects/playgrounds/PF05` guessed
+`nuklear-src`, and `libs/input` guessed `glfw3-src` for three imported-library properties on Windows, where a
+wrong path is a link error rather than a missing header. All seven now read the variable FetchContent actually
+publishes.
+
+The override case was proved separately rather than assumed, because in the default tree both spellings resolve
+to the same directory and prove nothing: an isolated probe declaring `nuklear` the same way, configured with
+`FETCHCONTENT_SOURCE_DIR_NUKLEAR` pointed at a reused checkout, reports `nuklear_SOURCE_DIR` at the reused tree
+while `${FETCHCONTENT_BASE_DIR}/nuklear-src` names a directory nothing populated. In the project's own tree the
+generated include paths are byte-identical before and after, which is the intended result: only the overridden
+tree changes behavior.
 
 With libc++ actually installed, the native-float micro-corpus is unchanged: GCC/libstdc++ and Clang/**libc++**
 both produce 21,505 bytes hashing to `77e13886fa5dd6706add0856195b81e18738d9750f75cc7410bc7f69b74e66e6`, with

@@ -1332,7 +1332,7 @@ NET-00 contract (complete)
                                           -> HOT-02 transform frames + relevant set
                                      -> SESSION-03 reconnect credential
                                           -> SESSION-04 automatic transport reconnect
-                                -> NET-LAB-01 multi-process loopback/LAN
+                                -> NET-LAB-01 multi-process loopback/LAN (first slice complete)
                                 -> NET-LAB-02 compatible cross-build exchange
                                      -> SERVER-01 headless authority
                                           -> TF-NET-01 online authoritative float stand
@@ -1784,7 +1784,7 @@ Done with a written GNS/Yojimbo comparison; maintaining both production adapters
 
 Done independently of gameplay UDP.
 
-### NET-LAB-01 — real multi-process loopback and LAN (`M`)
+### NET-LAB-01 — real multi-process loopback and LAN (`M`, first slice complete 2026-09-08)
 
 - Run the same fake simulation/session fixture as separate authority and follower processes.
 - Start with OS loopback, then several followers on one machine, then several machines on a controlled LAN.
@@ -1794,6 +1794,18 @@ Done independently of gameplay UDP.
 
 Done when multiple independent processes converge under the same assertions as NET-06 and all failures carry a
 replayable logical-message trace.
+
+The first slice is `subprojects/playgrounds/NETLAB01_multi_process`: one authority and one follower as separate
+processes on loopback, carrying SESSION-02's handshake, SESSION-03's credential, SESSION-04's policy and
+HOT-01's intent class on the same wire. Its criterion is that two independent processes agree on the causal
+state root at the same tick after both scheduled failures. Three loss mechanisms are three code paths and the
+slice runs all three: an explicit close (the transport reports it, so the silence budget is skipped), a quiet
+window with no close (only the silence budget can notice), and a process death (a brand-new process rejoins on
+a ticket read from disk). Results, the properties it deliberately does not prove yet, and the design decisions
+it forced are in `NETWORKING_STATUS.md` and the playground's README.
+
+Remaining for this task: several followers on one machine, several machines on a controlled LAN, real
+RTT/jitter/loss recording and a project-sized checkpoint.
 
 ### NET-LAB-02 — compatible and incompatible build exchange (`M-L`)
 

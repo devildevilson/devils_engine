@@ -674,15 +674,37 @@ add_subdirectory(subprojects/tile_frontier "${CMAKE_BINARY_DIR}/cmake/subproject
 add_subdirectory(subprojects/playgrounds "${CMAKE_BINARY_DIR}/cmake/subprojects/playgrounds")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
+  # Цели, зарегистрированные через devils_add_doctest, собираются сами; здесь
+  # перечислены только площадки и смоки, которые заводят add_test напрямую.
+  set(DEVILS_ENGINE_EXTRA_TEST_TARGETS
+    NET06_in_memory_transport
+    NET07_replication_baselines
+    GN01_generator_contract
+    GN02_planet_generator
+    GN03_streaming_volume
+    GN04_texture_generation
+    GN05_constraint_collapse
+    audio_coloration_lab
+    cardgame_headless_smoke
+    tile_frontier_snapshot_smoke
+    tile_frontier_resume_smoke
+    tile_frontier_checkpoint_audit
+    tile_frontier_config_effect_smoke
+    tile_frontier_time_smoke
+  )
+  get_property(DEVILS_ENGINE_DOCTEST_TARGETS GLOBAL PROPERTY DEVILS_ENGINE_TEST_TARGETS)
+
+  # The multi-process stand exists only where the GNS adapter does.
+  if (TARGET NETLAB01_multi_process)
+    list(APPEND DEVILS_ENGINE_EXTRA_TEST_TARGETS NETLAB01_multi_process)
+  endif()
+
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS utils_general_test utils_contract_test timeline_test simulation_time_test gameplay_timeline_test thread_general_test gamenetworking_sockets_capability_test network_tick_journal_test network_sequence_history_test network_state_schema_test network_checkpoint_replay_test network_state_digest_test network_replication_test network_hot_path_test network_session_test NET06_in_memory_transport NET07_replication_baselines resolve_pipeline_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test aesthetics_serialization_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_effect_program_test cardgame_follow_up_test cardgame_action_pipeline_test cardgame_typed_effect_test cardgame_combat_script_test cardgame_execution_report_script_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke tile_frontier_checkpoint_audit tile_frontier_time_smoke
+    DEPENDS ${DEVILS_ENGINE_DOCTEST_TARGETS} ${DEVILS_ENGINE_EXTRA_TEST_TARGETS}
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )
-  if (TARGET network_gns_transport_test)
-    add_dependencies(devils_engine_test network_gns_transport_test network_backend_session_test)
-  endif()
 endif()
 
 if (DEVILS_ENGINE_BUILD_VENDOR_TESTS)

@@ -61,7 +61,7 @@ target_link_libraries(devils_bindings
 
 target_include_directories(devils_bindings INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_bindings PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/bindings>")
-target_include_directories(devils_bindings PRIVATE "${FETCHCONTENT_BASE_DIR}/nuklear-src")
+target_include_directories(devils_bindings PRIVATE "${nuklear_SOURCE_DIR}")
 
 if (WIN32)
   target_link_directories(devils_bindings PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54)

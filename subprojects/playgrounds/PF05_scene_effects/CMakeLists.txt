@@ -17,7 +17,7 @@ target_compile_definitions(PF05_scene_effects PRIVATE
   PF05_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources"
   PLAYGROUND_COMMON_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../common/resources"
 )
-target_include_directories(PF05_scene_effects PRIVATE "${FETCHCONTENT_BASE_DIR}/nuklear-src")
+target_include_directories(PF05_scene_effects PRIVATE "${nuklear_SOURCE_DIR}")
 
 set_target_properties(PF05_scene_effects PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/playgrounds/PF05_scene_effects/bin"

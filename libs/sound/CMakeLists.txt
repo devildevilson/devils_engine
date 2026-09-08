@@ -43,6 +43,6 @@ target_link_libraries(devils_sound PRIVATE
   OpusFile::opusfile)
 target_include_directories(devils_sound INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_sound PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/sound>")
-target_include_directories(devils_sound PRIVATE "${FETCHCONTENT_BASE_DIR}/stb-src" "${FETCHCONTENT_BASE_DIR}/dr_libs-src")
+target_include_directories(devils_sound PRIVATE "${stb_SOURCE_DIR}" "${dr_libs_SOURCE_DIR}")
 
 add_library(devils_engine::sound ALIAS devils_sound)

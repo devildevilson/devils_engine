@@ -91,7 +91,7 @@ target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LI
 target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>")
-target_include_directories(devils_painter PRIVATE "${FETCHCONTENT_BASE_DIR}/stb-src") # stb_image.h для texture_resource
+target_include_directories(devils_painter PRIVATE "${stb_SOURCE_DIR}") # stb_image.h для texture_resource
 
 if (MSVC)
   target_link_directories(devils_painter PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan)
