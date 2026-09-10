@@ -185,6 +185,8 @@ struct authority_counters {
   uint64_t chunks_sent = 0;
   uint64_t replay_bundles_sent = 0;
   uint64_t refusals = 0;
+  uint64_t challenges_issued = 0;
+  uint64_t admission_checks = 0;
   // HOT-02 on the wire. Bytes are counted as PAYLOAD handed to the transport:
   // the per-packet overhead is the transport's and the link's own statistics
   // report it, so adding a guess here would double-count it.
@@ -280,6 +282,9 @@ public:
   }
   const authority_counters& counters() const noexcept {
     return counters_;
+  }
+  net::session_refusal_reason last_refusal() const noexcept {
+    return last_refusal_;
   }
   const lab_host& host() const noexcept {
     return host_;
@@ -476,6 +481,7 @@ private:
     if (slot->shake->phase() == net::handshake_phase::refused ||
         status != net::session_wire_status::ok) {
       ++counters_.refusals;
+      last_refusal_ = slot->shake->refusal();
       // The refusal was handed to the transport a moment ago. Closing now
       // would throw it away and the peer would learn only that the connection
       // died, which is exactly the retry a terminal refusal exists to prevent.
@@ -1060,6 +1066,7 @@ public:
   // ------------------------------------------------- authority_handshake_policy
 
   bool issue_challenge(const net::client_hello& hello, std::vector<std::byte>& out) {
+    ++counters_.challenges_issued;
     // The library refuses to guess what a challenge contains. This one binds
     // the client's own nonce under the authority key, so it cannot be produced
     // by anyone else and cannot be replayed into a different hello.
@@ -1075,6 +1082,7 @@ public:
   net::session_refusal_reason admit(const net::client_response& response,
                                     const utils::digest& transcript,
                                     net::session_accepted& accepted) {
+    ++counters_.admission_checks;
     if (response.resumed_session) return admit_resume(response, transcript, accepted);
     return admit_join(response, accepted);
   }
@@ -1211,6 +1219,7 @@ private:
   session_slot* admitted_ = nullptr;
   uint64_t nonce_seed_ = 0, nonce_counter_ = 0;
   uint64_t epoch_ = 1, next_session_ = 0;
+  net::session_refusal_reason last_refusal_ = net::session_refusal_reason::none;
   uint64_t admission_now_ = 0, next_tick_at_ = 0, linger_until_ = 0;
   uint64_t final_tick_ = schedule_.final_tick;
   size_t admitted_count_ = 0;

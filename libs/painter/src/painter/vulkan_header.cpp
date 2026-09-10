@@ -273,7 +273,7 @@ std::tuple<vk::Image, vma::Allocation> create_image(
   const bool need_memory_map = mem_usage == vma::MemoryUsage::eCpuOnly || mem_usage == vma::MemoryUsage::eCpuCopy || mem_usage == vma::MemoryUsage::eCpuToGpu;
   const auto fl = need_memory_map ? vma::AllocationCreateFlagBits::eMapped : vma::AllocationCreateFlags();
   const vma::AllocationCreateInfo alloc_info(fl, mem_usage);
-  std::pair<vk::Image, vma::Allocation> p;
+  std::pair<vma::Allocation, vk::Image> p;
   if (pData == nullptr) {
     p = allocator.createImage(info, alloc_info);
   } else {
@@ -282,8 +282,8 @@ std::tuple<vk::Image, vma::Allocation> create_image(
     *pData = i.pMappedData;
   }
   auto dev = allocator_device(allocator);
-  set_name(dev, p.first, name);
-  return std::make_tuple(p.first, p.second);
+  set_name(dev, p.second, name);
+  return std::make_tuple(p.second, p.first);
 }
 
 std::tuple<vk::AccessFlags, vk::AccessFlags, vk::PipelineStageFlags, vk::PipelineStageFlags>

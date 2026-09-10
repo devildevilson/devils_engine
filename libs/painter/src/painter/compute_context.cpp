@@ -248,7 +248,7 @@ compute_context::buffer_id compute_context::create_buffer(const size_t byte_size
   }
 
   vma::Allocator allocator(base_->allocator);
-  auto [handle, allocation] = allocator.createBuffer(bci, aci);
+  auto [allocation, handle] = allocator.createBuffer(bci, aci);
 
   buffer_entry entry;
   entry.handle = handle;
@@ -369,7 +369,7 @@ compute_context::image_id compute_context::create_image(const uint32_t width,
   aci.usage = vma::MemoryUsage::eGpuOnly;
 
   vma::Allocator allocator(base_->allocator);
-  auto [handle, allocation] = allocator.createImage(ici, aci);
+  auto [allocation, handle] = allocator.createImage(ici, aci);
 
   vk::Device dev(device_.device);
   vk::ImageViewCreateInfo ivci{};

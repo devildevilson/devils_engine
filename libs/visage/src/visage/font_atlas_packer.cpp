@@ -64,8 +64,10 @@ static void local_query_font_glyph(nk_handle h, float font_height, struct nk_use
 
 std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t> font_atlas_packer::load_fonts(const config& cfg) {
   std::vector<msdf_atlas::GlyphGeometry> glyphs;
-  //msdf_atlas::FontGeometry fontGeometry(&glyphs);
-  std::vector<msdf_atlas::FontGeometry> geometries(fonts_data.size(), msdf_atlas::FontGeometry(&glyphs));
+  auto ptr = &glyphs;
+  std::vector<msdf_atlas::FontGeometry> geometries;
+  geometries.reserve(fonts_data.size());
+  for (size_t i = 0; i < fonts_data.size(); ++i) { geometries.emplace_back(msdf_atlas::FontGeometry(ptr)); }
   std::vector<size_t> load_sizes(fonts_data.size(), 0);
 
   // кажется указатель нигде не сохраняется на будущее и мы можем так сделать

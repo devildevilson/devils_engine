@@ -9,7 +9,7 @@ the same wire at once. It is the first place where those six closed slices meet.
 Run it:
 
 ```
-NETLAB01_multi_process --verify              # spawns every process and asserts the outcome
+NETLAB01_multi_process --verify              # runs NET-LAB-01 plus the NET-LAB-02 matrix
 NETLAB01_multi_process --verify --quiet      # what ctest runs
 NETLAB01_multi_process --authority --rendezvous DIR [--address A.B.C.D] [--final-tick N]
 NETLAB01_multi_process --follower  --rendezvous DIR --index I [--resume] [--address ...]
@@ -19,6 +19,8 @@ NETLAB01_multi_process --intruder  --rendezvous DIR --index I
 `--listen`/`--connect` name the endpoint outright, for peers on machines that share no
 directory; `--rendezvous` stays for the local harness, which needs a port the operating
 system picked. `--followers`, `--tick-ms` and `--final-tick` are the operator's knobs.
+`--compatibility` and `--wire-version` are the deliberate NET-LAB-02 fault controls; the
+ordinary run leaves both at `compatible`/`current`.
 
 ## What the stand asserts
 
@@ -59,7 +61,36 @@ loopback and a real non-loopback interface**. That is a property of the state, n
 luck: the causal state is integer-only and the tick is its only coordinate, so neither
 timing nor the transport path can enter it. The per-process check counts do vary between
 runs, because a check fires per message and the message count depends on scheduling; the
-harness's own 41 checks are fixed.
+complete harness's own 125 checks are fixed.
+
+## NET-LAB-02 compatibility matrix
+
+The same executable now runs the incompatible half of the build exchange over real UDP,
+not only through the in-memory handshake test. Six followers independently perturb one
+field and each is refused with its exact wire reason:
+
+| Perturbed field | Refusal |
+| --- | --- |
+| handshake format | `handshake_format_mismatch` |
+| protocol version | `protocol_version_mismatch` |
+| content root | `content_mismatch` |
+| state schema | `state_schema_mismatch` |
+| intent schema | `intent_schema_mismatch` |
+| numeric profile | `numeric_profile_mismatch` |
+
+Every refusal process asserts `tick=0`, no applied bundle, no issued challenge and no
+credential admission check. The refusal therefore precedes both authentication and the
+simulation rather than merely arriving before an arbitrary later tick.
+
+The session envelope is now version 2 with an explicit compatible floor at version 1.
+Both versions decode to the same canonical payload messages, and the authority keeps the
+version selected by the hello for the whole exchange. A complete three-follower version-1
+run reaches the same tick 70 root `8518737655127057956` as version 2. Version 3 is the
+deliberately breaking case: the authority parses only the envelope, sends
+`unsupported_wire_version`, and records zero challenge/admission work.
+
+Debug and Release both pass **125/125 harness checks**. The neutral codec/handshake suite
+passes **13/13 cases, 381/381 assertions**.
 
 ## Decisions this slice had to make
 

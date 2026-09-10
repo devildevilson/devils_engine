@@ -171,6 +171,7 @@ set(MZ_LZMA OFF CACHE BOOL "" FORCE)
 set(MZ_PKCRYPT OFF CACHE BOOL "" FORCE)
 set(MZ_WZAES OFF CACHE BOOL "" FORCE)
 set(MZ_LIBCOMP OFF CACHE BOOL "" FORCE)
+set(MZ_SANITIZER "" CACHE BOOL "" FORCE)
 
 set(INSTALL_DOCS OFF)
 set(INSTALL_PKG_CONFIG_MODULE OFF)
@@ -198,23 +199,57 @@ set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(protobuf_BUILD_EXPORT OFF CACHE BOOL "" FORCE) # Not an option in protobuf 36; kept harmless.
 set(protobuf_WITH_ZLIB ON CACHE BOOL "Enable zlib support in Protobuf" FORCE)
 set(Protobuf_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
-# Nothing here is installed, and protobuf's install(EXPORT protobuf-targets)
-# would demand that this project's zlib be part of an export set as well. The
-# option protobuf actually reads is protobuf_INSTALL.
 set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
-# protobuf passes its own install switch down to the bundled utf8_range without
-# forcing it, so a tree configured before protobuf_INSTALL was turned off keeps
-# ON here and fails to GENERATE: utf8_range's install(EXPORT) then demands the
-# vendored Abseil in an export set it deliberately is not in. Forcing it makes
-# an existing cache recover instead of requiring a wiped build directory.
 set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+
+set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+set(GENERATE_DEBUG_SYMBOLS OFF)
+set(OVERRIDE_CXX_FLAGS ON)
+set(DOUBLE_PRECISION OFF)
+# Physics state is intended to participate in replay/network checks. Jolt's
+# deterministic build also exports the matching JPH compile definition to its
+# consumers, so inline math (Sin/Cos, vector operations) uses the same path.
+set(CROSS_PLATFORM_DETERMINISTIC ON)
+set(INTERPROCEDURAL_OPTIMIZATION ON)
+set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF)
+set(CPP_EXCEPTIONS_ENABLED OFF)
+set(CPP_RTTI_ENABLED OFF)
+set(OBJECT_LAYER_BITS 16)
+
+set(USE_SSE4_1 OFF)
+set(USE_SSE4_2 OFF)
+set(USE_AVX OFF)
+set(USE_AVX2 OFF)
+set(USE_AVX512 OFF)
+set(USE_LZCNT OFF)
+set(USE_TZCNT OFF)
+set(USE_F16C OFF)
+set(USE_FMADD OFF)
+
+if (DEVILS_ENGINE_ARCH STREQUAL "AVX")
+  set(USE_SSE4_1 ON)
+  set(USE_SSE4_2 ON)
+  set(USE_AVX ON)
+elseif (DEVILS_ENGINE_ARCH STREQUAL "AVX2" OR DEVILS_ENGINE_ARCH STREQUAL "NATIVE")
+  set(USE_SSE4_1 ON)
+  set(USE_SSE4_2 ON)
+  set(USE_AVX ON)
+  set(USE_AVX2 ON)
+  set(USE_LZCNT ON)
+  set(USE_TZCNT ON)
+  set(USE_F16C ON)
+  set(USE_FMADD ON)
+endif()
 
 #set(BUILD_SHARED_LIBS ON)
 
 FetchContent_Declare(
   glaze
   GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-  GIT_TAG        v5.2.0 # version 5.1.2
+  GIT_TAG        v8.3.0 # version 5.1.2
   GIT_SHALLOW    TRUE
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
@@ -240,7 +275,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   ZLIB
   GIT_REPOSITORY https://github.com/zlib-ng/zlib-ng.git
-  GIT_TAG        2.2.4
+  GIT_TAG        2.3.3
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -248,7 +283,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   PNG
   GIT_REPOSITORY https://github.com/pnggroup/libpng.git
-  GIT_TAG        v1.6.48
+  GIT_TAG        v1.6.58
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -256,7 +291,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   minizip-ng
   GIT_REPOSITORY https://github.com/zlib-ng/minizip-ng.git
-  GIT_TAG        4.0.10
+  GIT_TAG        4.2.2
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -264,14 +299,14 @@ FetchContent_Declare(
 FetchContent_Declare(
   atomic_queue
   GIT_REPOSITORY https://github.com/max0x7ba/atomic_queue.git
-  GIT_TAG        v1.6.9
+  GIT_TAG        v1.9.2
   GIT_PROGRESS   TRUE
 )
 
 FetchContent_Declare(
   nuklear
   GIT_REPOSITORY https://github.com/Immediate-Mode-UI/Nuklear.git
-  GIT_TAG        4.12.7
+  GIT_TAG        v4.13.3
   GIT_PROGRESS   TRUE
   SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
 )
@@ -286,7 +321,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   msdfgen
   GIT_REPOSITORY https://github.com/Chlumsky/msdfgen.git
-  GIT_TAG        v1.12
+  GIT_TAG        v1.13
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -294,7 +329,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   msdf-atlas-gen
   GIT_REPOSITORY https://github.com/Chlumsky/msdf-atlas-gen.git
-  GIT_TAG        v1.3
+  GIT_TAG        v1.4
   GIT_SUBMODULES ""
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
@@ -303,7 +338,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   dr_libs
   GIT_REPOSITORY https://github.com/mackron/dr_libs.git
-  GIT_TAG        9cb7092ac8c75a82b5c6ea72652ca8d0091d7ffa
+  GIT_TAG        dfe8377631000664666519fdb83da193fd8037f4
   GIT_PROGRESS   TRUE
   SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
   GIT_SUBMODULES ""
@@ -312,7 +347,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   stb
   GIT_REPOSITORY https://github.com/nothings/stb.git
-  GIT_TAG        f0569113c93ad095470c54bf34a17b36646bbbb5
+  GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20
   GIT_PROGRESS   TRUE
   SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
 )
@@ -342,7 +377,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   Vulkan-Headers
   GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
-  GIT_TAG        v1.4.314
+  GIT_TAG        v1.4.362
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -350,7 +385,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   VulkanMemoryAllocator
   GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-  GIT_TAG        v3.2.1
+  GIT_TAG        v3.4.0
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -358,7 +393,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   VulkanMemoryAllocator-Hpp
   GIT_REPOSITORY https://github.com/YaaZ/VulkanMemoryAllocator-Hpp.git
-  GIT_TAG        v3.2.1
+  GIT_TAG        v3.4.0+2
   GIT_SUBMODULES ""
   SOURCE_SUBDIR  include
   GIT_PROGRESS   TRUE
@@ -367,7 +402,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   dynamic_bitset
   GIT_REPOSITORY https://github.com/pinam45/dynamic_bitset.git
-  GIT_TAG        v1.3.2
+  GIT_TAG        v1.3.3
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -375,7 +410,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   glm
   GIT_REPOSITORY https://github.com/g-truc/glm.git
-  GIT_TAG        1.0.1
+  GIT_TAG        1.0.3
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -383,7 +418,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   doctest
   GIT_REPOSITORY https://github.com/doctest/doctest.git
-  GIT_TAG        v2.5.2
+  GIT_TAG        v2.5.3
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -399,7 +434,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   cpuinfo
   GIT_REPOSITORY https://github.com/pytorch/cpuinfo.git
-  GIT_TAG        c4b4f4bf08c0cf486fc3111d0244ebf2a48ad01b
+  GIT_TAG        66ee79c038d70dad9f08705b2c9b3e58f6d8f512
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -494,14 +529,11 @@ FetchContent_Declare(
 FetchContent_Declare(
   absl
   GIT_REPOSITORY https://github.com/abseil/abseil-cpp.git
-  GIT_TAG        20250512.1
+  GIT_TAG        20260817.0
   GIT_SHALLOW    TRUE
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
-set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   protobuf
@@ -511,14 +543,21 @@ FetchContent_Declare(
   OVERRIDE_FIND_PACKAGE
 )
 
+FetchContent_Declare(
+  JoltPhysics
+  GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+  GIT_TAG  v5.6.0
+  SOURCE_SUBDIR "Build"
+)
+
 FetchContent_MakeAvailable(ZLIB)
 
 # workarounds for zlib-ng
 if(TARGET zlib AND NOT TARGET ZLIB::ZLIB)
-  add_library(ZLIB::ZLIB ALIAS zlib)
+  add_library(ZLIB::ZLIB ALIAS zlib-ng)
   set(ZLIB_FOUND TRUE CACHE INTERNAL "")
-  set(ZLIB_INCLUDE_DIRS $<TARGET_PROPERTY:zlib,INTERFACE_INCLUDE_DIRECTORIES> CACHE INTERNAL "")
-  set(ZLIB_LIBRARIES zlib CACHE INTERNAL "")
+  set(ZLIB_INCLUDE_DIRS $<TARGET_PROPERTY:zlib-ng,INTERFACE_INCLUDE_DIRECTORIES> CACHE INTERNAL "")
+  set(ZLIB_LIBRARIES zlib-ng CACHE INTERNAL "")
   #set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
   #set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 endif()
@@ -605,7 +644,7 @@ function(protobuf_generate_cpp SRCS HDRS)
 endfunction()
 ]==])
 
-FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi) # RE-flex
+FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi JoltPhysics) # RE-flex
 
 macro(install)
 endmacro()
@@ -623,10 +662,10 @@ if (TARGET minizip)
   )
 endif()
 
-add_library(VulkanMemoryAllocator-Hpp INTERFACE)
-add_library(VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp ALIAS VulkanMemoryAllocator-Hpp)
-target_include_directories(VulkanMemoryAllocator-Hpp INTERFACE "${vulkanmemoryallocator-hpp_SOURCE_DIR}/include")
-target_link_libraries(VulkanMemoryAllocator-Hpp INTERFACE Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
+#add_library(VulkanMemoryAllocator-Hpp INTERFACE)
+#add_library(VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp ALIAS VulkanMemoryAllocator-Hpp)
+#target_include_directories(VulkanMemoryAllocator-Hpp INTERFACE "${vulkanmemoryallocator-hpp_SOURCE_DIR}/include")
+#target_link_libraries(VulkanMemoryAllocator-Hpp INTERFACE Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
 
 #target_compile_options(spdlog
 #  PRIVATE /fsanitize=address

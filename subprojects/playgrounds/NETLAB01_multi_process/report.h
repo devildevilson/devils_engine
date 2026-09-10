@@ -169,8 +169,8 @@ inline void describe_build(lab_report& report) {
 
 // What the two peers must agree on before the first tick. Written out so a
 // disagreement can be localized by diffing two reports rather than guessed at.
-inline void describe_compatibility(lab_report& report) {
-  const auto value = lab_compatibility();
+inline void describe_compatibility(lab_report& report,
+                                   const net::session_compatibility& value = lab_compatibility()) {
   report.set("compat.handshake_format", uint64_t(value.handshake_format));
   report.set("compat.protocol_version", uint64_t(value.protocol_version));
   report.set("compat.state_schema_fingerprint", uint64_t(value.state_schema_fingerprint));

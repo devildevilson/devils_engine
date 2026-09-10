@@ -10,8 +10,38 @@
 lifetime, ordering, budgets, diagnostics и переиспользуемые primitives.
 
 `subprojects/tile_frontier` остаётся главным сложившимся integration playground, а `subprojects/cardgame`
-— вторым живым gameplay consumer. Текущий новый фокус — painter campaign под
-`subprojects/playgrounds/`, начиная с `PF01_forward_plus`.
+— вторым живым gameplay consumer. Painter- и generator-campaign дали текущую доказанную базу; актуальная
+работа ведётся в networking program, а ближайший non-network horizon — составной 3D movement stack.
+
+## Целевая роль `libs/originator`
+
+Большая часть создаваемого контента должна приходить в движок как результат `libs/originator`, а не как
+ещё одна вручную написанная project-specific загрузочная ветка. `originator` — общий content-production
+контур, который исполняет versioned typed pipeline и выдаёт проверяемый artifact/package; конкретная grammar
+мира, набор passes, semantic schemas, constraints и repair policy остаются у проекта.
+
+Один и тот же контракт обязан поддерживать три режима потребления:
+
+1. **Prototype/offline build:** проект целиком генерирует мир или уровень, исследует intermediate artifacts,
+   фиксирует удачный результат и передаёт его дальше как пакет, а не как обещание повторить один seed.
+2. **Cook/patch итогового bundle:** release pipeline пересобирает либо точечно исправляет package; неизменившиеся
+   artifacts переиспользуются по fingerprints, а изменившийся pass инвалидирует только объявленных потомков.
+3. **Runtime generation/streaming:** пользователь явно создаёт новый мир либо host по budgets постепенно
+   заказывает чанки вокруг наблюдателя; готовый чанк публикуется атомарно и только для всё ещё актуальной epoch.
+
+Во всех режимах результат имеет один смысл: schema/version, dependency and input fingerprints, bounds,
+provenance, validation report и declared memory/work budgets. Runtime не является менее строгим offline cook:
+частичный, устаревший или переполненный artifact не публикуется. Генерируемая основа считается immutable;
+долговечное состояние игры хранит разреженное отличие `world = generated base + delta`, а не копию всего мира.
+
+Граница владельцев:
+
+- `originator` владеет исполнением pipeline, инструментами, детерминированным разбиением, scratch/output
+  budgets, validation и построением artifacts;
+- `demiurg`/artifact layer владеет packaged bytes, fingerprints, cache/import and load lifecycle;
+- `simul`/world residency владеет priority, cancellation, epochs, publication/retirement и покадровым budget;
+- project владеет generation grammar, semantic identity, mutable deltas и решением regenerate/repair/refuse;
+- painter/physics/navigation потребляют свои cooked artifacts, но не запускают generator скрыто из query/draw.
 
 ## Легенда
 
@@ -27,6 +57,30 @@ lifetime, ordering, budgets, diagnostics и переиспользуемые pri
 второго consumer либо когда уже доказана чистая общая граница.
 
 ## Активный срез
+
+**Актуализация 2026-09-09.** Painter campaign больше не является текущей очередью: `PF02`–`PF10`
+закрыты по собственным README/closing audits, а `PLAYGROUNDS.md` также считает закрытыми `PF01`–`PF08`.
+У `PF01` остался документальный хвост: локальный README всё ещё перечисляет A/B, heatmap, overflow и rail
+как следующий срез, поэтому её статус нужно либо подтвердить финальным audit, либо исправить в каталоге.
+Generator campaign доказала `GN01`–`GN03`; `GN04` и `GN05` имеют работающие contract fixtures, но ещё не
+помечены формально закрытыми. Текущая работа ведётся в networking program и описывается отдельно; этот файл
+не дублирует её очередь.
+
+Следующий крупный **non-network** кандидат — вертикальная 3D movement campaign:
+
+1. scene transform/instance foundation и query-only collision world;
+2. сторонний physics backend, static/dynamic bodies, ray/shape/overlap queries и character controller;
+3. tiled navigation artifact, agent profiles, off-mesh links, async versioned path query и debug overlay;
+4. skeleton/clip import, pose sampling, blend, root motion/notifies и GPU skinning;
+5. первый составной fixture: generated room/terrain → collision cook → nav build → animated character follows
+   a path, переживает tile replacement и не использует stale physics/nav handles.
+
+Physics, navigation и animation начинают не тремя параллельными библиотеками, а одним маленьким движущимся
+персонажем. `originator` поставляет mesh/collision/nav/source-placement artifacts; runtime adapters владеют
+инстансами и версиями. Полный editor, crowd, vehicles, ragdoll и production character graph в первый срез
+не входят.
+
+### Архивный painter-срез
 
 Campaign: [Painter visual stack](PLAYGROUNDS.md#текущий-фокус--painter-visual-stack).
 
@@ -227,7 +281,7 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `UTL-06` | Generation primitives: noise, Voronoi/Delaunay, flood/distance, graph transforms | `L–XL` | deterministic reusable algorithms, не world grammar |
 | `UTL-07` | Canonical parallel group/filter/reduce для generation units | `L` | semantic ordering независимо от worker count |
 | `UTL-08` | Canonical byte/hash comparison test utilities | `S` | serial-vs-MT and save/reload identity helpers |
-| `UTL-12` | Перенести общий шаблонный сериализатор из `aesthetics` в `utils` | `M` | `utils` владеет neutral serialization templates/codecs; `aesthetics` оставляет ECS schema/component adapters и compatibility facade на время миграции |
+| `UTL-12` | Перенести общий шаблонный сериализатор из `aesthetics` в `utils` | `M` | **сделано 2026-09-06:** canonical codec, section composition и generic sinks принадлежат `utils`; `aesthetics` оставляет ECS projection/world wrappers, network names временно остаются aliases |
 
 ### `libs/painter` — high-level rendering gaps
 
@@ -493,6 +547,9 @@ pipeline описывается в `tavl`, а Lua занимает место `c
 | `GEN-11` | 2D region/planet reference pipeline | `XL` | **в основном сделано 2026-08-31 площадкой `GN02_planet_generator`** (для СФЕРЫ, а не для 2D): тектоника → суша → климат → сезоны → провинции и морские зоны → культуры и история → пакет на диске с отпечатком. Топология — решётка Фибоначчи и симметризованный CSR соседства, поэтому швов нет и суммы по клеткам не требуют весов площади. Есть и срез играбельности: материки разнесёнными центрами И группами, много островов среднего и разного размера, прибрежная эрозия против крошек, размер провинции ограничен с двух сторон в долях от средней. Есть шаг ОБЛАСТЕЙ рельефа (`landforms`): виды опознаются по измеренным величинам и затем усиливаются — равнина ровнее, горы резче, разброс уклона между прибрежной равниной и горами двадцатисемикратный. Океанические острова физического происхождения (цепи горячих точек + островные дуги с задуговой платформой), доля суши 40% при сохранённом объёме воды. Рельеф переработан 2026-09-01 под правдоподобие: одна гипсографическая кривая (дно по остыванию → узкий склон → шельф от НАЙДЕННОГО берега → материковое вздутие), горные пояса с настоящей шириной (заливка несёт номер клетки границы, а не признак), нагорье поверх гряды, складчатая маска, фрактальный шум с числом октав по решётке и амплитудой-полем; гипсография сошлась с земной по всем десяти полосам. Нет: рек и полноценной эрозии рельефа, государств и торговли, чтения пакета потребителем |
 | `GEN-14` | Транслятор `ds` → GLSL: остаток после первого среза | `M` | **первый срез сделан 2026-09-04** (`libs/originator/.../script_translate.h`): перевод идёт по AST, который отдаёт САМ ds (`make_script_ast`), типы проверяет glslc, побитовая сверка двух путей на целочисленной программе `65536/65536`. Дальше по порядку: (1) **СЛУЧАЙНОСТЬ.** Соль каждого места вызова генерирует эмиттер ds при компиляции (`ctx->gen_value()`), и в AST её НЕТ — значит либо транслятор выводит свою детерминированную соль из (имя программы, номер места), и тогда пути расходятся (что §4.2 уже принял), либо соль читается из скомпилированного контейнера через `get_command_name`/`cmd_node`, и тогда пути совпадают, но транслятор перестаёт быть функцией только от текста. Доставка — uniform-буфер, и он нужен независимо: `maxPushConstantsSize` гарантирован всего в 128 байт, то есть 31 аргумент. Сам PRNG писать не надо, `utils::shared::prng/prng2/prng_normalize` уже общие для C++ и GLSL; (2) **СПИСКИ.** У шейдера нет роста, но есть локальный массив, а в pointwise-программе длина списка ограничена ЧИСЛОМ МЕСТ `add_to` в тексте (цикла нет, итераторов не зарегистрировано) — значит ёмкость ВЫВОДИТСЯ, а пайплайн-операции становятся развёрнутыми циклами. Список, наполняемый ИТЕРАТОРОМ, остаётся отказом и решается вместе с доступом к соседям; (3) **`ctx_save`** переводится в локаль шейдера при доказанном доминировании записи над чтением внутри элемента — та же проверка, которая нужна ds и без GPU (`ORIGINATOR_GPGPU.md` §6.8); (4) `value_or` иных арностей, `select`/`sequence`/`switch`, `execute`; (5) кэш SPIR-V на диске по ключу из §3.3 — после `RND-32` его выигрыш измерен как 1–2.3 мс на программу, то есть он нужен, но не срочен. Полный контекст — `ORIGINATOR_GPGPU.md` §5 п.4, §6.8, §7. **Часть закрыта 2026-09-05 (§9.1):** у перевода была СВОЯ шапка push-константы (`uint count`) против инструментной (`count, begin, extent_x, extent_y`) — пока перевод не попадал в устройственную очередь, это не стреляло; теперь текст перевода собирает тот же `build_device_shader`, что и текст инструмента, поэтому шапка в проекте ОДНА, а наружу перевод отдаёт `body` и `params` для `queue_call`. Осталось привязать перевод к очереди у настоящего потребителя — сейчас его никто в `queue_call::device_body` не кладёт |
 | `GEN-15` | Пиковая память генератора: объявить ВРЕМЕННЫЕ таблицы инструментов | `M` | **найдено замером 2026-09-05** (`ORIGINATOR_GPGPU.md` §10.5). Правило библиотеки требует, чтобы генератор называл свою стоимость по памяти ДО запуска, и он её называет — но называет только сумму объявленных буферов. GN02 на миллионе клеток: объявлено **432 MB**, пик RSS **562 MiB**, то есть треть сверху не объявлена никем. Это временные таблицы инструментов: `sphere_adjacency` держит `nearest` (клетки x соседей) и `filled` (каждая дуга ДВАЖДЫ до канонизации) — около сотни мегабайт; у scatter-инструментов таблица частичных сумм ограничена `maximum_counter_table` в 8 млн ячеек, то есть **64 МиБ**, о которых объявление молчит; `label_adjacency` копит соседей в векторе векторов и чистит повторы только в конце. Первый шаг сделан и мал: `sphere_adjacency` считает смещения 32-битными и без отдельной таблицы счётчиков (12 МиБ), но пик сдвинулся с 563 на 562 MiB — значит узкое место НЕ там, и искать его надо ЗАМЕРОМ ПО ФАЗАМ, а не чтением кода. Что нужно: (1) померить пик по шагам и назвать настоящего виновника; (2) `pipeline` обязан называть пик, а не сумму буферов; (3) инструмент обязан объявлять свою временную стоимость так же, как объявляет апертуру — иначе «назвать стоимость до запуска» остаётся неправдой на треть |
+| `GEN-16` | Sealed artifact/package consumption contract | `L` | один versioned output для prototype, cook и runtime: schema, dependencies, fingerprints, bounds, provenance, validation и canonical bytes; первый proof — настоящий `GN02 package → PF10 consumer`, не повторная генерация рядом |
+| `GEN-17` | Incremental rebuild и final-bundle patch | `L` | pass-level invalidation, content-addressed reuse и atomic bundle replacement; ручная правка результата либо становится versioned project pass/override, либо явно ломает provenance |
+| `GEN-18` | Runtime world/chunk generation bridge | `L–XL` | caller-owned priority/cancellation/epoch/budgets; `originator` строит detached chunk artifacts, residency публикует только актуальное поколение, persistence хранит generated-base identity + sparse delta |
 | `GEN-12` | 3D adventure reference pipeline | `XL–XXL` | project-first `PA`; tasks→graphs→terrain/modules→mesh/collision/nav artifacts |
 | `GEN-13` | Closed-surface planet/culture/history package | `XL–XXL` | project-first `APQ`; immutable topology/province/route/climate/history/special-place/Apate bindings + validation report and fingerprints, не seed-only save |
 

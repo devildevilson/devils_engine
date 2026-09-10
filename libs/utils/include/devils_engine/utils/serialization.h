@@ -21,6 +21,8 @@
 #include <variant>
 #include <vector>
 
+#include "devils_engine/utils/deterministic_sort.h"
+
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/type_traits.h"
 
@@ -501,7 +503,7 @@ void serialize(writer& output, const T& value) {
     ordered.reserve(value.size());
     for (const auto& pair : value)
       ordered.push_back(std::addressof(pair));
-    std::sort(ordered.begin(), ordered.end(), [](const auto* left, const auto* right) {
+    deterministic_sort(ordered.begin(), ordered.end(), [](const auto* left, const auto* right) {
       return left->first < right->first;
     });
     output.u64(ordered.size());

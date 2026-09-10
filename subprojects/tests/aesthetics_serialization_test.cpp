@@ -25,7 +25,7 @@ struct vel {
   float dx = 0.0f;
   float dy = 0.0f;
 };
-struct link {
+struct ent_link {
   aesthetics::entityid_t target = aesthetics::invalid_entityid;
 }; // ссылка на другую энтити
 
@@ -40,7 +40,7 @@ struct rich {
 
 SERIALIZABLE_COMPONENT(pos)
 SERIALIZABLE_COMPONENT(vel)
-SERIALIZABLE_COMPONENT(link)
+SERIALIZABLE_COMPONENT(ent_link)
 SERIALIZABLE_COMPONENT(rich)
 
 // внешний НЕ-агрегат (имитация glm::vec: есть пользовательские ctor'ы) — reflect его не осилит,
@@ -112,7 +112,7 @@ TEST_CASE("snapshot round-trips components, entity refs and generator state [aes
   w.create<pos>(e0, pos{1, 2});
   w.create<vel>(e0, vel{0.5f, -0.5f});
   w.create<pos>(e1, pos{3, 4});
-  w.create<link>(e2, link{e0}); // держит полный entity_id (с версией) на e0
+  w.create<ent_link>(e2, ent_link{e0}); // держит полный entity_id (с версией) на e0
 
   w.remove_entity(e1); // e1 уходит во free-list -> проверяем и состояние генератора, и что удалённое не сериализуется
 
@@ -137,7 +137,7 @@ TEST_CASE("snapshot round-trips components, entity refs and generator state [aes
   }
 
   SUBCASE("entity reference stays valid (full id incl. version restored)") {
-    const auto* l = w2.get<link>(e2);
+    const auto* l = w2.get<ent_link>(e2);
     REQUIRE(l != nullptr);
     CHECK(l->target == e0);
     CHECK(w2.get<pos>(l->target) != nullptr); // ссылка реально разрешается в живую энтити

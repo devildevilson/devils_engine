@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -14,6 +15,8 @@
 #include <doctest/doctest.h>
 
 #include "devils_engine/utils/atomic_file.h"
+#include "devils_engine/utils/deterministic_math.h"
+#include "devils_engine/utils/deterministic_sort.h"
 #include "devils_engine/utils/event_dispatcher.h"
 #include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/hash.h"
@@ -65,6 +68,59 @@ struct alignas(32) fixed_pool_over_aligned_object {
 };
 
 } // namespace
+
+TEST_CASE("deterministic_sort pins equivalent-element permutation [utils::deterministic_sort]") {
+  struct item {
+    int key;
+    int original;
+  };
+  std::array<item, 40> values{};
+  for (int i = 0; i < int(values.size()); ++i) values[size_t(i)] = {i % 5, i};
+
+  utils::deterministic_sort(values.begin(), values.end(), [](const item& left, const item& right) {
+    return left.key < right.key;
+  });
+
+  constexpr std::array expected{
+    0, 5, 10, 15, 35, 20, 30, 25,
+    1, 31, 6, 36, 11, 16, 21, 26,
+    2, 7, 37, 12, 17, 32, 22, 27,
+    38, 8, 33, 28, 23, 18, 13, 3,
+    24, 29, 19, 14, 34, 9, 4, 39};
+  for (size_t i = 0; i < values.size(); ++i) CHECK(values[i].original == expected[i]);
+
+  // Canonical callers should normally make the order total themselves.
+  utils::deterministic_sort(values.begin(), values.end(), [](const item& left, const item& right) {
+    return left.key < right.key || (left.key == right.key && left.original < right.original);
+  });
+  for (size_t i = 1; i < values.size(); ++i) {
+    CHECK(values[i - 1].key <= values[i].key);
+    if (values[i - 1].key == values[i].key)
+      CHECK(values[i - 1].original < values[i].original);
+  }
+}
+
+TEST_CASE("deterministic trigonometry preserves signed zero [utils::deterministic_math]") {
+  const auto positive = utils::deterministic::sin_cos(0.0f);
+  const auto negative = utils::deterministic::sin_cos(-0.0f);
+  CHECK(std::bit_cast<uint32_t>(positive.sine) == UINT32_C(0x00000000));
+  CHECK(std::bit_cast<uint32_t>(negative.sine) == UINT32_C(0x80000000));
+  CHECK(std::bit_cast<uint32_t>(positive.cosine) == UINT32_C(0x3f800000));
+  CHECK(std::bit_cast<uint32_t>(negative.cosine) == UINT32_C(0x3f800000));
+}
+
+TEST_CASE("deterministic trigonometry has a declared reduction range [utils::deterministic_math]") {
+  constexpr uint32_t canonical_nan = UINT32_C(0x7fc00000);
+  CHECK(utils::deterministic::is_supported_angle(utils::deterministic::max_abs_angle));
+  CHECK(utils::deterministic::is_supported_angle(-utils::deterministic::max_abs_angle));
+  CHECK_FALSE(utils::deterministic::is_supported_angle(100001.0f));
+  CHECK_FALSE(utils::deterministic::is_supported_angle(
+      std::bit_cast<float>(UINT32_C(0x7f800000))));
+
+  const auto outside = utils::deterministic::sin_cos(100001.0f);
+  CHECK(std::bit_cast<uint32_t>(outside.sine) == canonical_nan);
+  CHECK(std::bit_cast<uint32_t>(outside.cosine) == canonical_nan);
+}
 
 TEST_CASE("murmur3 hashes canonical binary bytes [utils::hash]") {
   constexpr std::array<std::byte, 4> bytes{

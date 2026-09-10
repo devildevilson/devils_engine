@@ -72,9 +72,73 @@ struct options {
   // rather than being one number that is wrong for one of them.
   uint64_t deadline_s = 0;
   uint64_t intent_lead = 0;
+  lab_compatibility_variant compatibility = lab_compatibility_variant::compatible;
+  uint16_t envelope_version = net::session_wire_envelope_version;
+  net::session_refusal_reason expected_refusal = net::session_refusal_reason::none;
   bool resume = false;
   bool quiet = false;
 };
+
+std::string_view compatibility_name(const lab_compatibility_variant value) noexcept {
+  switch (value) {
+    case lab_compatibility_variant::compatible: return "compatible";
+    case lab_compatibility_variant::handshake_format: return "handshake-format";
+    case lab_compatibility_variant::protocol: return "protocol";
+    case lab_compatibility_variant::content: return "content";
+    case lab_compatibility_variant::state_schema: return "state-schema";
+    case lab_compatibility_variant::intent_schema: return "intent-schema";
+    case lab_compatibility_variant::numeric_profile: return "numeric-profile";
+  }
+  return "unknown";
+}
+
+lab_compatibility_variant parse_compatibility(const std::string_view value) {
+  if (value == "compatible") return lab_compatibility_variant::compatible;
+  if (value == "handshake-format") return lab_compatibility_variant::handshake_format;
+  if (value == "protocol") return lab_compatibility_variant::protocol;
+  if (value == "content") return lab_compatibility_variant::content;
+  if (value == "state-schema") return lab_compatibility_variant::state_schema;
+  if (value == "intent-schema") return lab_compatibility_variant::intent_schema;
+  if (value == "numeric-profile") return lab_compatibility_variant::numeric_profile;
+  utils::error{}("NET-LAB-01: unknown compatibility variant '{}'", value);
+  return lab_compatibility_variant::compatible;
+}
+
+std::string_view refusal_name(const net::session_refusal_reason value) noexcept {
+  switch (value) {
+    case net::session_refusal_reason::handshake_format_mismatch: return "handshake-format";
+    case net::session_refusal_reason::protocol_version_mismatch: return "protocol";
+    case net::session_refusal_reason::content_mismatch: return "content";
+    case net::session_refusal_reason::state_schema_mismatch: return "state-schema";
+    case net::session_refusal_reason::intent_schema_mismatch: return "intent-schema";
+    case net::session_refusal_reason::numeric_profile_mismatch: return "numeric-profile";
+    case net::session_refusal_reason::unsupported_wire_version: return "wire-version";
+    default: return "none";
+  }
+}
+
+net::session_refusal_reason parse_refusal(const std::string_view value) {
+  if (value == "wire-version") return net::session_refusal_reason::unsupported_wire_version;
+  const auto compatibility = parse_compatibility(value);
+  const auto reason = refusal_for(compatibility);
+  if (reason == net::session_refusal_reason::none)
+    utils::error{}("NET-LAB-01: '{}' is not a refusal", value);
+  return reason;
+}
+
+uint16_t parse_wire_version(const std::string_view value) {
+  if (value == "current") return net::session_wire_envelope_version;
+  if (value == "previous") return net::session_wire_oldest_compatible_envelope_version;
+  if (value == "breaking") return uint16_t(net::session_wire_envelope_version + 1);
+  utils::error{}("NET-LAB-01: unknown wire version '{}'", value);
+  return net::session_wire_envelope_version;
+}
+
+std::string_view wire_version_name(const uint16_t value) noexcept {
+  if (value == net::session_wire_envelope_version) return "current";
+  if (value == net::session_wire_oldest_compatible_envelope_version) return "previous";
+  return "breaking";
+}
 
 struct endpoint_value {
   uint32_t host = 0;
@@ -259,6 +323,7 @@ int run_authority(const options& opts) {
   report.set("run.followers_expected", uint64_t(schedule.followers));
   report.set("run.tick_period_ms", schedule.tick_period_ms);
   report.set("run.final_tick_scheduled", schedule.final_tick);
+  report.set("compat.envelope_version", uint64_t(net::session_wire_envelope_version));
   report.set("run.suspect_ms", schedule.suspect_ms());
   report.set("run.lost_ms", schedule.lost_ms());
   report.set("run.checkpoint_every", schedule.checkpoint_every);
@@ -345,11 +410,20 @@ int run_authority(const options& opts) {
   };
 
   const auto deadline = std::chrono::steady_clock::now() + wall_deadline(opts);
+  std::optional<std::chrono::steady_clock::time_point> refusal_linger;
   bool announced_start = false;
   // Waiting for a roster to assemble across machines is the normal state for
   // minutes, and a silent process is indistinguishable from a hung one.
   auto next_report = std::chrono::steady_clock::now();
   while (authority.step()) {
+    if (opts.expected_refusal != net::session_refusal_reason::none &&
+        authority.counters().refusals != 0) {
+      if (!refusal_linger)
+        refusal_linger = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(lab_refusal_grace_ms);
+      else if (std::chrono::steady_clock::now() >= *refusal_linger)
+        break;
+    }
     if (const uint64_t tick = authority.host().state.tick; report.due(tick)) {
       report.mark_sampled(tick);
       const auto measured = authority.measure(0);
@@ -381,6 +455,24 @@ int run_authority(const options& opts) {
 
   const auto& counters = authority.counters();
   auto& verify = authority.checks();
+  if (opts.expected_refusal != net::session_refusal_reason::none) {
+    verify.require(authority.host().state.tick == 0,
+                   "authority advanced the simulation before the expected refusal");
+    verify.require(counters.admissions == 0,
+                   "authority admitted a session it was required to refuse");
+    verify.require(counters.challenges_issued == 0,
+                   "authority issued a challenge before the compatibility refusal");
+    verify.require(counters.admission_checks == 0,
+                   "authority checked a credential before the compatibility refusal");
+    verify.require(authority.last_refusal() == opts.expected_refusal,
+                   "authority produced the wrong pre-simulation refusal reason");
+    std::cout << "authority refusal checks=" << verify.checks
+              << " tick=" << authority.host().state.tick
+              << " refusal=" << unsigned(authority.last_refusal())
+              << " challenges=" << counters.challenges_issued
+              << " admission_checks=" << counters.admission_checks << '\n';
+    return finish("refused_expected", EXIT_SUCCESS);
+  }
   verify.require(authority.host().state.tick == authority.final_tick(),
                  "authority did not commit the final tick it announced");
   verify.require(authority.final_tick() >= schedule.final_tick,
@@ -485,16 +577,19 @@ int run_follower(const options& opts) {
     if (ticket.empty()) ticket = ticket_path(opts.rendezvous, opts.index);
   }
 
-  follower_run follower(schedule, opts.index, host_address, port, ticket, opts.resume);
+  const auto compatibility = lab_compatibility(opts.compatibility);
+  follower_run follower(schedule, opts.index, host_address, port, ticket, opts.resume,
+                        compatibility, opts.envelope_version);
 
   lab_report report;
   describe_build(report);
-  describe_compatibility(report);
+  describe_compatibility(report, compatibility);
   report.set("run.role", std::string_view("follower"));
   report.set("run.scenario", opts.scenario);
   report.set("run.roster", uint64_t(opts.index));
   report.set("run.endpoint", dotted_quad(host_address) + ":" + std::to_string(port));
   report.set("run.resumed", uint64_t(opts.resume ? 1 : 0));
+  report.set("compat.envelope_version", uint64_t(opts.envelope_version));
   const uint64_t wall_origin = monotonic_ms();
 
   const auto finish = [&](const std::string_view outcome, const int code) {
@@ -603,6 +698,22 @@ int run_follower(const options& opts) {
     return finish("scheduled_death", int(follower.exit_request()));
   }
   if (follower.failed()) {
+    if (opts.expected_refusal != net::session_refusal_reason::none) {
+      verify.require(!follower.established(),
+                     "follower established a session it was required to refuse");
+      verify.require(follower.host().state.tick == 0,
+                     "follower advanced the simulation before the expected refusal");
+      verify.require(counters.bundles_applied == 0,
+                     "follower applied a bundle before the expected refusal");
+      verify.require(follower.refusal() == opts.expected_refusal,
+                     "follower received the wrong pre-simulation refusal reason");
+      std::cout << "follower refusal checks=" << verify.checks
+                << " tick=" << follower.host().state.tick
+                << " refusal=" << unsigned(follower.refusal())
+                << " compatibility=" << compatibility_name(opts.compatibility)
+                << " envelope=" << opts.envelope_version << '\n';
+      return finish("refused_expected", EXIT_SUCCESS);
+    }
     std::cerr << "NET-LAB-01 follower: abandoned at tick " << follower.host().state.tick
               << ", refusal=" << unsigned(follower.refusal())
               << ", unrecoverable=" << follower.unrecoverable()
@@ -717,7 +828,8 @@ std::optional<std::string> field(const std::string& text, const std::string_view
 }
 
 size_t verify_scenario(const std::string& self, const std::string& scenario, verifier& verify,
-                       const bool quiet) {
+                       const bool quiet, const std::string_view extra = {},
+                       std::string* root_out = nullptr) {
   std::error_code code;
   const auto base = std::filesystem::temp_directory_path(code) /
                     ("netlab01-" + scenario + "-" +
@@ -728,7 +840,7 @@ size_t verify_scenario(const std::string& self, const std::string& scenario, ver
   const auto schedule = schedule_for(scenario);
   size_t intruder_checks = 0;
   const std::string common = quoted(self) + " --rendezvous " + quoted(base.string()) +
-                             " --scenario " + scenario;
+                             " --scenario " + scenario + std::string(extra);
   // THE RULE, and it has bitten this harness three times: every long-lived
   // child is SPAWNED before any child is COLLECTED. `collect` blocks until its
   // child exits, so a spawn placed after one runs against a session which has
@@ -789,6 +901,7 @@ size_t verify_scenario(const std::string& self, const std::string& scenario, ver
   const auto authority_root = field(authority.output, "root");
   const auto authority_tick = field(authority.output, "tick");
   verify.require(authority_root.has_value(), "the authority did not report its state root");
+  if (root_out != nullptr && authority_root) *root_out = *authority_root;
 
   size_t child_checks = intruder_checks;
   if (const auto value = field(authority.output, "checks")) child_checks += std::stoul(*value);
@@ -807,6 +920,63 @@ size_t verify_scenario(const std::string& self, const std::string& scenario, ver
     (void)index;
   }
 
+  std::filesystem::remove_all(base, code);
+  return child_checks;
+}
+
+size_t verify_refusal_case(const std::string& self,
+                           const lab_compatibility_variant compatibility,
+                           const uint16_t envelope_version,
+                           const net::session_refusal_reason expected, verifier& verify,
+                           const bool quiet) {
+  const std::string label = std::string(compatibility_name(compatibility)) + "-" +
+                            std::string(wire_version_name(envelope_version));
+  std::error_code code;
+  const auto base = std::filesystem::temp_directory_path(code) /
+                    ("netlab02-" + label + "-" +
+                     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(base, code);
+  verify.require(!code, "the compatibility harness could not create its rendezvous directory");
+
+  const std::string common = quoted(self) + " --rendezvous " + quoted(base.string()) +
+                             " --followers 1 --expect-refusal " +
+                             std::string(refusal_name(expected));
+  FILE* authority_stream = spawn(common + " --authority");
+  FILE* follower_stream =
+    spawn(common + " --follower --index 0 --compatibility " +
+          std::string(compatibility_name(compatibility)) + " --wire-version " +
+          std::string(wire_version_name(envelope_version)));
+
+  const auto follower = collect(follower_stream);
+  const auto authority = collect(authority_stream);
+  if (!quiet) {
+    std::cout << authority.output;
+    std::cout << follower.output;
+  }
+  verify.require(authority.status == EXIT_SUCCESS,
+                 "the authority failed an expected compatibility refusal");
+  verify.require(follower.status == EXIT_SUCCESS,
+                 "the follower failed an expected compatibility refusal");
+  const auto expected_text = std::to_string(unsigned(expected));
+  verify.require(field(authority.output, "tick") == std::optional<std::string>("0"),
+                 "the authority refusal happened after simulation began");
+  verify.require(field(follower.output, "tick") == std::optional<std::string>("0"),
+                 "the follower refusal happened after simulation began");
+  verify.require(field(authority.output, "refusal") ==
+                   std::optional<std::string>(expected_text),
+                 "the authority reported the wrong compatibility refusal");
+  verify.require(field(follower.output, "refusal") ==
+                   std::optional<std::string>(expected_text),
+                 "the follower reported the wrong compatibility refusal");
+  verify.require(field(authority.output, "challenges") == std::optional<std::string>("0"),
+                 "the authority challenged an incompatible peer");
+  verify.require(field(authority.output, "admission_checks") ==
+                   std::optional<std::string>("0"),
+                 "the authority authenticated an incompatible peer");
+
+  size_t child_checks = 0;
+  if (const auto value = field(authority.output, "checks")) child_checks += std::stoul(*value);
+  if (const auto value = field(follower.output, "checks")) child_checks += std::stoul(*value);
   std::filesystem::remove_all(base, code);
   return child_checks;
 }
@@ -844,6 +1014,9 @@ void print_usage(const char* self) {
     "  --ticket PATH     where a follower keeps its reconnect ticket.\n"
     "  --resume          rejoin using a persisted ticket.\n"
     "  --scenario NAME   continuous (default) or killed.\n"
+    "  --compatibility V compatible (default), handshake-format, protocol, content,\n"
+    "                    state-schema, intent-schema or numeric-profile.\n"
+    "  --wire-version V  current (default), previous or breaking.\n"
     "  --quiet\n"
     "\n"
     "Every process ends with one line containing tick= and root=. The run\n"
@@ -856,11 +1029,28 @@ void print_usage(const char* self) {
 int run_verify(const std::string& self, const options& opts) {
   verifier verify;
   size_t child_checks = 0;
-  child_checks += verify_scenario(self, "continuous", verify, opts.quiet);
+  std::string current_root, previous_root;
+  child_checks += verify_scenario(self, "continuous", verify, opts.quiet, {}, &current_root);
   child_checks += verify_scenario(self, "killed", verify, opts.quiet);
-  std::cout << "NET-LAB-01 multi-process session: " << verify.checks << '/' << verify.checks
-            << " harness checks, " << child_checks << " in-process checks across "
-            << (2 * (lab_max_followers + 2) + 1) << " processes\n";
+  child_checks += verify_scenario(self, "continuous", verify, opts.quiet,
+                                  " --wire-version previous", &previous_root);
+  verify.require(current_root == previous_root,
+                 "the previous compatible wire version produced a different state root");
+  static constexpr std::array incompatible = {
+    lab_compatibility_variant::handshake_format, lab_compatibility_variant::protocol,
+    lab_compatibility_variant::content,
+    lab_compatibility_variant::state_schema, lab_compatibility_variant::intent_schema,
+    lab_compatibility_variant::numeric_profile};
+  for (const auto compatibility : incompatible)
+    child_checks += verify_refusal_case(self, compatibility,
+                                        net::session_wire_envelope_version,
+                                        refusal_for(compatibility), verify, opts.quiet);
+  child_checks += verify_refusal_case(
+    self, lab_compatibility_variant::compatible,
+    uint16_t(net::session_wire_envelope_version + 1),
+    net::session_refusal_reason::unsupported_wire_version, verify, opts.quiet);
+  std::cout << "NET-LAB-02 compatibility matrix: " << verify.checks << '/' << verify.checks
+            << " harness checks, " << child_checks << " in-process checks\n";
   return EXIT_SUCCESS;
 }
 
@@ -877,6 +1067,12 @@ int main(const int argc, const char* const* argv) {
     else if (arg == "--resume") opts.resume = true;
     else if (arg == "--quiet") opts.quiet = true;
     else if (arg == "--scenario" && i + 1 < argc) opts.scenario = argv[++i];
+    else if (arg == "--compatibility" && i + 1 < argc)
+      opts.compatibility = parse_compatibility(argv[++i]);
+    else if (arg == "--wire-version" && i + 1 < argc)
+      opts.envelope_version = parse_wire_version(argv[++i]);
+    else if (arg == "--expect-refusal" && i + 1 < argc)
+      opts.expected_refusal = parse_refusal(argv[++i]);
     else if (arg == "--rendezvous" && i + 1 < argc) opts.rendezvous = argv[++i];
     else if (arg == "--address" && i + 1 < argc) opts.address = argv[++i];
     else if (arg == "--index" && i + 1 < argc) opts.index = size_t(std::stoul(argv[++i]));

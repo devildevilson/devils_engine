@@ -123,9 +123,11 @@ inline bool load_ticket(const std::filesystem::path& path, follower_ticket_file&
 class follower_run {
 public:
   follower_run(const lab_schedule& schedule, const size_t roster, const uint32_t host_address,
-               const uint16_t port, const std::filesystem::path& ticket_path, const bool resume)
-    : schedule_(schedule), ticket_path_(ticket_path), host_address_(host_address), port_(port),
-      roster_(roster) {
+               const uint16_t port, const std::filesystem::path& ticket_path, const bool resume,
+               const net::session_compatibility& compatibility = lab_compatibility(),
+               const uint16_t envelope_version = net::session_wire_envelope_version)
+    : schedule_(schedule), local_(compatibility), envelope_version_(envelope_version),
+      ticket_path_(ticket_path), host_address_(host_address), port_(port), roster_(roster) {
     std::random_device source;
     nonce_seed_ = (uint64_t(source()) << 32) | uint64_t(source());
     scratch_.reserve(lab_max_message_bytes);
@@ -278,10 +280,20 @@ private:
     std::optional<uint64_t> resumed;
     std::optional<net::recovery_anchor<uint64_t, utils::digest>> confirmed;
     if (has_ticket_ && resuming_) resumed = ticket_.credential.ticket.session;
-    handshake_.emplace(local_, nonce, resumed, confirmed);
+    const uint16_t supported_version =
+      envelope_version_ <= net::session_wire_envelope_version
+        ? envelope_version_
+        : net::session_wire_envelope_version;
+    handshake_.emplace(local_, nonce, resumed, confirmed, supported_version);
     scratch_.reserve(net::session_wire_max_message_bytes);
     verify_.require(handshake_->start(scratch_) == net::session_wire_status::ok,
                     "client hello did not encode");
+    if (envelope_version_ > net::session_wire_envelope_version) {
+      // This deliberately emulates a future build. The authority must reject
+      // the envelope before it parses the payload or issues a challenge.
+      scratch_[4] = std::byte(uint8_t(envelope_version_));
+      scratch_[5] = std::byte(uint8_t(envelope_version_ >> 8));
+    }
     verify_.require(link_.send(peer_, lab_lane_control, scratch_) == lab_send_result::sent,
                     "client hello could not be sent");
   }
@@ -927,6 +939,7 @@ private:
   lab_follower_mac follower_mac_;
   net::credential_scratch credential_scratch_;
   net::session_compatibility local_ = lab_compatibility();
+  uint16_t envelope_version_ = net::session_wire_envelope_version;
   net::intent_layout_table layouts_ = lab_layouts();
   net::id_index_table registry_ = lab_registry();
   lab_host host_;

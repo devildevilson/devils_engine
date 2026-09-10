@@ -406,7 +406,7 @@ void dump_final_image(painter::graphics_base& base, const std::string& path) {
   vma::AllocationCreateInfo allocation_info{};
   allocation_info.usage = vma::MemoryUsage::eGpuToCpu;
   allocation_info.flags = vma::AllocationCreateFlagBits::eMapped;
-  auto [staging, allocation] = allocator.createBuffer(buffer_info, allocation_info);
+  auto [allocation, staging] = allocator.createBuffer(buffer_info, allocation_info);
 
   vk::Device device(base.device);
   vk::CommandBufferAllocateInfo command_info{};

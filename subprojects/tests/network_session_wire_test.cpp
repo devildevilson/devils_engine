@@ -115,6 +115,7 @@ TEST_CASE("network session wire round-trips every handshake message") {
     net::session_wire_message envelope;
     REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
     REQUIRE(envelope.type == net::session_message_type::client_hello);
+    CHECK(envelope.envelope_version == net::session_wire_envelope_version);
     net::client_hello decoded;
     REQUIRE(net::try_decode(envelope.payload, decoded) == net::session_wire_status::ok);
     CHECK(decoded.compatibility == sent.compatibility);
@@ -189,6 +190,33 @@ TEST_CASE("network session wire round-trips every handshake message") {
   }
 }
 
+TEST_CASE("network session wire translates the previous envelope to the same canonical message") {
+  const net::client_hello sent{compatibility(), nonce_of(2)};
+  auto previous = prepared(), current = prepared();
+  REQUIRE(net::try_encode(sent, previous,
+                          net::session_wire_oldest_compatible_envelope_version) ==
+          net::session_wire_status::ok);
+  REQUIRE(net::try_encode(sent, current) == net::session_wire_status::ok);
+  CHECK(previous != current);
+
+  net::session_wire_message previous_envelope, current_envelope;
+  REQUIRE(net::try_peek_session_message(previous, previous_envelope) ==
+          net::session_wire_status::ok);
+  REQUIRE(net::try_peek_session_message(current, current_envelope) ==
+          net::session_wire_status::ok);
+  CHECK(previous_envelope.envelope_version ==
+        net::session_wire_oldest_compatible_envelope_version);
+  CHECK(current_envelope.envelope_version == net::session_wire_envelope_version);
+
+  net::client_hello previous_decoded, current_decoded;
+  REQUIRE(net::try_decode(previous_envelope.payload, previous_decoded) ==
+          net::session_wire_status::ok);
+  REQUIRE(net::try_decode(current_envelope.payload, current_decoded) ==
+          net::session_wire_status::ok);
+  CHECK(previous_decoded.compatibility == current_decoded.compatibility);
+  CHECK(previous_decoded.client_nonce == current_decoded.client_nonce);
+}
+
 TEST_CASE("network session wire refuses every malformed envelope") {
   auto buffer = prepared();
   const net::client_hello hello{compatibility(), nonce_of(2)};
@@ -218,7 +246,7 @@ TEST_CASE("network session wire refuses every malformed envelope") {
 
   SUBCASE("unsupported envelope version") {
     auto broken = good;
-    broken[4] = std::byte(2);
+    broken[4] = std::byte(uint8_t(net::session_wire_envelope_version + 1));
     CHECK(net::try_peek_session_message(broken, envelope) ==
           net::session_wire_status::unsupported_envelope);
   }
@@ -302,7 +330,8 @@ TEST_CASE("network session wire refuses noncanonical and oversized payload field
     net::session_wire_message envelope;
     REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
     net::session_refused decoded;
-    for (const uint8_t reason : {uint8_t(0), uint8_t(12), uint8_t(255)}) {
+    for (const uint8_t reason : {uint8_t(0), uint8_t(net::session_refusal_reason_max + 1),
+                                 uint8_t(255)}) {
       auto forged = buffer;
       forged[net::session_wire_header_bytes] = std::byte(reason);
       net::session_wire_message forged_envelope;
@@ -366,6 +395,97 @@ TEST_CASE("network session handshake completes as an ordered multi-message excha
   CHECK(client.accepted().authority_epoch == 3);
   CHECK(client.accepted().start_tick == 120);
   CHECK(client.refusal() == net::session_refusal_reason::none);
+}
+
+TEST_CASE("network session handshake completes through the previous compatible envelope") {
+  net::authority_handshake authority(compatibility(), nonce_of(1));
+  net::client_handshake client(compatibility(), nonce_of(2), std::nullopt, std::nullopt,
+                               net::session_wire_oldest_compatible_envelope_version);
+  authority_policy authority_side;
+  client_policy client_side;
+  auto to_authority = prepared(), to_client = prepared();
+
+  REQUIRE(client.start(to_authority) == net::session_wire_status::ok);
+  net::session_wire_message envelope;
+  REQUIRE(net::try_peek_session_message(to_authority, envelope) ==
+          net::session_wire_status::ok);
+  CHECK(envelope.envelope_version == net::session_wire_oldest_compatible_envelope_version);
+
+  REQUIRE(authority.consume(to_authority, to_client, authority_side) ==
+          net::session_wire_status::ok);
+  REQUIRE(net::try_peek_session_message(to_client, envelope) == net::session_wire_status::ok);
+  CHECK(envelope.envelope_version == net::session_wire_oldest_compatible_envelope_version);
+  REQUIRE(client.consume(to_client, to_authority, client_side) == net::session_wire_status::ok);
+  REQUIRE(authority.consume(to_authority, to_client, authority_side) ==
+          net::session_wire_status::ok);
+  REQUIRE(client.consume(to_client, to_authority, client_side) == net::session_wire_status::ok);
+  CHECK(authority.established());
+  CHECK(client.established());
+}
+
+TEST_CASE("network session handshake names an unsupported future envelope") {
+  net::authority_handshake authority(compatibility(), nonce_of(1));
+  net::client_handshake client(compatibility(), nonce_of(2));
+  authority_policy authority_side;
+  client_policy client_side;
+  auto to_authority = prepared(), to_client = prepared();
+
+  REQUIRE(client.start(to_authority) == net::session_wire_status::ok);
+  to_authority[4] = std::byte(uint8_t(net::session_wire_envelope_version + 1));
+  CHECK(authority.consume(to_authority, to_client, authority_side) ==
+        net::session_wire_status::unsupported_envelope);
+  CHECK(authority.phase() == net::handshake_phase::refused);
+  CHECK(authority.refusal() == net::session_refusal_reason::unsupported_wire_version);
+  CHECK(authority_side.challenges == 0);
+  CHECK(authority_side.admits == 0);
+
+  REQUIRE(client.consume(to_client, to_authority, client_side) == net::session_wire_status::ok);
+  CHECK(client.phase() == net::handshake_phase::refused);
+  CHECK(client.refusal() == net::session_refusal_reason::unsupported_wire_version);
+  CHECK(client_side.answers == 0);
+}
+
+TEST_CASE("network session handshake pins the selected envelope version") {
+  for (const auto changed_version :
+       {net::session_wire_envelope_version,
+        uint16_t(net::session_wire_envelope_version + 1)}) {
+    CAPTURE(changed_version);
+    net::authority_handshake authority(compatibility(), nonce_of(1));
+    net::client_handshake client(compatibility(), nonce_of(2), std::nullopt, std::nullopt,
+                                 net::session_wire_oldest_compatible_envelope_version);
+    authority_policy authority_side;
+    client_policy client_side;
+    auto to_authority = prepared(), to_client = prepared();
+
+    REQUIRE(client.start(to_authority) == net::session_wire_status::ok);
+    REQUIRE(authority.consume(to_authority, to_client, authority_side) ==
+            net::session_wire_status::ok);
+    REQUIRE(client.consume(to_client, to_authority, client_side) ==
+            net::session_wire_status::ok);
+    to_authority[4] = std::byte(uint8_t(changed_version));
+    to_authority[5] = std::byte(uint8_t(changed_version >> 8));
+
+    const auto expected_status =
+      changed_version == net::session_wire_envelope_version
+        ? net::session_wire_status::ok
+        : net::session_wire_status::unsupported_envelope;
+    CHECK(authority.consume(to_authority, to_client, authority_side) == expected_status);
+    CHECK(authority.phase() == net::handshake_phase::refused);
+    CHECK(authority.refusal() == net::session_refusal_reason::malformed_message);
+    CHECK(authority_side.admits == 0);
+  }
+
+  net::client_handshake client(compatibility(), nonce_of(2), std::nullopt, std::nullopt,
+                               net::session_wire_oldest_compatible_envelope_version);
+  client_policy client_side;
+  auto hello = prepared(), refusal = prepared(), reply = prepared();
+  REQUIRE(client.start(hello) == net::session_wire_status::ok);
+  REQUIRE(net::try_encode(net::session_refused{net::session_refusal_reason::identity_rejected},
+                          refusal, net::session_wire_envelope_version) ==
+          net::session_wire_status::ok);
+  CHECK(client.consume(refusal, reply, client_side) == net::session_wire_status::ok);
+  CHECK(client.phase() == net::handshake_phase::refused);
+  CHECK(client.refusal() == net::session_refusal_reason::malformed_message);
 }
 
 TEST_CASE("network session handshake refuses each incompatibility before any credential") {

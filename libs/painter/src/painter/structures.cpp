@@ -222,7 +222,7 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
       aci.flags = aci.flags | vma::AllocationCreateFlagBits::eMapped;
     }
 
-    auto [img_handle, allocation] = al.createImage(ici, aci);
+    auto [allocation, img_handle] = al.createImage(ici, aci);
     if (bool(host_visible)) {
       mem_ptr = al.mapMemory(allocation);
     }
@@ -245,7 +245,7 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
       aci.flags = aci.flags | vma::AllocationCreateFlagBits::eMapped;
     }
 
-    auto [buf_handle, allocation] = al.createBuffer(bci, aci);
+    auto [allocation, buf_handle] = al.createBuffer(bci, aci);
     if (bool(host_visible)) {
       mem_ptr = al.mapMemory(allocation);
     }

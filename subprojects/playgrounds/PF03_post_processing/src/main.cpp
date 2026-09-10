@@ -431,7 +431,7 @@ void dump_composed_image(painter::graphics_base& base, const std::string& path) 
   vma::AllocationCreateInfo aci{};
   aci.usage = vma::MemoryUsage::eGpuToCpu;
   aci.flags = vma::AllocationCreateFlagBits::eMapped;
-  auto [staging, allocation] = allocator.createBuffer(bci, aci);
+  auto [allocation, staging] = allocator.createBuffer(bci, aci);
 
   vk::Device dev(base.device);
   vk::CommandBufferAllocateInfo cbai{};

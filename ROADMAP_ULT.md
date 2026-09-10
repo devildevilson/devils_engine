@@ -1,6 +1,6 @@
 # devils_engine — ультимативный project-driven roadmap
 
-Срез требований десяти проектов, обновлённый 2026-08-14:
+Срез требований десяти проектов, обновлённый 2026-09-09:
 
 - `apates_quest`;
 - `bandit_in_the_shell`;
@@ -30,6 +30,13 @@
 - Vulkan render graph, 2D/UV animation, Lua/Nuklear UI;
 - headless/animated и worker-count identity tests у живых consumers.
 
+`libs/originator` теперь рассматривается не как одна будущая generator feature, а как основной
+content-production контур движка. Большая часть procedural/project content проходит через него и затем
+потребляется в одном из трёх режимов: полный prototype/offline build, cook/patch финального bundle либо
+runtime generation — от явной кнопки «новый мир» до постепенной поставки чанков в кадре. Во всех трёх
+случаях движок получает один и тот же sealed, versioned, bounded and inspectable artifact; меняются scheduler,
+residency и publication lifetime, а не смысл данных.
+
 Повторяющиеся пробелы концентрируются в двенадцати больших направлениях:
 
 1. долговечное состояние: save envelope, migrations, transactions, replay diagnostics;
@@ -53,15 +60,15 @@
 по одной playground/project campaign с конечным наблюдаемым результатом либо по одной крупной
 симуляционной системе. Focused tests закрепляют найденные контракты, но не выбирают следующую тему.
 
-Текущая campaign — Painter visual stack под `subprojects/playgrounds/`:
+Painter campaign `PF01`–`PF10` и generator campaign `GN01`–`GN05` теперь являются доказанной базой, а не
+актуальной очередью: точный статус каждой лаборатории ведут `PLAYGROUNDS.md` и её локальный README. Текущая
+работа находится в отдельной networking program и здесь не пересказывается.
 
-1. `PF01_forward_plus` — активная laboratory shell и Forward+ proof;
-2. `PF02_shadows` — directional/spot shadow maps;
-3. `PF03_post_processing` — независимая расширяемая post gallery;
-4. `PF04_stencil_effects` — stencil/masked effect gallery;
-5. `PF05_scene_effects` — SDF/decals/particles/weather/cel shading/billboards/world-space UI;
-6. `PF06_submarine_light_room` — тёмный project look для `SC`;
-7. `PF07_party_environment` — динамическое окружение для `PA`.
+Ближайшая крупная non-network campaign после неё — **3D movement stack**: scene transforms → physics/query
+world → character controller → navigation → skeletal pose/root motion/skinning. Это одна вертикаль вокруг
+одного движущегося персонажа, а не пять независимых foundation-проектов. Первый consumer должен получить
+mesh/collision/navigation artifacts от `originator`, пройти versioned publication и показать путь через
+перестроенный/подгруженный tile без stale handle.
 
 Каждая лаборатория независима на уровне executable/resources/source. Поздняя lab выборочно фиксирует
 нужные результаты ранней, а общий стабильный код переезжает в `playgrounds/common` или owner-library
@@ -317,7 +324,7 @@
 | Simulation LOD | MHM, BITS, PA, MMO, APQ, ZB | `MISSING` | logical↔aggregate↔resident lifecycle | engine mechanism + project codecs | `XL` |
 | World residency/streaming | BITS, PA, MMO, SC, APQ | `PARTIAL` | hierarchical cells, epochs, prefetch, reconcile | engine | `XL` |
 | Procedural artifact pipeline | PA, MMO, SC, TC, APQ | `MISSING` | seed/version/hash, CPU/external stages, cache | engine + project generators | `L–XL` |
-| Generator contract | PA, MMO, SC, TC, APQ; optional ZB scenarios | `MISSING/PARTIAL` | typed passes, C++ tool registry, deterministic Lua glue, provenance, validation/repair | engine host/toolkit + project pipelines | `XL` |
+| Generator contract | PA, MMO, SC, TC, APQ; optional ZB scenarios | `PARTIAL, CORE PROVEN` | sealed consumption, incremental rebuild/cache, runtime publication, provenance and validation/repair completion | `originator` + artifact/residency owners + project pipelines | `L–XL` |
 | Standard resource formats | все 3D-проекты + UI | `PARTIAL` | importer/runtime interfaces, KTX/KTX2, 3D meshes, validation and fallback | engine adapters over third-party codecs | `L–XL` |
 | Spatial query toolkit | BITS, MHM, PA, MMO, SC, APQ, CMD, ZB | `READY` as utilities | owner services, versions, multiple graph/field meanings | engine utilities + project graphs | `M` |
 | Layered spatial fields and mass flow | ZB прежде всего; также CMD/MMO/strategy tools | `MISSING/PARTIAL` | versioned layers, brush/dirty updates, flow solver, congestion and heatmap inspection | engine toolkit + project semantics | `L–XL` |
@@ -878,7 +885,9 @@ Engine владеет mappings/lifecycle. Project владеет codecs/invarian
 - reconcile before unload;
 - inspector.
 
-Generated immutable artifacts можно вести рядом с demiurg lifecycle. Mutable world state остаётся world/session owner.
+Generated immutable artifacts можно вести рядом с demiurg lifecycle. Их producer по умолчанию —
+`originator`, но priority/cancellation/residency/publication принадлежат world host. Mutable world state
+остаётся world/session owner и хранится как sparse delta относительно точной identity generated base.
 
 Сложность: `XL`.
 
@@ -886,7 +895,8 @@ Generated immutable artifacts можно вести рядом с demiurg lifecy
 
 Назначение: стандартизировать устройство процедурных генераторов без стандартизации конкретного мира — дать typed stages, reusable C++ инструменты, deterministic Lua orchestration, шаблоны массовой обработки, provenance, validation and bounded repair.
 
-Статус: `MISSING/PARTIAL`, составим из существующего примерно на 35%.
+Статус: `PARTIAL, CORE PROVEN`, основные execution contracts доказаны `GN01`–`GN05`; production artifact
+consumption/rebuild/residency ещё не замкнуты.
 
 Уже есть:
 
@@ -898,8 +908,13 @@ Generated immutable artifacts можно вести рядом с demiurg lifecy
 - `catalogue` timings/logging;
 - snapshot/hash/artifact direction;
 - project descriptions of top-down graph and terrain pipelines.
+- общий owner `libs/originator`, typed buffers/passes и tool registry;
+- отдельный bounded headless Lua environment и devils_script execution;
+- serial/MT identity, chunk contract, CPU/GPU queue paths;
+- raster/graph/volume primitives, planet package, streaming geometry, GPU texture и constraint-solver proofs.
 
-Текущего общего generator owner, pass registry и generation-specific Lua environment нет.
+Не хватает sealed consumer-facing package API, incremental dependency invalidation, content-addressed reuse,
+runtime request/publication bridge, полного peak-scratch declaration и production inspectors/comparison tools.
 
 #### Базовая модель
 
@@ -922,6 +937,25 @@ Generator — не одна функция `generate(seed)`. Это versioned pi
 - повторить;
 - частично перестроить;
 - передать следующей стадии без project-specific pointer.
+
+#### Три режима потребления одного результата
+
+```text
+prototype/offline: definition -> pipeline -> inspect -> seal package
+release cook/patch: old package + changed inputs -> invalidate descendants -> atomic new bundle
+runtime/streaming: request + epoch + budgets -> detached artifact -> validate -> publish if still current
+```
+
+Это не три generator API. Pipeline, schemas, fingerprints, validation и canonical artifact bytes одинаковы.
+Различается внешний owner:
+
+- prototype tool решает, что показать и что принять;
+- cook pipeline решает reuse/patch/package commit;
+- runtime residency host решает priority, cancellation, frame budget, publication and retirement.
+
+Редактирование сгенерированного мира не должно создавать неучтённый fork. Повторяемая правка становится
+versioned pass; авторская/project правка — отдельным bounded override layer; состояние игры — sparse delta.
+Seed без точного pipeline/module/input fingerprint не является identity мира.
 
 #### Контракт прохода
 
@@ -1430,6 +1464,21 @@ Adapter должен допускать разные профили стоимо
 
 Предпочтителен adapter-first подход поверх сторонней navmesh/pathfinding библиотеки хотя бы для части задач. Engine всё равно должен владеть nav resource/tiles, query handles, async request epochs, links/obstacles, streaming integration and diagnostics. Crowd/formation policy может остаться project-owned или использовать отдельный backend.
 
+Первый backend-кандидат для наземной 2.5D навигации — **Recast/Detour**: Recast строит tiled navmesh из
+triangle soup, Detour загружает tiles и выполняет polygon/path/corridor queries, `DetourTileCache` покрывает
+ограниченные динамические препятствия. Интеграция должна зависеть от маленького engine adapter, а serialized
+Detour tile — быть derived cooked artifact с собственными backend/build fingerprints, не вечным project format.
+`DetourCrowd` оценивается отдельно после базовых queries: local avoidance и gameplay movement policy не должны
+незаметно стать одним owner.
+
+Recast не является универсальным ответом. Его heightfield имеет локальную ground plane/up-axis, поэтому:
+
+- планетарная стратегия использует canonical province/route graph и локальные surface patches, а не один
+  глобальный Recast mesh вокруг сферы;
+- свободное плавание/полёт в пещерах требует sparse voxel/volume graph либо project corridor graph;
+- grid tactics сохраняет integer grid queries;
+- hierarchical routing выбирает дальний graph route, а navmesh уточняет только resident local segment.
+
 Navigation — family из трёх разных representations:
 
 - abstract/strategic graph routing для `MHM` и macro/logistics частей `MMO`;
@@ -1465,6 +1514,12 @@ Navigation — family из трёх разных representations:
 - authoring/debug.
 
 Предполагается сторонняя skeletal-animation runtime/library. Engine реализует adapter, resource bindings, ECS/playback state, notify/intents boundary, root-motion policy, renderer upload/skinning and debug tools. Собственный clip compression/pose solver не является целью без доказанной необходимости.
+
+Первый кандидат — **ozz-animation**: low-level renderer-agnostic C++ runtime уже разделяет offline conversion
+и runtime skeleton/clip data, предоставляет sampling/blending jobs и не навязывает gameplay graph. Engine
+всё равно владеет canonical import profile/fingerprints, stable resource handles, ECS playback, root-motion
+authority, notify boundary и painter skinning buffers. Выбор принимается только после spike на одном glTF
+skeleton/clip и проверки hot reload, pose determinism policy, memory layout и toolchain deployment.
 
 Runtime profiles:
 
@@ -1951,6 +2006,12 @@ streaming and authority. Эти требования нельзя сразу с�
 Для `HLS-01` главный целевой consumer — будущий networking dedicated-server executable. Второй — автономные content/balance/generation runs со статистическим export. Существующие cardgame/tile_frontier headless tests являются исходными proof cases, но не определяют конечную topology.
 
 ### Tier 2 — generators, logical world, resources и streaming
+
+**Актуальный статус generator rows:** execution host, headless Lua, значительная часть native toolkit,
+chunking и serial/MT proof уже реализованы в `libs/originator`; `GN02` закрыл planet package, `GN03` — runtime
+streaming geometry, `GN04` — device-resident queue, `GN05` — bounded constraint/rollback solver. Следующая
+работа здесь — не второй generator owner, а consumption seam: sealed package, incremental rebuild/cache и
+epoch-safe runtime chunk publication.
 
 | ID | Задача | Ownership | Сложность | Зависимости |
 | --- | --- | --- | --- | --- |
@@ -2459,15 +2520,22 @@ headless/playground-проверок, минимизирующая число о
 
 ## Ближайший практический пакет
 
-Ближайший пакет — не набор независимых foundation-задач, а одна painter campaign:
+После текущей networking program ближайший non-network пакет — одна **3D movement laboratory**, а не
+независимая реализация трёх больших подсистем:
 
-1. дорастить запускаемый baseline `PF01`: room/free camera/HDR+depth готовы; остаются camera rail и target viewer;
-2. bounded tile-light data и compute assignment готовы в первом варианте; добавить overflow diagnostics;
-3. получить visible simple-forward/Forward+ comparison, heatmap, overflow и timings;
-4. после DoD `PF01` перейти к отдельной `PF02_shadows`;
-5. затем независимо развивать `PF03_post_processing` и `PF04_stencil_effects`;
-6. независимо закрывать scene-effect slices в `PF05_scene_effects`;
-7. собрать выбранные стабильные части в `PF06_submarine_light_room` и `PF07_party_environment`.
+1. `3D-01`: authoritative transform + derived scene instance и один static generated room/terrain artifact;
+2. `PHY-01`: Jolt spike через engine handles, query-only/static collision, ray/shape/overlap tests и debug draw;
+3. `PHY-02`: один capsule character, slopes, steps, moving platform и ясная transform authority;
+4. `NAV-01`: Recast/Detour spike, один tiled nav artifact, два agent profiles, off-mesh door/link, bounded
+   synchronous query и versioned asynchronous request;
+5. tile unload/rebuild: старый result отказывается по epoch, новый collision/nav artifact публикуется атомарно;
+6. `ANM-01`: один imported skeleton/clip, sampled pose and GPU skinning;
+7. `ANM-02`: locomotion blend, foot/root-motion policy и notify → gameplay-intent boundary;
+8. составной прогон: персонаж получает путь, проходит дверь/склон/платформу, переживает замену tile и сохраняет
+   совпадающие gameplay checkpoints при headless и rendered execution.
+
+Первый пакет сознательно не включает crowd, vehicles, ragdoll, full animation graph, IK authoring или full
+level editor. Их необходимость и owner определяет измеренный consumer после работающей вертикали.
 
 `FND-02`, persistence, module profiles, command shell, headless host, localization, knowledge, calendar и
 layered fields остаются важным dependency pool. Они возвращаются в active work только вместе с

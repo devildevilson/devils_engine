@@ -131,6 +131,16 @@ if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)
       -P ${CMAKE_CURRENT_LIST_DIR}/network_cross_compiler_probe.cmake
   )
   set_tests_properties(network_native_float_cross_compiler_probe PROPERTIES LABELS devils_engine)
+
+  add_test(NAME utils_deterministic_cross_compiler_probe
+    COMMAND ${CMAKE_COMMAND}
+      -DPROBE_SOURCE=${CMAKE_CURRENT_LIST_DIR}/utils_deterministic_corpus.cpp
+      -DPROBE_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/libs/utils/include
+      -DPROBE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/utils_deterministic_probe
+      -DGXX=${DEVILS_NETWORK_GXX}
+      -DCLANGXX=${DEVILS_NETWORK_CLANGXX}
+      -P ${CMAKE_CURRENT_LIST_DIR}/utils_deterministic_cross_compiler_probe.cmake)
+  set_tests_properties(utils_deterministic_cross_compiler_probe PROPERTIES LABELS devils_engine)
 else()
   message(STATUS "network native-float cross-compiler probe disabled: g++ or clang++ not found")
 endif()

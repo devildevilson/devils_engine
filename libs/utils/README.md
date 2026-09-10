@@ -52,6 +52,15 @@
 ### Хеши, id и случайные числа
 
 - `hash.h` содержит constexpr-миксеры и Murmur3 x86 32-bit для строковых id.
+- `deterministic_math.h` содержит scalar `sin/cos/sin_cos`, адаптированные из Jolt Physics 5.6.0
+  с сохранённой MIT attribution. Они не зовут platform libm и побитово сверяются с Jolt corpus;
+  `devils_engine::options` отключает FP contraction у всех C++ consumers. Cody-Waite reduction
+  принимает только конечные углы с `abs(angle) <= 100000`; вне диапазона возвращается canonical
+  NaN, а caller должен сначала нормализовать угол. Это начало численного контракта, не обещание,
+  что произвольная floating-point функция уже детерминирована.
+- `deterministic_sort.h` содержит фиксированную quicksort/insertion-sort реализацию из Jolt вместо
+  platform-dependent `std::sort`. Она намеренно не stable: canonical caller обязан добавить
+  tie-breaker, если эквивалентные элементы различимы. Каноническая сериализация map уже использует её.
 - `string_id.h` разделяет два сценария: stateless `string_hash` через rapidhash и
   `string_pool`, который выдает плотные последовательные id для заранее зарегистрированных
   строк.

@@ -626,6 +626,50 @@ inline net::session_compatibility lab_compatibility(const uint32_t content_salt 
   return value;
 }
 
+enum class lab_compatibility_variant : uint8_t {
+  compatible,
+  handshake_format,
+  protocol,
+  content,
+  state_schema,
+  intent_schema,
+  numeric_profile
+};
+
+inline net::session_compatibility lab_compatibility(
+  const lab_compatibility_variant variant) {
+  auto value = lab_compatibility();
+  switch (variant) {
+    case lab_compatibility_variant::compatible: break;
+    case lab_compatibility_variant::handshake_format: ++value.handshake_format; break;
+    case lab_compatibility_variant::protocol: ++value.protocol_version; break;
+    case lab_compatibility_variant::content: value.content_root[0] ^= uint8_t(1); break;
+    case lab_compatibility_variant::state_schema: ++value.state_schema_fingerprint; break;
+    case lab_compatibility_variant::intent_schema: ++value.intent_schema_fingerprint; break;
+    case lab_compatibility_variant::numeric_profile: ++value.numeric_profile; break;
+  }
+  return value;
+}
+
+inline net::session_refusal_reason refusal_for(const lab_compatibility_variant variant) noexcept {
+  switch (variant) {
+    case lab_compatibility_variant::handshake_format:
+      return net::session_refusal_reason::handshake_format_mismatch;
+    case lab_compatibility_variant::protocol:
+      return net::session_refusal_reason::protocol_version_mismatch;
+    case lab_compatibility_variant::content:
+      return net::session_refusal_reason::content_mismatch;
+    case lab_compatibility_variant::state_schema:
+      return net::session_refusal_reason::state_schema_mismatch;
+    case lab_compatibility_variant::intent_schema:
+      return net::session_refusal_reason::intent_schema_mismatch;
+    case lab_compatibility_variant::numeric_profile:
+      return net::session_refusal_reason::numeric_profile_mismatch;
+    case lab_compatibility_variant::compatible: return net::session_refusal_reason::none;
+  }
+  return net::session_refusal_reason::malformed_message;
+}
+
 } // namespace netlab01
 
 #endif

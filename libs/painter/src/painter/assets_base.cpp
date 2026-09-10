@@ -411,10 +411,10 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
 
   vma::AllocationInfo v_ai{};
   vma::AllocationInfo i_ai{};
-  const auto& [v_buf, v_alc] = a.createBuffer(bci, aci, &v_ai);
+  const auto& [v_alc, v_buf] = a.createBuffer(bci, aci, &v_ai);
   bci.size = index_size;
   bci.usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer;
-  const auto& [i_buf, i_alc] = index_size != 0 ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vk::Buffer{}, vma::Allocation{});
+  const auto& [i_alc, i_buf] = index_size != 0 ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vma::Allocation{}, vk::Buffer{});
 
   set_name(dev, v_buf, buffer_slots[h].name + "_vertex");
   if (index_size != 0) {
@@ -461,7 +461,7 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
   vma::AllocationCreateInfo aci{};
   aci.usage = vma::MemoryUsage::eGpuOnly;
 
-  const auto& [image, allocation] = a.createImage(ici, aci);
+  const auto& [allocation, image] = a.createImage(ici, aci);
 
   vk::ImageViewCreateInfo ivci{};
   ivci.image = image;
@@ -508,7 +508,7 @@ void assets_base::create_default_texture() {
   vma::AllocationCreateInfo aci{};
   aci.usage = vma::MemoryUsage::eGpuOnly;
 
-  const auto& [image, allocation] = a.createImage(ici, aci);
+  const auto& [allocation, image] = a.createImage(ici, aci);
 
   vk::ImageViewCreateInfo ivci{};
   ivci.image = image;
@@ -538,7 +538,7 @@ void assets_base::create_default_texture() {
   baci.usage = vma::MemoryUsage::eCpuOnly;
   baci.flags = vma::AllocationCreateFlagBits::eMapped;
   vma::AllocationInfo bai{};
-  const auto& [buf, balloc] = a.createBuffer(bci, baci, &bai);
+  const auto& [balloc, buf] = a.createBuffer(bci, baci, &bai);
   memcpy(bai.pMappedData, pixel, sizeof(pixel));
   a.flushAllocation(balloc, 0, sizeof(pixel));
 
@@ -608,9 +608,9 @@ void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const st
 
   vma::AllocationInfo v_ai{};
   vma::AllocationInfo i_ai{};
-  const auto& [v_buf, v_alc] = a.createBuffer(bci, aci, &v_ai);
+  const auto& [v_alc, v_buf] = a.createBuffer(bci, aci, &v_ai);
   bci.size = index_data.size();
-  const auto& [i_buf, i_alc] = !index_data.empty() ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vk::Buffer{}, vma::Allocation{});
+  const auto& [i_alc, i_buf] = !index_data.empty() ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vma::Allocation{}, vk::Buffer{});
 
   memcpy(v_ai.pMappedData, vertex_data.data(), vertex_data.size());
   if (!index_data.empty()) {
@@ -705,7 +705,7 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
   aci.flags = vma::AllocationCreateFlagBits::eMapped;
 
   vma::AllocationInfo ai{};
-  const auto& [buf, allocation] = a.createBuffer(bci, aci, &ai);
+  const auto& [allocation, buf] = a.createBuffer(bci, aci, &ai);
 
   memcpy(ai.pMappedData, data.data(), data.size());
 
