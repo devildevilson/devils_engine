@@ -1,0 +1,10 @@
+script = "ui/entry"
+default_font = "fonts/crimson.roman"
+resources = [
+  "ui/entry"
+  "fonts/crimson.roman"
+  "fonts/crimson.italic"
+  "textures/grad2"
+  "textures/quad"
+]
+scene = "scenes/world"

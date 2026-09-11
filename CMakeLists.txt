@@ -739,6 +739,7 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   add_subdirectory(subprojects/tests "${CMAKE_BINARY_DIR}/cmake/subprojects/tests")
 endif()
 add_subdirectory(subprojects/tile_frontier "${CMAKE_BINARY_DIR}/cmake/subprojects/tile_frontier")
+add_subdirectory(subprojects/frontier_online "${CMAKE_BINARY_DIR}/cmake/subprojects/frontier_online")
 add_subdirectory(subprojects/playgrounds "${CMAKE_BINARY_DIR}/cmake/subprojects/playgrounds")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
@@ -759,6 +760,9 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     tile_frontier_checkpoint_audit
     tile_frontier_config_effect_smoke
     tile_frontier_time_smoke
+    frontier_resume_smoke
+    frontier_time_smoke
+    frontier_online_server
   )
   get_property(DEVILS_ENGINE_DOCTEST_TARGETS GLOBAL PROPERTY DEVILS_ENGINE_TEST_TARGETS)
 

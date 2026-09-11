@@ -1,0 +1,54 @@
+#include <devils_engine/demiurg/module_interface.h>
+#include <devils_engine/utils/core.h>
+#include <tavl/deserialize.h>
+
+#include "world_scene_resource.h"
+
+namespace frontier_online {
+namespace core {
+
+using namespace devils_engine;
+
+world_scene_resource::world_scene_resource() {
+  set_flag(demiurg::resource_flags::warm_and_hot_same, true);
+  set_flag(demiurg::resource_flags::binary, false);
+}
+
+void world_scene_resource::load_cold(const utils::safe_handle_t&) {
+  tavl::parser parser;
+  parser.add_default_operator();
+  parser.flush(module->load_text(path));
+  parser.finish();
+
+  tavl::ct_context ctx;
+  config_ = world_scene_config{};
+  tavl::deserialize(parser, ctx, config_);
+  if (!ctx.diagnostics.empty()) {
+    utils::warn("world scene resource '{}': {} tavl diagnostics", id, ctx.diagnostics.size());
+    for (const auto& d : ctx.diagnostics) {
+      utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
+                  tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);
+    }
+    utils::error{}("world scene resource '{}': {} tavl diagnostics", id, ctx.diagnostics.size());
+  }
+  if (config_.chunk_size == 0 || config_.chunks_x == 0 || config_.chunks_y == 0 || config_.actor_count == 0) {
+    utils::error{}("world scene resource '{}': chunk/grid/actor counts must be non-zero", id);
+  }
+  if (config_.tile_size <= 0.0f || config_.camera_half_width <= 0.0f) {
+    utils::error{}("world scene resource '{}': tile_size and camera_half_width must be positive", id);
+  }
+  if (config_.tile_texture_group.empty() || config_.sound_group.empty() ||
+      config_.actor_script.empty() || config_.fsm_prefix.empty() ||
+      config_.goap_prefix.empty() || config_.prefab_prefix.empty()) {
+    utils::error{}("world scene resource '{}': resource groups and actor config prefixes are required", id);
+  }
+}
+
+void world_scene_resource::load_warm(const utils::safe_handle_t&) {}
+void world_scene_resource::unload_hot(const utils::safe_handle_t&) {}
+void world_scene_resource::unload_warm(const utils::safe_handle_t&) {
+  config_ = {};
+}
+
+} // namespace core
+} // namespace frontier_online

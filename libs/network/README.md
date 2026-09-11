@@ -1,746 +1,506 @@
-# `libs/network`: project-neutral synchronization primitives
-
-`network` owns bounded data/lifecycle primitives used between a project and a
-transport adapter. It does not know what an intent means, which peer is a
-server, how an ECS stores components, or whether bytes eventually travel
-through GameNetworkingSockets.
-
-## Terms fixed by NET-00
-
-- **tick** — project simulation step identifier. The library does not choose
-  its duration or require that it equals a rendered frame;
-- **principal** — authenticated logical author of a record. A player may own
-  one or more principals; transport peers and principals are not the same ID;
-- **sequence** — monotonically interpreted record identity within a declared
-  principal/stream. Its wrap and acceptance window belong to NET-02;
-- **intent** — project-owned request/input whose validation and simulation
-  meaning remain in the project;
-- **bundle** — immutable, canonically ordered records associated with one tick;
-- **state frame** — regular authoritative correction data, normally sequenced
-  and allowed to supersede an older frame;
-- **checkpoint** — complete causal state at a declared tick, suitable for
-  validation/replacement followed by replay;
-- **message** — opaque bytes with delivery metadata. Only a future transport
-  adapter sees sockets or GameNetworkingSockets handles.
-
-Nothing in these terms assigns a permanent client/server topology. A session
-may nominate one peer as authority while all transport endpoints remain peers.
-
-## Implemented slice: `tick_journal`
-
-`tick_journal<Record, Tick, TickOf, SemanticLess, SemanticEquivalent>` is a
-single-owner bounded collection phase. The project supplies both its record
-type and semantic policies. Physical arrival order is erased by `seal()`.
-
-Guarantees:
-
-- a record for a different tick is not written;
-- capacity is reserved at `begin`; exceeding it latches a fault and makes
-  `seal` fail;
-- semantic duplicates and distinguishable records tied by the comparator are rejected after canonical sorting;
-- unsealed storage is never exposed;
-- `consume` is once-only and transfers an owning bundle which exposes records
-  only through a const view instead of leaving a view into a reusable slot;
-- every open cycle has a 64-bit generation tag, so reuse after tick-number
-  wrap cannot accept a stale tag;
-- capacity/duplicate rejection is an explicit `tick_seal_result`;
-- invalid lifecycle operations are programming errors routed through the
-  engine's fatal `utils::error` handler rather than exception subtypes.
-
-The comparator must be a strict weak order and semantically equivalent records
-must form one adjacent equivalence class under that order. Distinct records must
-have distinct ordering keys; otherwise `seal` returns `ambiguous_order` (a stable
-sort would merely preserve the nondeterministic arrival order). `TickOf` must return
-the exact `Tick` type; implicit narrowing is rejected because it could alias two
-different project ticks.
-
-Explicit non-goals of this slice: sockets, threads, ACKs, packet encoding,
-authentication, tick acceptance windows, prediction, rollback, checkpointing,
-ECS knowledge, compression and encryption.
-
-## Implemented slice: sequence window and bounded history
-
-`sequence_window<Sequence, WindowBits>` accepts an unsigned modular sequence
-without assigning it any transport meaning. It classifies observations as
-`new_value`, `duplicate`, `stale` or `too_far_ahead`. Bit zero is the newest
-accepted value; the remaining bits remember accepted late arrivals. Both
-unsigned wrap and the ambiguous half-range distance are handled explicitly.
-
-`WindowBits` is deliberately both the duplicate-retention window and the
-largest forward gap accepted implicitly. An authenticated session recovery
-which proves a larger jump must establish a new epoch with `reset`; a random
-packet cannot move the acceptance horizon arbitrarily. Classification alone
-does not mutate the window, and gaps do not imply delivery.
-
-`bounded_history<Tick, Bundle>` is a single-owner, strictly increasing tick
-history. The project inserts an already sealed bundle and declares its logical
-byte size. Count and byte budgets are runtime values; successful insertion
-evicts as many oldest entries as necessary and returns the exact evicted count
-and byte total. Duplicate ticks, out-of-order insertion and impossible budgets
-are ordinary status values and leave retained history unchanged. A zero-byte
-bundle is still an explicit tick and consumes one count slot.
-
-The history preallocates fixed ring slots and exposes const entries and bundle
-pointers. Entry addresses remain valid until their own eviction/clear/destruction;
-the borrowed `entries()` random-access range must be obtained again after any
-mutation. It is a view returned by value, no longer a `const deque&`.
-Tick ordering is normal strict ordering; modular packet
-sequence handling belongs to `sequence_window`. Neither template is
-thread-safe by itself.
-
-Explicit non-goals of this slice: ACK encoding, delivery promises, peer
-penalties, sockets, wire serialization, replay execution and checkpointing.
-
-## Implemented slice: canonical state schema
-
-`utils::serial::state_schema<Host, Writer, Reader, Sections...>` (re-exported by
-`network/state_schema.h`) is the project-neutral
-manifest for a complete causal state. Every project-owned section declares an
-explicit 32-bit ID and version plus `write`, `read` and `validate` operations.
-The parameter-pack order is erased: the schema sorts sections by ID, rejects
-duplicate IDs at compile time and derives a stable schema fingerprint from
-the canonical `(format, count, id, version)` sequence.
-
-The first compatibility policy is deliberately `exact`. Unknown, missing,
-duplicate or reordered sections, version mismatches, malformed section data
-and trailing bytes are returned as `state_load_status` values with the
-relevant section ID. The schema has no migration or optional-section policy
-yet.
-
-Decode writes only into a caller-provided `Host::staging_type`. Section
-validation and the project-supplied whole-state validation run before one
-project-supplied `noexcept` replacement operation. Thus a foreign-data failure
-cannot partially mutate the live host. Fallible runtime/cache preparation belongs in
-detached staging; the final replacement installs it and invalidates address-bound caches.
-
-`emit_canonical` is the single traversal used by checkpoint writing and a
-state-hash sink. It emits the complete envelope, section metadata and payload
-bytes identically to either consumer, and may expose each borrowed canonical
-section payload to a diagnostic observer during that traversal. The built-in
-`state_writer` and `state_reader` provide minimal canonical little-endian
-adapters; compatible project adapters may be substituted.
-
-The traversal returns success/failure, including section-writer refusals. A failed byte writer
-stays failed; vector-returning `Schema::write(host)` yields an empty vector, never a partial
-document. The one-shot `make_state_digest` treats failure to serialize its live host as a critical
-error and cannot return a root of a prefix. The prepared path can instead check `Schema::try_write`
-before passing the complete bytes to `try_murmur64_digest`.
-
-The 32-bit schema fingerprint is produced by the shared
-`utils::murmur_hash3_32` primitive over canonical format/count/ID/version
-bytes. It is format compatibility metadata, not a cryptographic state
-identity. Content-state diagnostics are supplied by NET-05; checkpoint
-retention and replay remain NET-04. The schema owns no sockets, threads, ECS
-types, systems or callbacks.
-
-The target is header-only and depends only on C++23, `devils_engine::options`
-and the common `devils_engine::utils` error facility. `devils_engine::network`
-contains no GNS type.
-
-## Implemented slice: checkpoint retention and replay
-
-`checkpoint_ring<Tick, Blob, SizeOf>` retains immutable project-owned
-checkpoint blobs under count and logical-byte budgets. It uses the same
-strictly increasing tick and deterministic oldest-first eviction contract as
-`bounded_history`, and adds selection of the newest checkpoint not later than
-a requested tick. Compression and the meaning of logical retained size remain
-owner policies.
-
-`replay_to` is a free templated algorithm over a host, checkpoint, forward
-bundle range and injected restore/apply/step/verify operations. Tick extraction,
-bundle extraction and the successor relation are policies too. This lets strong
-project tick types participate without teaching the library arithmetic or a
-bundle representation.
-
-A checkpoint at `K` is committed state after `K`; replay applies bundle `T`
-before stepping `T` for every tick in `K+1..N`. The entire relevant range is
-preflighted before restore, so missing, duplicate, out-of-order and unavailable
-history never partially restore a world. Empty ticks must therefore exist as
-explicit empty bundles.
-
-Apply and step receive `replay_context` with presentation suppressed.
-`VerifyState` runs at the restored checkpoint and after every replayed tick,
-allowing the caller to report the first divergent state root without coupling
-NET-04 to a hash implementation. Replay advances the supplied host in place;
-recoverable callers should replay a detached staging host and publish it only
-after successful completion.
-
-## Implemented slice: state digest diagnostics
-
-`make_state_digest<Schema, Hasher>` feeds the exact canonical, uncompressed
-state document into an injected hash policy. Its report contains one complete
-root plus roots over every canonical `[id, version, byte_size, payload]`
-section frame. Section roots are diagnostics: peers need exchange only the
-full root normally and request a section report after a mismatch.
-
-`compare_state_digests` distinguishes an identical state, an envelope-only
-mismatch, a different section set and the first differing canonical section.
-Together with `replay_to` this identifies both the first divergent tick and
-the project-owned state section without teaching either mechanism a project
-type.
-
-Hash choice is an explicit policy rather than a wire-format property. The
-provided `buffered_murmur64_state_hasher` is the initial frequent diagnostic
-policy; it is non-cryptographic and buffers because the shared Murmur64A
-utility is one-shot. A project that already owns canonical checkpoint bytes
-should hash those bytes directly and build section diagnostics only after a
-mismatch. `sha256_state_hasher` is the wider reference policy for rare or
-durable identities. Neither policy authenticates a peer or message.
-
-There is deliberately no page tree, incremental dirty tracking, socket,
-thread, checkpoint retention or correction policy in this slice.
-
-## Implemented slice: deterministic in-memory link
-
-`in_memory_link<Message, SizeOf, FaultPolicy>` is a single-owner logical
-transport for session tests. `Message` remains project-owned and opaque; the
-library asks only for its logical wire size. Calling `advance()` moves an
-explicit transport step, so the library does not equate network time with a
-simulation tick or wall-clock duration.
-
-Each direction has independent count, byte and bandwidth budgets. Count/byte
-budgets cover outbound + scheduled + unread inbox data until consumption, not
-just the send queue. Extra injected duplicates use the same budget; copies which
-cannot fit are suppressed and counted by `suppressed_duplicates()`. The original
-successful delivery always retains its reserved slot, including reliable traffic.
-`queued_*` still measures outbound data; `retained_*` measures the full lifetime.
-Lower lane
-IDs consume the current step's bandwidth first. A reliable ordered lane
-retries injected loss, delivers exactly once and preserves its order; an
-unreliable lane may lose, duplicate and reorder messages according to the
-injected policy. Expected submission failures are `link_send_status` values.
-Disconnect drops all queued, scheduled and received data; reconnect creates a
-fresh epoch and restarts per-lane sequences.
-
-The retained trace records acceptance/refusal, byte transmission, injected
-loss, retry, scheduling and delivery, up to `trace_count_budget` (default 4096;
-zero disables storage). Further events increment `omitted_trace_events()`;
-`clear_trace()` reuses storage. A truncated trace is not a complete replay log.
-Supplying the same message stream and
-fault policy therefore gives a directly comparable trace. This mechanism does
-not simulate packets, ACKs, MTU, congestion control or GNS internals; it models
-only the application-visible delivery contract that NET-08 must reproduce.
-
-## Implemented slice: replication baselines and deltas
-
-`state_frame_header` carries independent simulation tick, application sequence,
-format version, acknowledged input sequence and explicit base/result baseline
-IDs. A missing base ID identifies a full replication baseline; it does not turn
-that frame into a causal world checkpoint.
-
-`state_frame_window<Sequence, MaxForwardAdvance>` is the latest-state acceptance
-gate. It rejects an incompatible format, a duplicate, every older frame and an
-untrusted forward jump outside the configured modular window. Classification is
-non-mutating; the owner commits only after decoding and state materialization
-succeed. An authenticated recovery may establish a distant sequence explicitly
-with `reset`.
-
-`baseline_store<BaselineId, Snapshot, SizeOf>` retains immutable complete
-replication snapshots under strictly increasing IDs and count/logical-byte
-budgets. `try_materialize_delta` looks up exactly the named base, invokes a
-project codec returning `optional<Snapshot>`, then publishes the complete
-candidate under its result ID. A missing base, codec refusal, duplicate or
-out-of-order result and budget overflow are distinct values and never mutate the
-store.
-
-The optional default codec represents canonical key-sorted state as
-`keyed_snapshot<Key, Value, Version>`. Its delta records an expected version and
-an optional result per key, making create, update and erase preconditions
-explicit. Build/apply reject duplicate or unsorted keys, a changed value without
-a changed version, repeated create/delete and stale versions transactionally.
-Projects remain free to use another snapshot and delta representation.
-
-Entity IDs, ECS enumeration/dirty tracking, component declarations, interest,
-ownership, visibility, quantization, wire serialization and correction remain
-project/session policy rather than properties of these templates.
-
-## Implemented slice: strict session compatibility and reconnect recovery
-
-`try_make_session_content_root` computes SHA-256 over one canonical manifest:
-product/version and the complete bytes of every resolved core, project and mod
-file. Entries arrive in strict `(domain, load_order, package, path)` order;
-filesystem enumeration order is therefore erased while mod precedence remains
-part of the identity. Names must be canonical relative names. The root is
-prepared before connecting and only its fixed-size value belongs in a
-handshake. It proves exact content compatibility under SHA-256's collision
-assumption; it does not authenticate the remote peer.
-
-`session_compatibility` keeps handshake/protocol, state schema, intent schema
-and numeric profile versions beside that strict content root. This duplication
-is diagnostic: incompatibility is refused by its first precise reason rather
-than reported only as a different opaque hash. `evaluate_session_handshake`
-invokes a project-supplied authenticator only after compatibility succeeds.
-The returned principal is a logical authenticated identity; a `gns_peer` is
-never promoted into one. Steam identity, certificates, offline credentials and
-reconnect tokens remain injected policies.
-
-`session_membership` binds a logical local peer and principal to one session,
-authority peer and authority epoch. Authority messages carry the session,
-logical authority and epoch and are rejected as wrong-session, wrong-authority,
-stale or unexpectedly future. A transport reconnect creates a new transport
-peer but does not change these logical facts. Authority migration still needs
-its own election/epoch publication protocol.
-
-`recover_session` accepts a complete checkpoint at committed tick `K`, every
-sealed bundle `K+1..N` (including explicit empty ticks) and expected roots at
-`K` and `N`. The whole history is preflighted before restore, replay runs with
-presentation suppressed in a caller-owned detached candidate, and one
-`noexcept` publish occurs only after both roots match. This makes checkpoint
-completeness observable: PRNG cursors, entity counters, timeline/scheduler
-remainders and every other cause of tick `K+1` must live in the checkpoint.
-Derived caches and presentation do not; they are rebuilt or retained at the
-transactional publish boundary.
-
-The compatibility/recovery slice itself defines no token issuer/storage,
-automatic socket reconnect, checkpoint compression or download scheduler. A
-content root is not a substitute for authenticated encrypted transport, and a
-reconnect credential is not trusted until the injected authenticator accepts it.
-
-## Implemented slice: session handshake wire format and ordered exchange
-
-`session_wire.h` is the frozen handshake format. Unlike the rest of the library
-it is not templated on integer widths: two installations must agree on exact
-bytes, so session, peer, epoch and tick travel as fixed 64-bit values and a
-project maps its own types onto them. The envelope is magic, envelope version,
-message type, a reserved byte which must be zero, and a payload length which
-must account for the whole buffer; a shorter or longer buffer is a refusal, not
-a prefix parsed with the remainder ignored.
-
-The budgets (`session_wire_max_payload_bytes`, `..._max_credential_bytes`,
-`..._max_challenge_bytes`) are declared by the library because they are
-protocol, not machine policy: a limit derived from local memory would let two
-installations disagree about what is a legal message. Encoders write into
-prepared capacity and never grow their buffer, so a message which does not fit
-its budget is a fault instead of a reallocation. Absent optionals must be
-encoded as zero, presence flags accept only zero or one, and refusal reasons
-must be named nonzero values — otherwise two encoders could produce different
-bytes for one logical message.
-
-Five messages form the exchange: `client_hello`, `authority_challenge`,
-`client_response`, `session_accepted` and `session_refused`. Challenge and
-credential bytes stay opaque; decoded spans point into the caller's received
-buffer and must be copied to outlive it. `session_refusal_reason` is a stable
-wire numbering rather than a reuse of `session_handshake_status`, and separates
-wire-level faults (malformed, unexpected, no capacity) from one named
-compatibility field.
-
-`session_transcript` hashes the exact bytes of the hello and the challenge with
-explicit length prefixes. It is what makes challenge/response more than
-decoration: both roles derive the same value from the same two messages, so a
-credential recorded from another exchange or another peer's nonce cannot be
-replayed into this one. The library does not decide how a credential uses the
-transcript — only that both sides agree on it.
-
-`authority_handshake` and `client_handshake` are ordered state machines over
-decoded messages. Compatibility is answered at the hello, before a challenge is
-issued or a credential is examined; identity is answered at the response. A
-message which does not belong to the current phase is refused as
-`unexpected_message` instead of being applied out of order, and any refusal is
-terminal: a peer cannot retry a rejected credential or renegotiate
-compatibility on one connection. Every refusal fills the reply buffer with one
-`session_refused`, so a caller always has exactly one thing to send and one
-place to stop. A returned status describes the decode, not the decision:
-malformed input returns its wire status, while a well-formed refusal returns
-`ok` and reports itself through `phase()`/`refusal()`.
-
-Nonces are caller-supplied: the library carries them but owns no randomness
-policy and must not be given a repeated authority nonce. Neither role touches a
-socket, a simulation or a tick, and neither issues, stores or renews a
-credential. Automatic transport reconnect and a real new-connection recovery
-exchange remain the next slice.
-
-## Prepared storage and hot-path ownership
-
-Preparation is explicit; a runtime budget is not a claim that a generic payload
-fits in `sizeof(T)`. These are separate resource limits:
-
-| Path | Prepared API | Ownership / refusal |
-| --- | --- | --- |
-| Tick collection | `recycle(vector&&)`, then `begin` within prepared capacity | `consume` transfers immutable ownership; only after retirement may the owner call `std::move(batch).release_storage()` |
-| Histories/checkpoints/baselines | Fixed slots allocated by constructor; move prepared payload in | `take_oldest()` returns ownership for reuse; automatic eviction destroys it |
-| Delta build/apply | Reserve output, use `make_keyed_delta_into` / `apply_keyed_delta_into` | Linear merge; capacity/precondition refusal leaves output unchanged; input/output may not alias |
-| Canonical serialization | Reserve document and largest-section scratch, `Schema::try_write` | No vector growth; `false` means partial scratch, never publish it; buffers must be distinct |
-| Murmur diagnostics | `try_murmur64_digest<Schema>(bytes, report)` with reserved sections | Hashes the existing canonical document/section slices directly, no second full byte buffer; rejects bad framing without changing report |
-| Logical delivery | Constructor prepares shared per-direction queue slots, delivery/inbox vectors and trace; `consume` borrows inbox messages | Capacity is returned only after callback; callback may enqueue a reply, but must not recursively consume/advance/disconnect |
-
-The link allocates queue slots once and links them by indices per lane: there
-are no 512 independently allocating deques. Delivery sorting uses a total
-`(ready_step, insertion_order)` order and in-place `sort`, not allocating
-`stable_sort`. `drain()` remains an allocating owning convenience API; use
-`consume()` for a prepared hot loop.
-
-The owning convenience `make_keyed_delta`, `apply_keyed_delta`, `Schema::write`
-and generic `make_state_digest` may allocate. So can project `Message`/`Value`
-copy/assignment, serialization callbacks and dynamic staging. Prepared `*_into`
-overloads retain outer vector capacity and assign existing elements, but erasing
-a nested owning value destroys its allocation. Truly bounded dynamic payloads
-need a project/adapter-owned arena or recycled ownership handles; a borrowed
-`span` must not outlive that ownership. Logical wire-byte budgets do not measure
-allocator overhead or reserved capacity of nested containers.
-
-For float values, the equality policy must agree with canonical bytes.
-`utils::float_bits_equal` (`utils/float_bits.h`) compares IEEE float/double
-fields, distinguishing signed zero and NaN payloads. Apply it fieldwise; never
-compare raw padded structs. A project may instead normalize values before
-versioning, serialization and hashing, consistently in all three places.
-
-`network_hot_path_test` counts allocations after preparation for these paths,
-including checkpoint restore/replay/digest over the faulty logical link. The
-test's allocation hooks belong only to that executable, not to the engine.
-This does not claim allocation freedom inside GNS or the real ECS serializer.
-
-## Optional GNS adapter — NET-08A/B
-
-Link `devils_engine::network_gns` and include `network/gns_transport.h` explicitly.
-The neutral `network` target and umbrella header remain free of GNS headers and
-linkage. `DEVILS_ENGINE_BUILD_NETWORK_GNS=OFF` disables this target; it does not
-undo the repository's existing top-level GNS fetch or the independent PRE-01 probe.
-
-`gns_transport` is a single-owner concrete backend, not a session or a worker.
-The caller lends initialized `ISteamNetworkingSockets`/`ISteamNetworkingUtils`;
-their runtime must outlive the transport **and all outstanding received leases**.
-`adopt` takes exclusive ownership of a fresh connection even on refusal (it
-closes rejected handles); duplicate adoption into the same object is a refusal
-without close. Generational `gns_peer` values reject stale and foreign-instance
-references. They are local transport handles, not player or authority IDs.
-
-The lane declaration supplies delivery, priority/weight, Nagle policy, number of
-send slots, maximum payload size and retained-byte budget. A bulk channel is simply another
-reliable lane with its own reservation and priority. Opaque messages acquire no
-application framing, tick, component or snapshot knowledge. Unreliable-sequenced
-delivery discards native message numbers older than the newest observed number
-on that connection/lane. It does not replace application state-frame validation.
-
-Memory and lifetime:
-
-- Send slabs allocate `sum(lane.send_slots * lane.max_payload_bytes)` bytes at
-  preparation, plus fixed metadata. Budgets are per lane across this adapter's
-  peers. `try_send` copies the caller's bytes into one free slab slot; GNS receives
-  a native `AllocateMessage(0)` header with a custom payload-release callback.
-- GNS can free payloads out of order and from a different thread. A FIFO
-  `thread::byte_ring` therefore cannot directly own this boundary. Each slot
-  publishes release atomically; `poll_send_releases` copies completion metadata
-  into caller storage and makes slots reusable. Completion is **memory release,
-  not delivery ACK**; disconnect can release an undelivered message.
-- Native callbacks retain their slab's shared lifetime, not a transport pointer.
-  Adapter destruction does not invalidate a message still retained by GNS.
-  Rejected native sends are released immediately and emit no accepted-send completion.
-- Receive returns move-only `gns_received_message` leases without copying the
-  payload. A shared atomic count bounds outstanding leases across repeated polls,
-  including leases moved to another thread. The byte upper bound of leased
-  payloads is `receive_leases * max_receive_bytes`. `reset` returns ownership to
-  GNS; spans into that message expire immediately.
-- Backend queued-message byte/count/max-message limits are separate. GNS may
-  clamp settings, so adoption reads them back and refuses non-exact limits.
-  Its send queue is derived from summed lane budgets with the pinned backend's
-  4 KiB floor; the smaller application slab budgets still hold exactly.
-- These limits do not account for all of GNS's packet/reassembly/crypto working
-  memory. In the pinned source, `AllocateMessage(0)` still calls
-  `new CSteamNetworkingMessage`: the payload allocation is removed, the native
-  header allocation is **not**. No wrapper vector grows during send/receive/poll.
-  Profiling/controlling allocations inside GNS is a separate integration step;
-  do not fabricate/recycle its private message implementation from the adapter.
-
-`receive` requires empty output elements and has an explicit work budget,
-including discarded stale frames. A non-OK result may still carry earlier
-successful messages in `count`; process/release those leases. `poll_connections`
-reports observed state changes without an internal growing event log: intermediate
-states may coalesce between calls. `statistics` preserves native RTT, quality,
-jitter (including unavailable values) and per-lane queue data without inventing
-a packet-loss metric from quality or using global queue time for multiple lanes.
-
-### Endpoint lifecycle
-
-For real IP endpoints, prepare one `gns_dispatcher(sockets, utils, transport_capacity)`
-per native interface and construct transports with that dispatcher. The original
-interface-taking constructor remains an adopt-only boundary. A full dispatcher
-registration table leaves a new transport `!ready()`; it never grows on demand.
-The dispatcher must outlive registered transports; explicit `shutdown()` detaches
-a transport early and releases its registration slot.
-
-- `listen(address, options)` and `connect(address, options)` install a static
-  connection callback atomically with native endpoint creation. At most 64 native
-  creation options are accepted; replacing this routing callback is refused.
-  Authentication remains caller policy; no unauthenticated-IP option is inserted.
-  The tests explicitly allow unauthenticated localhost peers, not trusted identities.
-- `dispatcher.pump()` is the **only** callback pump for that interface, on the same
-  owner thread as its transports. It dispatches to currently registered owners
-  using native connection/listener handles, not callback snapshots of user data.
-  No captured transport pointer survives in GNS. Late events for closed endpoints
-  are ignored; destruction and registration-slot reuse do not redirect them to a
-  replacement. Do not mix raw `RunCallbacks` or a second dispatcher for this interface.
-- An incoming connection reserves a peer slot and gets its lane/receive budgets
-  configured before admission. `poll_connections` reports `needs_accept`; the
-  caller must promptly choose `accept(peer)` or `close(peer)`. No automatic project
-  admission, authority selection or second session state machine is hidden here.
-  Native accept may refuse because the connection ended meanwhile: return status,
-  then observe/close the terminal peer. Capacity/configuration refusal closes the
-  native connection immediately and increments `refused_incoming_count()`.
-- Routing tables and listener/peer metadata are prepared once. There is no growing
-  wrapper event queue: observations coalesce by peer, an empty/full caller output
-  does not consume a state, and terminal peers stay owned until explicit close.
-  This is **not** a lossless log of intermediate transitions. GNS `RunCallbacks`
-  drains its native callback queue without an exposed work budget; bounded wrapper
-  memory does not mean bounded native callback work or allocation freedom in GNS.
-- `close_listener` invalidates its generational ID **and all its child peer IDs**:
-  native GNS closes accepted children too. Local close/shutdown do not emit a second
-  event to acknowledge the caller's own operation. `shutdown` is final, idempotent,
-  unregisters routing and closes listeners/connections/poll group without linger.
-  Outstanding receive leases and send release storage retain their existing lifetime
-  contract; completions can still be reclaimed after shutdown.
-- Reconnect is a new `connect`, not implicit retry: fresh peer generation, reset
-  lane sequence filters, reused prepared slots. This is transport reconnection,
-  **not** resuming a session or replaying its checkpoints. GNS v1.6.0 requires a
-  nonzero listen port; native shutdown may defer OS-port release, so a subsequent
-  bind can return `backend_rejected`. Tests try a bounded localhost port range.
-
-## Implemented slice: automatic reconnect policy and recovery feasibility
-
-`reconnect.h` opens no socket, sends no byte and replays no tick: the caller
-performs the transport work and drives the handshake and `recover_session`.
-What the library owns is what must not be guessed — when a connection counts as
-lost, how long to keep trying, when to stop, and whether recovery is possible at
-all from the history still retained. It reads no clock; instants are
-caller-declared in the same unit the credential uses, so a reconnect deadline
-and a ticket expiry cannot drift apart.
-
-**Silence is not loss.** `reconnect_policy` declares two budgets, not one: a
-single slow tick or a stalled frame must not tear down a session, so suspicion
-(worth telling the presentation about) is separate from loss (worth
-reconnecting for). Backoff is deterministic doubling with a cap and no jitter —
-the library owns no randomness, and a caller spreading a crowd of reconnecting
-clients adds its own on top. An incoherent policy answers `valid() == false`
-instead of being silently repaired.
-
-**The deadline is the ticket's own expiry.** A client attempting after it cannot
-succeed, because the authority will refuse the credential, so the coordinator
-checks the deadline *before* spending an attempt and abandons with
-`deadline_passed`. Nothing new travels on the wire to arrange this: the ticket
-already carries `expires_at`, so the two sides cannot disagree about how long a
-reconnect is worth trying.
-
-`reconnect_coordinator` is one ordered machine over caller observations. Traffic
-resurrects a session from suspicion *and* from a declared loss the caller has
-not acted on yet — the common case of a spike which resolves itself, where
-reconnecting would be pure cost. It does not resurrect from `attempting`
-onward: a fresh connection is in flight by then, and bytes from the old handle
-are ambiguous rather than reassuring. A transport which reported itself gone
-skips the silence budget, since that is direct evidence. Each abandonment names
-its reason: `attempts_exhausted`, `deadline_passed`, `refused` (a terminal
-refusal is not retried on the schedule, which would only spend the deadline) or
-`unrecoverable`.
-
-`session_hold_table` retains a session whose peer disappeared for a declared
-window and reaps it afterwards. Capacity is declared, because a table which
-grows with disappearing peers is an allocation a peer controls. Consult it only
-**after** the reconnect credential verified: the credential proves the
-principal, so a stranger cannot use resolution answers to discover which
-sessions exist. Expiry and absence are different answers — "expired" tells a
-returning client its ticket is worthless, "unknown" may mean it is talking to
-the wrong authority entirely. Epoch orientation matches `credential.h` and
-`classify_authority_message`: the epoch presented is compared against the one
-recorded, so older than the record is stale.
-
-`assess_recovery` is where the retention budget becomes visible. A checkpoint at
-`K` is the committed state *after* tick `K`, so replay needs a sealed bundle for
-every tick `K+1..N`, including explicitly empty ones — the only sufficient
-history is therefore one whose oldest retained bundle is at or before `K+1`. A
-history starting at `K+2` leaves a hole no amount of replay fills, and that
-outcome is `history_gap`, which is why the client has a `rejoin` action at all:
-**"recovery is impossible, join fresh" is a normal answer, not a failure.** A
-target equal to the checkpoint is recoverable with zero replayed ticks;
-`no_checkpoint` and `target_before_checkpoint` are named separately, and a
-refusal leaves the caller's plan untouched.
-
-The composition test shows the two budgets working together: ticks which kept
-flowing while a peer was away evict the bundle after the retained checkpoint and
-make recovery impossible, while a *newer* checkpoint restores feasibility
-without a larger history. Retention is a checkpoint cadence and a bundle budget
-together, not history alone.
-
-This slice adds no transport calls, no bulk checkpoint transfer, no intent-window
-resumption and no multi-process execution; those are NET-LAB-01.
-
-## Implemented slice: reconnect credential
-
-`credential.h` owns exactly one credential, and the split is the design.
-
-A **join** credential proves who a stranger is. Which authority vouches for
-that — a platform identity, an offline keystore, a dedicated-server token — is
-policy, and it stays an injected verifier in `session.h`. A **reconnect**
-credential is different in kind: the authority mints it for itself at admission
-and must verify it **alone**, without the external identity service, because
-that service can be unreachable exactly when a reconnect is needed. Nobody but
-the engine can own that, so only that one lives here.
-
-The credential carries two independent proofs, and conflating them is the
-classic reconnect hole:
-
-- `ticket_mac` says **what** the bearer is entitled to. The authority keyed it
-  with its own key and checks it with no third party. It is replayable on its
-  own, deliberately: it states an entitlement, not who is speaking now.
-- `presentation_mac` says the bearer is presenting it **in this exchange**. It
-  is keyed by a secret only the authority and that client know, over the
-  handshake transcript, which contains both nonces. A passive observer holding
-  every byte of a captured credential therefore cannot use it in an exchange of
-  their own — proven by presenting a whole captured credential against a
-  different transcript and getting `presentation_mac_invalid`.
-
-The session secret is **derived**, not stored: `MAC(authority key, session,
-principal)`. The authority keeps no per-session secret table and so cannot lose
-one; the client receives the value once at admission over the already-encrypted
-transport. Three domain tags separate the ticket tag, the secret derivation and
-the presentation, because without them all three are byte strings under one key
-and an attacker chooses which is which.
-
-The library never reads a clock. Validity instants are caller-declared and only
-the **authority's** instant decides admission — a bearer's clock is not
-evidence. A clock which moved backwards answers `not_yet_valid` rather than
-accepting, and that is a distinct status from `expired` because the operator's
-fix differs.
-
-Check order is part of the contract: declared fields, then the ticket's own tag,
-then the proof of possession. An authority learns "this is not my ticket"
-without doing work proportional to a stranger's claims, and never derives a
-secret for a session it does not own — asserted with a counting policy. MAC
-comparison is `equal_in_constant_time`: a comparison whose duration depends on
-how many leading bytes matched turns an unforgeable tag into a few hundred
-guesses.
-
-The MAC primitive is injected through `credential_mac_policy`; no cryptographic
-algorithm is chosen here. The test brings HMAC-SHA256 over the engine's own
-SHA-256 to prove the composition, which is where a concrete primitive belongs.
-
-**Written-down limitation:** reissuing a ticket does not revoke the previous
-one. Without per-session state an authority cannot revoke, so expiry is the only
-revocation it has — which is why the window is short and a ticket is reissued at
-every admission. A test asserts that the older ticket still verifies until its
-own expiry, so the property is recorded rather than assumed.
-
-Persistence is not here: the project stores the bytes. The authority key must
-not be stored beside the tickets it signs.
-
-## Implemented slice: hot-path intent class and fixed point
-
-`fixed_point.h` owns the only floating-point arithmetic in the hot wire path.
-A world coordinate splits into an integer cell key and a code inside that cell,
-so resolution does not degrade with distance from the origin — the replication
-counterpart of the world-generation result that accumulation is cured by writing
-the accumulator rather than by moving the origin.
-
-The quantum is declared as a negative power of two, and that is not a stylistic
-choice. Multiplying an IEEE-754 double by a power of two is exact, so the code
-is a deterministic function of its input on every conforming platform, and
-decoding then re-encoding returns the same code by construction instead of by
-floating-point luck; a decimal quantum such as `0.001` would satisfy both only
-approximately. Rounding is half away from zero and computed without any
-`<cmath>` call: the product is exact, the truncation is exact, and the remainder
-of two nearby representable values is exact, so the comparison against one half
-compares exact quantities. Out-of-range and non-finite inputs report a clamp
-instead of being folded into a plausible coordinate, and `relative_cell`
-refuses a cell delta which does not fit its width rather than narrowing a
-distant or forged target silently. A direction is quantized over a full turn, so
-its wrap is the natural modular wrap of the code and there is no boundary at
-which two peers can disagree about the representable set.
-
-`intent_wire.h` is the hot upstream class. `network::intent` is deliberately
-not the project's simulation intent: it omits everything the receiver derives
-and everything a peer must not assert — the session and peer (named by the
-connection), the acting entity (a client-supplied actor is the classic ownership
-forgery) and provenance (neither causal nor trustworthy here). The project
-translates it into its own intent at one seam, which is exactly where ownership,
-legality and rate validation belong.
-
-There is no magic and no length field: the transport delivers whole messages, so
-the received size is authoritative. Byte zero is the message type because it
-decides how every following byte is read. A batch carries no count either —
-each intent packs its kind and its offset into the tick window into one byte,
-the reader consumes until the buffer ends, and a remainder which cannot form a
-whole intent is refused rather than partially accepted. Resending recent ticks
-is how the class survives loss without a retransmit protocol, so the window is
-part of the encoding rather than a policy above it.
-
-`intent_field_layout` declares what one kind carries (quantized axes, a registry
-index, an opaque entity reference, a direction). The project owns what a kind
-means; the library owns how its declared shape travels, so no gameplay verb is
-named here, and the declared shape is what lets the batch omit both counts and
-presence flags. A duplicate or malformed declaration is refused at preparation
-instead of giving one wire code two readings.
-
-`id_index_table` is the dense translation for 64-bit registered identifiers:
-the index of an identifier is its position in the sorted set, so peers need no
-agreement protocol beyond registering the same things — sorting is the
-agreement. The fingerprint hashes canonical little-endian bytes of exactly that
-sorted list and belongs in `session_compatibility::intent_schema_fingerprint`.
-Index stability across versions is explicitly not a property: adding one
-identifier shifts every later index, and that is safe only because a differing
-fingerprint is refused before the first tick. Stability by refusal is cheaper
-and stricter than stability by reserved ranges. A reference index is checked
-against the registry on both encode and decode, because an encoder which can
-produce a batch its own decoder refuses is a bug that only appears across a
-network.
-
-Measured sizes: one movement intent for one tick is 10 bytes, three ticks of
-redundant movement 24 bytes, and a full eight-tick window 59 bytes — against 51
-bytes of per-packet transport overhead (IP/UDP plus the pinned GNS header and
-AES-GCM tag). The lever for this class is therefore packet count, not field
-width. Quantization belongs to replication only: two peers quantizing their own
-diverging values can disagree by a whole code at a boundary, so `state_digest`
-and checkpoint roots stay on canonical bytes.
-
-## Implemented slice: transform frames and the relevant set
-
-`transform_wire.h` is the hot downstream class, and it keeps three decisions
-apart on purpose: who is replicated (`relevant_set`), what travels
-(`transform_field_layout`) and how often (`cadence_policy`). Only the middle one
-is session identity — `transform_layout_table::shape_fingerprint` covers the
-declared shapes and deliberately excludes interval, phase and byte budget,
-because an adaptive sender must be able to change those mid-session while
-correctness never depends on receiving a particular frame.
-
-A frame addresses entities by a dense per-client slot, never by an entity
-identifier, so a client is never told about an entity outside its own set:
-relevance is a disclosure boundary and not only a bandwidth one. Slots are dense
-because the lowest free slot is reused, which is what lets a full pass omit slot
-indices entirely. Membership is diffed rather than logged — `publish()` compares
-the current table against the last published one — so an entity which entered
-and left between two publications produces no traffic at all, and a slot which
-changed occupant travels as one enter instead of a leave/enter pair whose order
-could matter. The mirror's table therefore equals the sender's by construction.
-
-Membership is a reliable ordered class and frames are unreliable sequenced,
-which means either lane can be ahead of the other. A frame carries the set
-generation it was built against and a mismatch is refused in both directions
-rather than read against a different set of entities; a gap in the membership
-generation is reported, because a reliable ordered lane cannot legitimately skip
-one. Positions travel as a cell key plus a code, relative to one origin cell
-stated once per frame, and a record which does not fit that reach is refused as
-a relevance fault rather than placed somewhere plausible. Direction is an
-independent replicated field: a receiver inferring facing from motion cannot
-represent an entity turning in place.
-
-The correction threshold is derived from the declared quantum and compared in
-code space, so it is exactly one quantum on every platform and there is no
-epsilon to tune. One quantum is its floor, because snapping onto a quantized
-authoritative value injects up to half a quantum even when nothing diverged.
-
-Measured budget per client at a declared profile (60 Hz, 2048 entities in the
-neighbourhood, 96 relevant, three axes plus turn): 3 440 640 bytes/s for
-everything every tick by handle, 161 280 with relevance, 65 760 with the dense
-slot and shared origin, 11 470 with the declared cadence, and 6 927 sending only
-what changed plus a one-second full pass. Relevance and cadence are worth 21.3x
-and 5.73x; all the encoding cleverness together is worth about 4x. Membership is
-1.3% of the final figure, and the sparse mode beats the dense one until the
-change set reaches 84% of the run — so dense addressing earns its place only on
-the periodic complete pass the staleness bound demands.
-
-This slice adds no transport call, no observed byte rate, no prediction and no
-interpolation policy.
-
-NET-08C now runs the same NET06 checkpoint/replay/digest and NET07
-baseline/delta/recovery handlers over both an in-memory byte boundary and real
-localhost UDP through this adapter. Its bounded laboratory codec remains project
-fixture code, not GNS knowledge. Engine worker integration should use existing
-bounded FIFO channels where appropriate; the adapter deliberately remains
-caller-driven. No HTTP, P2P signaling, trusted-session authentication, automatic
-session reconnect or gameplay-thread mutation is added.
+# network
+
+Каркас сетевой сессии для детерминированной tick-based симуляции: идентичность участников,
+каноническая история входов, checkpoints и replay, регулярная репликация состояния и ограниченная
+граница доставки сообщений.
+
+Библиотека не описывает игру и не выбирает её сетевую топологию. Она описывает, **как две установки
+договариваются об одной сессии, как authority превращает предложения участников в единственную
+историю и как другая сторона доказывает, что восстановила то же состояние**. Значение intent,
+соответствие principal игровой сущности, legality, interest management и содержимое полного
+checkpoint принадлежат проекту.
+
+В основе лежат три различия:
+
+| Не одно и то же | Почему |
+|---|---|
+| transport connection и session | connection исчезает при обрыве; логическая session и principal переживают reconnect |
+| intent и canonical bundle | intent — предложение; bundle — то, что authority действительно приняла и применила |
+| causal state и transform frame | causal state определяет следующий tick; transform frame — необязательная latest-value репликация |
+
+**Цели сборки** разделены по зависимостям:
+
+| Цель | Что внутри | Зависимости |
+|---|---|---|
+| `devils_engine::network` | нейтральные templates, session/wire codecs, history, replay, replication | C++23, `utils` |
+| `devils_engine::network_gns` | concrete adapter GameNetworkingSockets | `network`, GNS |
+
+Основная цель header-only и не тянет GNS. Адаптер подключается явно через
+`<devils_engine/network/gns_transport.h>`; `network.h` остаётся нейтральным umbrella header.
+
+---
+
+## Как этим пользоваться
+
+Задача -> механизм -> результат.
+
+**Открыть новую сессию.** Поднять transport connection, провести `client_hello ->
+authority_challenge -> client_response`, проверить compatibility до identity и только затем создать
+logical membership. Transport peer после этого остаётся лишь текущим маршрутом к уже известному
+principal.
+
+**Принять ввод игрока.** Декодировать `intent_batch`, вывести principal и acting entity из
+аутентифицированной session, проверить tick/ownership/legality/rate и передать допущенные записи в
+`tick_journal`. В конце тика journal стирает порядок прихода и выдаёт immutable canonical bundle.
+
+**Воспроизвести ту же реальность на follower.** Получать каждый canonical bundle по reliable ordered
+каналу, применять его перед соответствующим simulation step и хранить roots состояния по тикам.
+Пустой tick тоже приезжает пустым bundle: отсутствие сообщения не может означать «ничего не
+произошло».
+
+**Показать актуальные сущности без полного state frame каждый tick.** Authority ведёт отдельный
+`relevant_set` для каждой session, надёжно публикует его изменения и отправляет quantized transform
+frames по latest-value каналу. Follower читает frame только против той generation набора, для которой
+он был построен.
+
+**Вернуться после обрыва.** Создать новую transport connection, предъявить reconnect ticket вместе с
+proof-of-possession для нового handshake transcript, получить checkpoint `K` и bundles `K+1..N`,
+восстановить detached candidate, проверить roots в `K` и `N` и одним `noexcept` publish заменить live
+state.
+
+**Проверить session без настоящей сети.** Подать те же opaque messages в `in_memory_link`, явно
+двигать transport time через `advance()` и инъецировать loss, delay, duplication и reorder. Эта
+модель проверяет видимый приложению delivery contract, но не симулирует UDP, ACK, MTU или congestion
+control.
+
+---
+
+## Общая модель
+
+```text
+                                   ┌──────────────────────┐
+ local/UI/AI intents ─────────────>│                      │
+ remote intent proposals ─────────>│ authoritative tick   │
+                                   │                      │
+                                   │ validate → seal      │
+                                   │ apply → step         │
+                                   └──────────┬───────────┘
+                                              │
+                         ┌────────────────────┼────────────────────┐
+                         ▼                    ▼                    ▼
+                 canonical bundle       state root          checkpoint
+                         │                    │                    │
+                         └────────────── history ─────────────────┘
+                                              │
+                                              ▼
+                                      recovery / replay
+
+ presentation state ── relevant set ── transform frames ──> client presentation
+```
+
+Canonical bundle и checkpoint относятся к причинной timeline. Transform frames идут рядом: они
+могут уточнить представление или prediction, но потеря отдельного frame не должна делать следующий
+simulation tick неопределённым.
+
+Session может назначить один peer authority, однако сами transport endpoints остаются peers. Смена
+authority — отдельный протокол election/epoch, а не свойство connection.
+
+---
+
+## Верхний уровень интеграции
+
+Сеть тесно связана с границей simulation tick, поэтому ожидаемый владелец session orchestration
+работает в main thread. Он вызывает transport pump каждый frame, но меняет causal state только в
+объявленной фазе fixed-step loop.
+
+У этого слоя одна ответственность: превратить временные transport observations и bytes в
+tick-addressed, проверенные данные для симуляции — и обратно. Концептуально он выдаёт не callbacks, а
+несколько типизированных результатов:
+
+| Результат | Кто читает | Семантика |
+|---|---|---|
+| session events | app/UI | connected, suspect, lost, admitted, refused, recovered |
+| remote intent proposals | authority simulation | вход для gameplay validation будущего тика |
+| authoritative bundles | follower simulation | причинная история, reliable и непрерывная |
+| relevant-set/transform updates | prediction/presentation | latest-value, допускает потерю |
+| ready recovery | main simulation | цельная транзакция: plan + owned checkpoint + bundles |
+
+Checkpoint chunks не публикуются main loop по одному. Пока не собран весь документ и весь replay
+range, recovery не существует как операция над симуляцией.
+
+Ожидаемый порядок main loop:
+
+```cpp
+network.pump(now);                         // callbacks, receive, decode, state machines
+
+fixed_step.consume_elapsed([&](tick_id tick) {
+  apply_ready_recovery();                  // только цельная проверенная транзакция
+  consume_authoritative_updates();         // bundle/reconciliation на границе тика
+  admit_remote_intents();                  // principal -> actor, legality, rate
+
+  const auto bundle = seal_tick(tick);     // local/UI/AI/network в одном порядке
+  simulate(bundle);
+  commit_state_root_and_checkpoint(tick);
+
+  network.publish_committed_tick(bundle);
+  network.publish_transforms();
+});
+
+consume_presentation_updates();
+network.flush_outgoing();
+```
+
+Внутри `pump` обработчики не вызывают gameplay рекурсивно. Они декодируют, меняют session state
+machines и складывают данные; main loop забирает их в своей фазе. Так число native callbacks в одном
+frame не меняет порядок симуляции.
+
+Отдельный I/O worker имеет смысл только после измерения main-thread pump. Если он когда-нибудь
+появится, его граница — bounded SPSC-передача **owned opaque messages**; logical sessions, gameplay
+admission, checkpoint publication и replay остаются у main thread.
+
+---
+
+## Session, identity и admission
+
+В модели есть четыре разных имени:
+
+| Имя | Время жизни |
+|---|---|
+| transport peer | одна connection в одном экземпляре transport |
+| logical peer | участие в session |
+| principal | аутентифицированный автор действий |
+| authority epoch | версия права peer говорить от имени authority |
+
+Ни native handle, ни IP-адрес не становятся principal. Reconnect выдаёт новый transport peer, но
+сохраняет session, logical peer и principal. Сообщение authority принимается только при совпадении
+session, logical authority и epoch.
+
+### Compatibility до identity
+
+`session_compatibility` сравнивает:
+
+- формат handshake;
+- версию протокола;
+- content root полной разрешённой установки;
+- schema полного causal state;
+- schema intent;
+- numeric profile.
+
+Content root строится заранее из product/version и полных bytes core, project и mod-файлов в
+каноническом load order. Это доказательство одинакового содержимого при принятом предположении о
+SHA-256, но не доказательство личности.
+
+Несовместимая установка отклоняется до challenge и до проверки credential. Это одновременно точная
+диагностика и граница стоимости: identity policy не работает на peer, с которым симуляция всё равно
+невозможна.
+
+### Ordered handshake
+
+```text
+client_hello          compatibility + client nonce
+authority_challenge   compatibility + authority nonce + opaque challenge
+client_response       opaque credential + optional resume claim
+session_accepted      logical membership and starting tick
+session_refused       одна именованная terminal reason
+```
+
+Envelope фиксирует magic, ограниченную поддерживаемую версию, тип, reserved byte и точную длину.
+Получатель не принимает понятный префикс с неизвестным хвостом. Выбранная hello-версия закрепляется
+на весь exchange; поддержка старых форматов задаётся явным диапазоном, а не правилом «всякая версия
+меньше моей совместима».
+
+Transcript хеширует точные hello и challenge bytes с length prefixes. Credential для одного
+exchange поэтому нельзя перенести в другой, даже если логические поля совпали. Любой refusal
+terminal: повторная попытка начинается с новой connection.
+
+### Join и reconnect — разные credentials
+
+Join credential отвечает на вопрос «кто этот незнакомец?». Его issuer — политика проекта: platform
+identity, offline keystore, dedicated-server token и т.п. Библиотека не задаёт его формат.
+
+Reconnect credential authority выпускает сама для уже принятой session. Он содержит два
+независимых доказательства:
+
+- `ticket_mac` подтверждает entitlement `(session, principal, epoch, validity window)`;
+- `presentation_mac` подтверждает владение session secret в текущем handshake transcript.
+
+Session secret выводится из authority key, session и principal, а не хранится в authority-side
+таблице. MAC primitive инъецируется проектом. Библиотека не читает clock: `issued_at`, `expires_at` и
+текущий authority instant передаёт caller. Reissue не отзывает старый ticket; до expiry он остаётся
+действительным.
+
+---
+
+## Causal timeline
+
+### Intent становится историей только после seal
+
+`network::intent` — wire request, а не проектный `act::intent`. Он намеренно не несёт того, что
+authority уже знает или обязана вывести сама: session, principal, acting entity и provenance.
+
+После wire decode проект выполняет semantic admission. Принятые записи одного тика попадают в
+`tick_journal`, где физический порядок прихода стирается канонической сортировкой. Семантический
+duplicate и две разные записи с одинаковым ordering key — отказ, а не зависимость от stable arrival
+order.
+
+`consume()` передаёт owning immutable bundle. Только такой bundle входит в causal history и
+рассылается follower-ам. Zero-record bundle остаётся явным тиком.
+
+### History и checkpoints
+
+`bounded_history` хранит строго возрастающие bundles под двумя независимыми бюджетами: количество и
+логические bytes. При успешной вставке старые записи вытесняются детерминированно, самые ранние
+первыми.
+
+`checkpoint_ring` применяет ту же модель к self-contained project blobs. Библиотека не решает,
+содержит blob raw canonical document, compressed container или другую форму, и не считает
+`sizeof(T)` его сетевой стоимостью.
+
+Checkpoint в `K` — состояние **после** тика `K`. Для достижения `N` необходим каждый bundle
+`K+1..N`, включая пустые. История, начинающаяся с `K+2`, имеет дыру, которую невозможно угадать.
+
+### Полное состояние и roots
+
+Полный causal state состоит из project-owned versioned sections. Порядок объявления секций не
+влияет на документ: schema сортирует их по ID и получает одну canonical byte form. Decode строит
+detached staging, проверяет каждую секцию и весь host, после чего выполняет единственную замену live
+state.
+
+В checkpoint входят все причины следующего тика, например:
+
+- simulation tick и дробный остаток timeline;
+- PRNG cursors;
+- entity/version counters;
+- deferred causal work;
+- project-owned world state.
+
+Derived caches и presentation state в него не входят: они пересобираются после публикации.
+
+State digest считается по полным canonical bytes. Section roots нужны для локализации несовпадения,
+а не образуют вторую версию состояния. Schema/layout fingerprints описывают совместимость формата;
+они не заменяют content root, state digest или authentication MAC.
+
+### Transactional replay
+
+Replay сначала проверяет весь диапазон, затем восстанавливает checkpoint и для каждого тика
+`K+1..N` выполняет:
+
+```text
+apply canonical bundle T
+step simulation T with presentation suppressed
+verify state when required
+```
+
+Recovery запускается над detached candidate. Root проверяется после restore в `K` и после replay в
+`N`; только затем один `noexcept` publish меняет live world. Ошибка decode, пропущенный bundle,
+неверный root или отказ project callback не оставляют полувосстановленное состояние опубликованным.
+
+---
+
+## Два разных replay
+
+Восстановление authoritative history и исправление client prediction похожи механически, но меняют
+разные вещи.
+
+Сетевое состояние всегда адресовано тиком. Если client уже предсказал `106`, а authority прислала
+root для `100`, сравнивается retained local root в `100`, а не текущий state в `106`. Поэтому client
+хранит ограниченное окно `(tick, root/checkpoint, local inputs)`: естественное запаздывание сообщения
+не является divergence, оно лишь определяет, какую точку прошлого можно подтвердить или откуда
+нужно пересчитать будущее.
+
+### Session recovery
+
+```text
+authority checkpoint K + authority-sealed bundles K+1..N
+  -> точное authoritative state N
+```
+
+Sealed bundles уже являются прошлым. Их нельзя повторно валидировать по новым правилам и выбрасывать.
+Если такой bundle невозможно применить, recovery отказывается: это несовместимость, неполный
+checkpoint или divergence, а не разрешение придумать другое прошлое.
+
+### Prediction reconciliation
+
+```text
+authoritative state N + unacknowledged local intents N+1..current
+  -> новое predicted future
+```
+
+Неподтверждённые локальные intents — ещё не история. После authoritative correction они выполняются
+заново и могут перестать быть legal: цель исчезла, ресурс потрачен, действие больше недоступно. Такой
+отказ изменяет только предсказанное будущее клиента.
+
+Для reconciliation нужен acknowledged input horizon: клиент обязан знать, какие свои input sequence
+authority уже обработала. Без него невозможно отделить подтверждённые inputs от тех, которые следует
+переиграть. `state_frame_header` содержит это понятие; полноценный correction wire contract должен
+донести его вместе с authoritative anchor.
+
+---
+
+## Регулярная репликация
+
+### Baseline и delta
+
+Replication baseline — complete snapshot выбранного представления, но не обязательно полный causal
+checkpoint. `state_frame_header` раздельно несёт simulation tick, application sequence, exact base и
+result baseline IDs и acknowledged input sequence.
+
+Delta применяется только к названному retained base. Candidate публикуется под result ID после
+успешного project codec; missing base, stale version, duplicate ID и budget overflow ничего не
+меняют.
+
+Доступный default codec работает над key-sorted state и versioned values. Create, update и erase
+имеют явные preconditions; проект может подставить другую snapshot/delta форму.
+
+### Hot upstream: intent batches
+
+Intent batch адресует base tick один раз и кодирует недавнее окно через маленькие offsets. Повторение
+нескольких тиков — часть delivery strategy: потерянный packet заменяется следующим batch без
+отдельного retransmit protocol.
+
+Каждый intent kind заранее объявляет форму payload. Registered IDs превращаются в индекс
+отсортированного registry; fingerprint этого списка входит в compatibility, поэтому сдвиг индексов
+между версиями приводит к отказу session до первого тика.
+
+### Fixed point
+
+Мировая координата делится на integer cell key и code внутри клетки, поэтому разрешение не ухудшается
+далеко от нуля. Quantum задаётся отрицательной степенью двойки: умножение IEEE-754 double на степень
+двойки точно, а decode->encode возвращает тот же code по построению.
+
+Wire quantization не является средством устранения divergence. Два уже разошедшихся состояния могут
+квантизоваться в разные соседние codes; state roots поэтому никогда не считаются по quantized
+transform values.
+
+### Hot downstream: relevant set и transforms
+
+Authority ведёт per-session relevant set. Frame адресует сущность плотным slot, а не глобальным
+entity ID, поэтому relevance служит не только bandwidth optimization, но и disclosure boundary:
+клиенту вообще не сообщается идентификатор сущности вне его набора.
+
+Три решения независимы:
+
+| Решение | Механизм |
+|---|---|
+| кто видим клиенту | relevant set |
+| какие поля едут | transform class layout |
+| как часто они едут | cadence policy |
+
+Membership публикуется reliable ordered и имеет generation. Latest-value transform classes обычно
+идут unreliable и несут generation, против которой были построены. Frame может обогнать membership
+или отстать от уже применённого update; обе гонки отклоняются вместо чтения slot в неверном наборе.
+Класс вправе объявить reliable delivery, но это его явная cadence policy, а не скрытое решение
+transport.
+
+Latest-value gate ведётся отдельно для каждой cadence class. Dense mode экономит slot indices на
+полном последовательном диапазоне; sparse mode перечисляет изменившиеся slots. Потеря frame или
+budget refusal допустимы, потому что следующий frame supersedes старый и correctness не зависит от
+прихода каждого из них.
+
+Correction threshold выводится из fixed-point quantum и сравнивается в code space. Он не является
+придуманным epsilon. Сам transform frame при этом не заменяет authoritative checkpoint/state frame,
+необходимый для полного prediction reconciliation.
+
+---
+
+## Доставка и lanes
+
+Библиотечный message — opaque bytes плюс delivery metadata. Транспорт не добавляет session ID, tick,
+component schema или snapshot semantics: форматом владеет соответствующий wire codec.
+
+Типичная раскладка:
+
+| Класс | Доставка | Причина |
+|---|---|---|
+| handshake, admission, canonical bundles, membership | reliable ordered | пропуск меняет смысл последующих сообщений |
+| checkpoint chunks | reliable bulk с отдельным бюджетом | большой transfer не блокирует текущую timeline |
+| intent batches | unreliable с временной избыточностью | следующее окно повторяет недавние предложения |
+| transform frames | unreliable latest-value | новый frame заменяет старый |
+
+Delivery lane и application acceptance — разные уровни. Native unreliable-sequenced filter не
+заменяет transform/state frame gate; GNS message number не является simulation tick или application
+sequence.
+
+### In-memory link
+
+`in_memory_link` — двухсторонняя single-owner модель с явным transport step. Каждое направление
+имеет count, byte и bandwidth budgets. Reliable lane сохраняет порядок и повторяет injected loss;
+unreliable lane допускает loss, duplication и reorder согласно injected fault policy.
+
+Trace ограничен отдельным budget и годится для сравнения воспроизводимых прогонов. Он не является
+полным packet capture, если достигнут лимит.
+
+### GameNetworkingSockets
+
+`gns_transport` — caller-driven adapter над предоставленными
+`ISteamNetworkingSockets`/`ISteamNetworkingUtils`. Он не вызывает global Init/Kill, не создаёт
+session worker и не скрывает automatic reconnect.
+
+Один `gns_dispatcher` обслуживает один native interface; все `RunCallbacks` проходят через его
+`pump()`. Incoming connection сначала резервирует transport peer и сообщает `needs_accept`, после
+чего caller явно выбирает `accept` или `close`.
+
+Send копирует payload в заранее подготовленный per-lane slab. Возврат из `poll_send_releases`
+означает освобождение памяти GNS, а не delivery ACK. Receive возвращает move-only lease без копии;
+payload span живёт до `reset`/destruction lease, а GNS runtime обязан пережить все outstanding
+leases.
+
+Reconnect всегда создаёт новую connection и новую peer generation. Восстановление logical session
+выполняют handshake, credential и recovery уровнем выше.
+
+---
+
+## Бюджеты, владение и горячий путь
+
+Удалённая сторона не должна заставлять engine container расти. Поэтому независимо объявляются:
+
+- число и logical bytes retained bundles/checkpoints/baselines;
+- capacity journal одного тика;
+- output capacity декодеров;
+- число и bytes сообщений в delivery queues;
+- send slots и bytes каждой GNS lane;
+- outstanding receive leases;
+- transport callback/receive work budget;
+- session hold и handshake capacity.
+
+Prepared API (`try_write`, `try_encode`, `*_into`, receive into span) не увеличивает outer storage во
+время работы. Allocating convenience API остаётся отдельным. Budget отказ возвращает status и не
+публикует partial document, delta, baseline или live state.
+
+Borrowed views имеют короткий явный lifetime: decoded span — пока неизменен receive buffer; history
+view — до следующей мутации; in-memory consume value — до возврата callback; GNS payload — до
+освобождения lease. Всё, что пересекает frame, tick или thread boundary, должно владеть bytes либо
+переносить owning handle.
+
+---
+
+## Решения списком
+
+- Session orchestration принадлежит main thread; transport pump может идти каждый rendered frame,
+  causal integration — только на fixed tick boundary.
+- Authority определяет canonical history; physical arrival order никогда не становится gameplay
+  order.
+- Connection, logical peer и principal — разные идентичности.
+- Compatibility проверяется до identity; reconnect credential — до ответа retention table, который
+  мог бы сообщить постороннему, существует ли удерживаемая session.
+- Clock, nonce generation, join identity provider и concrete MAC primitive инъецируются.
+- Checkpoint — полный causal state после тика; baseline — полное состояние только выбранной
+  replication projection.
+- Empty tick — явный bundle.
+- State replacement и session recovery транзакционны.
+- Presentation подавляется во время authoritative replay.
+- Unacknowledged local intent может быть отклонён при prediction replay; authority-sealed intent —
+  уже история и не переоценивается.
+- Relevant set — per-client disclosure boundary.
+- Quantization уменьшает traffic, но не доказывает равенство состояния.
+- Backpressure принадлежит каждому классу отдельно: потеря transform допустима, потеря canonical
+  bundle — session fault.
+- Никакой transport completion не считается gameplay acknowledgement без отдельного протокола.
+
+---
+
+## Чего пока нет
+
+- общего project-facing `network_session_system`, компонующего transport, handshake, tick integration
+  и recovery в main loop;
+- production wire formats для canonical bundle, state frame, recovery plan и checkpoint transfer;
+- полного client prediction reconciliation с acknowledged input horizon;
+- project identity provider, authority key storage/rotation и ticket revocation до expiry;
+- authority election/migration protocol;
+- mid-session fresh join с initial authoritative state transfer;
+- compression/download scheduler для больших checkpoints;
+- реальной gameplay correction/interpolation поверх transform frames;
+- public-network hardening, discovery, relay/P2P signaling и operational server layer.
+
+Эти границы не заполняются скрытой политикой внутри низкого уровня. Новый механизм появляется тогда,
+когда названы его owner, budgets, wire identity, точка публикации в main loop и поведение при отказе.

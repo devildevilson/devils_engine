@@ -2230,6 +2230,14 @@ measured to need a run tens of seconds long, not merely a remote one — and a p
 - Test a deliberately older compatible message version and a deliberately breaking version.
 - Compare canonical decoded messages rather than backend packet bytes.
 
+**Completed locally, 2026-09-09.** The real multi-process UDP stand now runs current envelope version 2,
+the explicitly retained compatible version 1, six one-field compatibility mismatches, and an unsupported
+future version 3. Version 1 completes the whole authority + three-follower scenario at the same tick and root
+as version 2. Every incompatible case stops at tick zero with its exact refusal reason and with zero challenge
+or credential-policy calls. The matrix passes `125/125` harness checks in GCC Debug and Release; the wire suite
+passes `13/13`, `381/381`. Cross-build roots already agree across GCC 14/16, Debug/Release, baseline/AVX and two
+Linux machines; Linux↔Windows/MSVC remains useful additional evidence, not an unimplemented protocol path.
+
 Done when the compatibility matrix reports either successful exchange with the promised root contract or one
 precise pre-simulation rejection reason; "different build" never means silently accepting an unknown schema.
 

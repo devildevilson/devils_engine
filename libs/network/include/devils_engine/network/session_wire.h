@@ -27,7 +27,13 @@
 namespace devils_engine::network {
 
 inline constexpr uint32_t session_wire_magic = UINT32_C(0x4853574e); // "NWSH"
-inline constexpr uint16_t session_wire_envelope_version = 1;
+// Versions 1 and 2 have the same canonical payload grammar. The envelope range
+// is explicit so a new build may retain an old decoder without treating every
+// lower number as compatible. A handshake selects one version in its hello and
+// uses it for the whole exchange; an unknown version gets a current-version
+// refusal because emitting bytes in an unknown grammar would only guess.
+inline constexpr uint16_t session_wire_envelope_version = 2;
+inline constexpr uint16_t session_wire_oldest_compatible_envelope_version = 1;
 inline constexpr size_t session_wire_header_bytes = 12;
 inline constexpr size_t session_wire_max_payload_bytes = 512;
 inline constexpr size_t session_wire_max_message_bytes =
@@ -76,11 +82,12 @@ enum class session_refusal_reason : uint8_t {
   malformed_message = 8,
   unexpected_message = 9,
   unknown_session = 10,
-  no_capacity = 11
+  no_capacity = 11,
+  unsupported_wire_version = 12
 };
 
 inline constexpr uint8_t session_refusal_reason_max =
-  uint8_t(session_refusal_reason::no_capacity);
+  uint8_t(session_refusal_reason::unsupported_wire_version);
 
 // Decoded opaque spans point into the caller's received buffer. They are valid
 // only while that buffer is unchanged; a consumer which keeps a credential must
@@ -119,15 +126,22 @@ struct session_refused {
 
 struct session_wire_message {
   session_message_type type = session_message_type::client_hello;
+  uint16_t envelope_version = 0;
   std::span<const std::byte> payload;
 };
 
 namespace detail {
 
-inline void wire_begin(state_writer& w, const session_message_type type,
+[[nodiscard]] inline constexpr bool supported_envelope_version(const uint16_t version) noexcept {
+  return version >= session_wire_oldest_compatible_envelope_version &&
+         version <= session_wire_envelope_version;
+}
+
+inline void wire_begin(state_writer& w, const uint16_t version,
+                       const session_message_type type,
                        size_t& length_at) {
   w.u32(session_wire_magic);
-  w.u16(session_wire_envelope_version);
+  w.u16(version);
   w.u8(uint8_t(type));
   w.u8(0); // Reserved; a nonzero value is a refusal, never a silent skip.
   length_at = w.position();
@@ -179,10 +193,12 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   return session_wire_status::ok;
 }
 
-[[nodiscard]] inline session_wire_status begin_encode(std::vector<std::byte>& out) noexcept {
+[[nodiscard]] inline session_wire_status begin_encode(std::vector<std::byte>& out,
+                                                       const uint16_t version) noexcept {
   out.clear();
+  if (!supported_envelope_version(version)) return session_wire_status::unsupported_envelope;
   return out.capacity() >= session_wire_header_bytes ? session_wire_status::ok
-                                                     : session_wire_status::buffer_too_small;
+                                                      : session_wire_status::buffer_too_small;
 }
 
 } // namespace detail
@@ -191,26 +207,30 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 // session message which does not fit its declared budget is a fault, not a
 // reallocation. Reserve session_wire_max_message_bytes once per output buffer.
 [[nodiscard]] inline session_wire_status try_encode(const client_hello& message,
-                                                    std::vector<std::byte>& out) {
-  if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
+                                                     std::vector<std::byte>& out,
+                                                     const uint16_t version =
+                                                       session_wire_envelope_version) {
+  if (const auto status = detail::begin_encode(out, version); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
   size_t length_at = 0;
-  detail::wire_begin(w, session_message_type::client_hello, length_at);
+  detail::wire_begin(w, version, session_message_type::client_hello, length_at);
   detail::write_compatibility(w, message.compatibility);
   w.bytes(message.client_nonce);
   return detail::wire_end(w, length_at);
 }
 
 [[nodiscard]] inline session_wire_status try_encode(const authority_challenge& message,
-                                                    std::vector<std::byte>& out) {
+                                                     std::vector<std::byte>& out,
+                                                     const uint16_t version =
+                                                       session_wire_envelope_version) {
   if (message.challenge.size() > session_wire_max_challenge_bytes)
     return session_wire_status::too_large;
-  if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
+  if (const auto status = detail::begin_encode(out, version); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
   size_t length_at = 0;
-  detail::wire_begin(w, session_message_type::authority_challenge, length_at);
+  detail::wire_begin(w, version, session_message_type::authority_challenge, length_at);
   detail::write_compatibility(w, message.compatibility);
   w.bytes(message.authority_nonce);
   w.u32(uint32_t(message.challenge.size()));
@@ -219,16 +239,18 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 }
 
 [[nodiscard]] inline session_wire_status try_encode(const client_response& message,
-                                                    std::vector<std::byte>& out) {
+                                                     std::vector<std::byte>& out,
+                                                     const uint16_t version =
+                                                       session_wire_envelope_version) {
   if (message.credential.size() > session_wire_max_credential_bytes)
     return session_wire_status::too_large;
   if (message.confirmed.has_value() && !message.resumed_session.has_value())
     return session_wire_status::invalid_field;
-  if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
+  if (const auto status = detail::begin_encode(out, version); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
   size_t length_at = 0;
-  detail::wire_begin(w, session_message_type::client_response, length_at);
+  detail::wire_begin(w, version, session_message_type::client_response, length_at);
   w.u32(uint32_t(message.credential.size()));
   w.bytes(message.credential);
   w.u8(uint8_t(message.resumed_session.has_value()));
@@ -240,12 +262,14 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 }
 
 [[nodiscard]] inline session_wire_status try_encode(const session_accepted& message,
-                                                    std::vector<std::byte>& out) {
-  if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
+                                                     std::vector<std::byte>& out,
+                                                     const uint16_t version =
+                                                       session_wire_envelope_version) {
+  if (const auto status = detail::begin_encode(out, version); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
   size_t length_at = 0;
-  detail::wire_begin(w, session_message_type::session_accepted, length_at);
+  detail::wire_begin(w, version, session_message_type::session_accepted, length_at);
   w.u64(message.session);
   w.u64(message.local_peer);
   w.u64(message.authority_peer);
@@ -255,15 +279,17 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 }
 
 [[nodiscard]] inline session_wire_status try_encode(const session_refused& message,
-                                                    std::vector<std::byte>& out) {
+                                                     std::vector<std::byte>& out,
+                                                     const uint16_t version =
+                                                       session_wire_envelope_version) {
   if (uint8_t(message.reason) > session_refusal_reason_max ||
       message.reason == session_refusal_reason::none)
     return session_wire_status::invalid_field;
-  if (const auto status = detail::begin_encode(out); status != session_wire_status::ok)
+  if (const auto status = detail::begin_encode(out, version); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
   size_t length_at = 0;
-  detail::wire_begin(w, session_message_type::session_refused, length_at);
+  detail::wire_begin(w, version, session_message_type::session_refused, length_at);
   w.u8(uint8_t(message.reason));
   return detail::wire_end(w, length_at);
 }
@@ -277,7 +303,13 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   if (bytes.size() < session_wire_header_bytes) return session_wire_status::truncated;
   state_reader r(bytes);
   if (r.u32() != session_wire_magic) return session_wire_status::bad_magic;
-  if (r.u16() != session_wire_envelope_version) return session_wire_status::unsupported_envelope;
+  const auto version = r.u16();
+  // Preserve the version even when it is unsupported. The first hello needs a
+  // precise unsupported-version refusal, while an exchange which already
+  // selected a version must diagnose the same bytes as a mid-handshake change.
+  out.envelope_version = version;
+  if (!detail::supported_envelope_version(version))
+    return session_wire_status::unsupported_envelope;
   const auto type = r.u8();
   if (type == 0 || type > session_message_type_max) return session_wire_status::unknown_message_type;
   if (r.u8() != 0) return session_wire_status::invalid_field;
@@ -288,6 +320,7 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   if (length > available) return session_wire_status::truncated;
   if (length < available) return session_wire_status::trailing_bytes;
   out.type = session_message_type(type);
+  out.envelope_version = version;
   out.payload = bytes.subspan(session_wire_header_bytes, length);
   return session_wire_status::ok;
 }
@@ -461,6 +494,12 @@ namespace detail {
   return session_refusal_reason::malformed_message;
 }
 
+[[nodiscard]] inline session_refusal_reason refusal_of(const session_wire_status status) noexcept {
+  return status == session_wire_status::unsupported_envelope
+           ? session_refusal_reason::unsupported_wire_version
+           : session_refusal_reason::malformed_message;
+}
+
 } // namespace detail
 
 // Both roles are ordered state machines over decoded messages. A message which
@@ -502,16 +541,24 @@ public:
                                             Policy& policy) {
     session_wire_message envelope;
     if (const auto status = try_peek_session_message(message, envelope);
-        status != session_wire_status::ok)
-      return refuse(reply, session_refusal_reason::malformed_message, status);
+        status != session_wire_status::ok) {
+      const auto reason = phase_ == handshake_phase::awaiting_response &&
+                              status == session_wire_status::unsupported_envelope
+                            ? session_refusal_reason::malformed_message
+                            : detail::refusal_of(status);
+      return refuse(reply, reason, status);
+    }
 
     switch (phase_) {
       case handshake_phase::awaiting_hello:
         if (envelope.type != session_message_type::client_hello)
           return refuse(reply, session_refusal_reason::unexpected_message,
                         session_wire_status::ok);
-        return on_hello(message, envelope.payload, reply, policy);
+        return on_hello(message, envelope, reply, policy);
       case handshake_phase::awaiting_response:
+        if (envelope.envelope_version != envelope_version_)
+          return refuse(reply, session_refusal_reason::malformed_message,
+                        session_wire_status::ok);
         if (envelope.type != session_message_type::client_response)
           return refuse(reply, session_refusal_reason::unexpected_message,
                         session_wire_status::ok);
@@ -525,10 +572,11 @@ public:
 private:
   template <authority_handshake_policy Policy>
   session_wire_status on_hello(const std::span<const std::byte> message,
-                               const std::span<const std::byte> payload,
+                               const session_wire_message& envelope,
                                std::vector<std::byte>& reply, Policy& policy) {
+    envelope_version_ = envelope.envelope_version;
     client_hello hello;
-    if (const auto status = try_decode(payload, hello); status != session_wire_status::ok)
+    if (const auto status = try_decode(envelope.payload, hello); status != session_wire_status::ok)
       return refuse(reply, session_refusal_reason::malformed_message, status);
 
     // Compatibility is answered before the policy sees anything: an installation
@@ -548,7 +596,8 @@ private:
     // which passes one buffer for both would otherwise hash the reply twice.
     transcript_.absorb(message);
     const authority_challenge answer{local_, nonce_, challenge_};
-    if (const auto status = try_encode(answer, reply); status != session_wire_status::ok) {
+    if (const auto status = try_encode(answer, reply, envelope_version_);
+        status != session_wire_status::ok) {
       phase_ = handshake_phase::refused;
       refusal_ = session_refusal_reason::malformed_message;
       return status;
@@ -569,7 +618,8 @@ private:
     const auto reason = policy.admit(response, transcript_.seal(), granted);
     if (reason != session_refusal_reason::none)
       return refuse(reply, reason, session_wire_status::ok);
-    if (const auto status = try_encode(granted, reply); status != session_wire_status::ok) {
+    if (const auto status = try_encode(granted, reply, envelope_version_);
+        status != session_wire_status::ok) {
       phase_ = handshake_phase::refused;
       refusal_ = session_refusal_reason::malformed_message;
       return status;
@@ -584,7 +634,7 @@ private:
                              const session_wire_status status) {
     phase_ = handshake_phase::refused;
     refusal_ = reason;
-    const auto encoded = try_encode(session_refused{reason}, reply);
+    const auto encoded = try_encode(session_refused{reason}, reply, envelope_version_);
     if (encoded != session_wire_status::ok) reply.clear();
     return status == session_wire_status::ok ? session_wire_status::ok : status;
   }
@@ -594,6 +644,7 @@ private:
   session_transcript transcript_;
   std::vector<std::byte> challenge_;
   session_accepted accepted_;
+  uint16_t envelope_version_ = session_wire_envelope_version;
   handshake_phase phase_ = handshake_phase::awaiting_hello;
   session_refusal_reason refusal_ = session_refusal_reason::none;
 };
@@ -603,8 +654,10 @@ public:
   client_handshake(const session_compatibility& local, const session_nonce& nonce,
                    const std::optional<uint64_t> resumed_session = std::nullopt,
                    const std::optional<recovery_anchor<uint64_t, utils::digest>> confirmed =
-                     std::nullopt) noexcept
-    : local_(local), nonce_(nonce), resumed_session_(resumed_session), confirmed_(confirmed) {}
+                     std::nullopt,
+                   const uint16_t envelope_version = session_wire_envelope_version) noexcept
+    : local_(local), nonce_(nonce), resumed_session_(resumed_session), confirmed_(confirmed),
+      envelope_version_(envelope_version) {}
 
   [[nodiscard]] handshake_phase phase() const noexcept {
     return phase_;
@@ -624,7 +677,8 @@ public:
   [[nodiscard]] session_wire_status start(std::vector<std::byte>& out) {
     if (phase_ != handshake_phase::unsent) return session_wire_status::invalid_field;
     const client_hello hello{local_, nonce_};
-    if (const auto status = try_encode(hello, out); status != session_wire_status::ok)
+    if (const auto status = try_encode(hello, out, envelope_version_);
+        status != session_wire_status::ok)
       return status;
     transcript_.absorb(out);
     phase_ = handshake_phase::awaiting_challenge;
@@ -640,6 +694,9 @@ public:
       stop(session_refusal_reason::malformed_message);
       return status;
     }
+
+    if (envelope.envelope_version != envelope_version_)
+      return refuse(reply, session_refusal_reason::malformed_message);
 
     if (envelope.type == session_message_type::session_refused) {
       session_refused refused;
@@ -696,7 +753,8 @@ private:
     }
 
     const client_response response{credential_, resumed_session_, confirmed_};
-    if (const auto status = try_encode(response, reply); status != session_wire_status::ok) {
+    if (const auto status = try_encode(response, reply, envelope_version_);
+        status != session_wire_status::ok) {
       stop(session_refusal_reason::malformed_message);
       return status;
     }
@@ -727,7 +785,8 @@ private:
   session_wire_status refuse(std::vector<std::byte>& reply,
                              const session_refusal_reason reason) {
     stop(reason);
-    if (try_encode(session_refused{reason}, reply) != session_wire_status::ok) reply.clear();
+    if (try_encode(session_refused{reason}, reply, envelope_version_) != session_wire_status::ok)
+      reply.clear();
     return session_wire_status::ok;
   }
 
@@ -738,6 +797,7 @@ private:
   session_transcript transcript_;
   std::vector<std::byte> credential_;
   session_accepted accepted_;
+  uint16_t envelope_version_ = session_wire_envelope_version;
   handshake_phase phase_ = handshake_phase::unsent;
   session_refusal_reason refusal_ = session_refusal_reason::none;
 };

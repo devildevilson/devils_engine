@@ -1,0 +1,8 @@
+// Мозг добычи (первый живой пример per-entity goap_ref, 2026-07-19): наследует общий граф и
+// ОТКЛЮЧАЕТ хищные действия — chase и eat выпадают из плоской acumen::system целиком, flee и
+// бытовой цикл (think/seek_food/wander) остаются. Метрики наследуются как есть: их имена — общее
+// act-пространство слайса, дедуп по origin регистрирует их один раз (см. build_goap_from_config).
+
+base = actor_base
+
+disable_actions = [ chase, eat ]

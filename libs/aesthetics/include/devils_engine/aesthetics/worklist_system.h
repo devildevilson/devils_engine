@@ -15,9 +15,9 @@
 // worklist_system — параллельный map по ЯВНОМУ списку сущностей (work-list) с per-thread scratch.
 // В отличие от template_system (обход всего query по компонентам) обходит произвольное ПОДМНОЖЕСТВО,
 // заранее отобранное вызывающим (select/budget-шаг). Это think-примитив бюджетируемых систем:
-// [select → worklist] → [aesthetics::run → сообщения]. Каждому потоку — своя scratch-полоса
-// (slot = pool.thread_index; 0 = вызывающий поток, он тоже берёт чанк), полосы переиспользуются между
-// тиками (реаллокация лишь при смене числа потоков). process пишет ТОЛЬКО «свою» сущность (её слот в
+// [select → worklist] → [aesthetics::run → сообщения]. Каждому ЧАНКУ работы — своя scratch-полоса
+// (slot выводится из начала диапазона, а НЕ из id потока: см. enqueue), полосы переиспользуются
+// между тиками (реаллокация лишь при смене числа потоков). process пишет ТОЛЬКО «свою» сущность (её слот в
 // message_buffer / её компонент) ⇒ потоки трогают непересекающуюся память, локов нет. Детерминизм
 // ПОРЯДКА выхода обеспечивает потребитель (message_buffer, обход по индексу), а не порядок work-list.
 //
@@ -71,11 +71,20 @@ public:
     if (lanes_.size() != slots) {
       lanes_.resize(slots);
     }
+    // Полоса принадлежит ЧАНКУ РАБОТЫ, а не потоку ОС.
+    //
+    // Раньше слот брался как pool.thread_index(this_thread::get_id()), то есть чанк получал ту
+    // полосу, чей воркер его подхватил — а это от запуска к запуску разное. Любое состояние,
+    // живущее в полосе между сущностями (у GOAP это контейнер A* и кеш планов), становилось от
+    // этого невоспроизводимым: один и тот же мир на одном и том же числе потоков давал разные
+    // результаты в разных прогонах. Чанки у distribute1 непересекающиеся, их не больше числа
+    // полос, и каждый исполняется целиком одним потоком — поэтому индексация по началу диапазона
+    // сохраняет и «непересекающаяся память», и воспроизводимость.
+    const size_t chunk = size_t((worklist_.size() + slots - 1) / slots);
     target_pool.distribute1(
       worklist_.size(),
-      [this, &target_pool](const size_t start, const size_t count, const size_t tick) {
-        const uint32_t slot = target_pool.thread_index(std::this_thread::get_id());
-        auto& scratch = lanes_[size_t(slot)];
+      [this, chunk](const size_t start, const size_t count, const size_t tick) {
+        auto& scratch = lanes_[chunk == 0 ? 0 : start / chunk];
         for (size_t i = start; i < start + count; ++i) {
           process(worklist_[i], scratch, tick);
         }

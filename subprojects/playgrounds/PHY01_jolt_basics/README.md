@@ -40,6 +40,25 @@ threads Jolt; вызывающий поток также исполняет jobs
 - общий `utils::deterministic_sort` адаптирован из Jolt, фиксирует перестановку равных элементов и
   уже заменил `std::sort` на canonical map path сериализации.
 
+## Третий срез
+
+- внешний `body_handle` теперь содержит world token, slot и generation. Удаление немедленно
+  инвалидирует старый handle; переиспользованный slot получает следующую ненулевую generation;
+- capacity exhaustion во время `CreateBody` откатывает все созданные Jolt bodies, не публикует ни
+  один slot и оставляет command batch доступным для исправления и повторного commit;
+- опубликованное тело можно удалить, а pending-команду отменить через один lifecycle seam;
+- `BodyCreationSettings::mUserData` несёт slot+generation. Поэтому mapping после
+  `AddBodiesPrepare`, который вправе переставить scratch, восстанавливается по identity, а не по
+  позиции в массиве;
+- contact callbacks только записывают compact events под mutex в заранее подготовленный bounded
+  buffer. После `Update` caller переводит их во внешние handles и сортирует по полному стабильному
+  ключу; arrival order worker threads наружу не выходит;
+- отдельный cache body/sub-shape pair сохраняет identity для `OnContactRemoved`, где Jolt прямо
+  запрещает обращаться к уже уничтоженным bodies. Overflow и unresolved removal являются явной
+  ошибкой проверки, а не тихой потерей события;
+- serial и four-worker прогоны сравнивают теперь не только state/ray, но и весь contact stream с
+  сохранёнными границами tick.
+
 Layer-derived broadphase filter строится только после заполнения исходных layer tables: его
 конструктор снимает с них snapshot. Проверка требует хотя бы один contact, поэтому неверный порядок
 инициализации не превращает fixture в незаметный тест свободного падения.
@@ -61,10 +80,11 @@ cross-platform determinism всё равно требует одинаковог
 
 ## Следующая граница
 
-Перед переносом в `libs/physics` площадке ещё нужны generation reuse/removal, transaction rollback
-при исчерпании capacity, shape/mesh cooking budgets и явная transform authority между ECS и physics.
-Contact callbacks приходят с worker threads и не имеют детерминированного порядка: adapter должен
-собирать их, сортировать по стабильным handles и публиковать только после `Update`.
+Перед переносом в `libs/physics` площадке ещё нужны shape/mesh cooking budgets и явная transform
+authority между ECS и physics: кто и в какой boundary пишет position/rotation, как teleport и
+kinematic target входят в command stream, и когда результат solver публикуется обратно. Нужны также
+batch removal и политика 32-bit generation wrap; текущий handle гарантирует отказ старого поколения,
+но после полного оборота счётчика прежнее значение математически повторится.
 
 Пока используется примерный `JPH::JobSystemThreadPool`. Подключить существующий `thread::atomic_pool`
 тонким callback недостаточно: Jolt создаёт динамический dependency graph, держит ref-counted jobs и

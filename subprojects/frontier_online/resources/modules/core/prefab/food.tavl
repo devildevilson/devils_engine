@@ -1,0 +1,5 @@
+// Prefab of food. Data component food_item comes from config; visual (green, food_size) and position
+// are derived in the slice on_construct (code constants + spawn point from spawn_args). One prefab per
+// file, so the prefab name is the file base name ("food"). Multiple prefabs per file: use list sections
+// (see config-file-convention) with a `name` field naming each.
+food_item = { nutrition = 1.0 }

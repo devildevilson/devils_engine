@@ -1,0 +1,5 @@
+// Конкретный профиль актора наследует общий humanoid-like граф. В derived-конфиге можно
+// переопределять одноимённые metrics/actions/goals, добавлять новые и отключать inherited entries
+// через disable_metrics/disable_actions/disable_goals.
+
+base = actor_base

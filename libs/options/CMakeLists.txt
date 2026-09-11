@@ -68,6 +68,9 @@ endif()
 
 # --- compile flags ------------------------------------------------------------
 target_compile_options(devils_engine_options INTERFACE
+  $<$<CXX_COMPILER_ID:GNU,Clang>:-ffp-contract=off>
+  $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>
+
   $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Zi /Wall /wd5045 /wd4820 /wd4514 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>

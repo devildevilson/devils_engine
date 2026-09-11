@@ -28,14 +28,14 @@ recorded here only after it is reproduced by an executable test or directly obse
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| SESSION-02 handshake wire format and ordered exchange | complete; 9/9 cases, 329/329 assertions in Debug and Release |
+| SESSION-02 handshake wire format and ordered exchange | complete; now 13/13 cases, 381/381 assertions in Debug and Release, including retained v1, pinned exchange versions and breaking v3 |
 | HOT-01 hot-path intent class and fixed point | complete; 10/10 cases, 325/325 assertions in Debug, Release and Clang |
 | HOT-02 transform frames and relevant set | complete; 10/10 cases, 598/598 assertions in GCC Debug and Release, and carried by NET-LAB-01 over real UDP between separate processes |
 | SESSION-03 reconnect credential | complete; 7/7 cases, 144/144 assertions in Debug, Release and Clang |
 | SESSION-04 automatic reconnect policy and recovery feasibility | complete; 7/7 cases, 173/173 assertions in Debug, Release and Clang |
 | Vendored protobuf for GNS | fixed; Linux and Windows now take protobuf from the same place |
 | Complete project suite | **578/578** in GCC Debug on 2026-09-09 |
-| Focused networking set | 134/134 by `ctest -R "network|NET0|NETLAB"` in GCC Debug and Release on 2026-09-09, including real localhost UDP and the multi-process stand |
+| Focused networking set | 138/138 by `ctest -R "network|NET0|NETLAB"` in GCC Debug and Release on 2026-09-09, including real localhost UDP and the multi-process stand |
 | Second toolchain (Clang + libc++) | networking/serialization set passes; all four portability defects now closed, the `devils_script` one upstream in v1.3.1 |
 | `devils_engine::network_gns` adapter | NET-08A/B/C complete; its closing focused set was 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
@@ -44,10 +44,61 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Session wire handshake and challenge/response | complete as a neutral slice; see SESSION-02 below |
 | HOT-02 over the stand | complete; 2 981 samples verified against the receiver's own computation, 0 corrections, both halves of the two-lane generation race staged and refused |
 | Automatic transport reconnect and multi-process exchange | NET-LAB-01 slices 1-3 complete: authority + 3 followers + intruder as separate processes, all roots equal; artifact relocatable (4 shared deps, glibc 2.38 floor) and addressed by `--listen`/`--connect`; a second machine is the remaining gap |
+| Compatible/incompatible build exchange | NET-LAB-02 complete locally: current v2 and compatible v1 run to one root; six compatibility-field mismatches and breaking v3 produce exact pre-tick refusals; 125/125 harness checks in GCC Debug and Release |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## NET-LAB-02 — one success contract and seven exact refusals, 2026-09-09
+
+The compatible and incompatible halves now use the SAME real multi-process UDP stand. The successful matrix
+does not compare GameNetworkingSockets packets — encryption, acknowledgements and timing make those transport
+artifacts intentionally different. It compares decoded protocol effects: every process reaches the same
+canonical state root at the same tick.
+
+### Wire compatibility is a bounded range, not `version <= mine`
+
+`session_wire.h` now declares envelope version 2 and an explicit oldest compatible version 1. Both versions
+carry the same frozen canonical payload grammar. A client selects one in its hello; both roles retain that
+version through challenge, response and acceptance, and changing version halfway through an exchange is
+malformed. Supporting version 1 is therefore a named retained decoder, not a promise that every historical
+number is readable forever.
+
+The three-follower continuous scenario was then run with every handshake through version 1. The established
+session reached tick 70 and root `8518737655127057956`, identical to version 2, including intents, canonical
+bundles, transform frames and two reconnects. Unit coverage separately decodes the old and current hello to the
+same logical message.
+
+Version 3 is deliberately unsupported. The authority reads only enough envelope to identify that fact, returns
+the new stable reason `unsupported_wire_version`, and does not parse compatibility, issue a challenge or inspect
+a credential. The refusal itself uses the current known grammar: emitting a response in an unknown grammar
+would be guessing what the other implementation owns.
+
+### Compatibility fails before identity and before time exists
+
+The process harness launches one authority and one follower for each independently perturbed field:
+
+| Follower differs in | Exact refusal |
+| --- | --- |
+| handshake format | `handshake_format_mismatch` |
+| protocol version | `protocol_version_mismatch` |
+| content root | `content_mismatch` |
+| state schema fingerprint | `state_schema_mismatch` |
+| intent schema fingerprint | `intent_schema_mismatch` |
+| numeric profile | `numeric_profile_mismatch` |
+| envelope version 3 | `unsupported_wire_version` |
+
+Each side asserts tick zero and the follower asserts zero applied bundles. The authority additionally counts the
+two policy boundaries and asserts **zero challenges issued and zero credential admission checks**. That is the
+meaning of pre-simulation refusal here: it is not inferred from a short run and it does not trust a later state
+root to imply that identity work was skipped.
+
+Verification: `network_session_wire_test` is **13/13 cases, 381/381 assertions** in GCC Debug and Release. The
+complete `NETLAB01_multi_process --verify --quiet` matrix is **125/125 harness checks** in both configurations;
+the per-message in-process count varies with scheduling as designed. The focused networking set is **138/138**
+in GCC Debug and Release. Existing cross-build compatible evidence remains GCC 14/16, Debug/Release, baseline/AVX and two
+Linux machines over 5G; Linux↔Windows/MSVC remains additional matrix evidence.
 
 ## HOT-02 carried by NET-LAB-01 — observed against modelled, 2026-09-09
 
@@ -147,7 +198,7 @@ answer that question. Naming the cadence class per slot in the membership messag
 left for a later slice rather than added on the way past.
 
 Verification: the full harness is **41/41 harness checks and 8 562 in-process checks across 11 processes**,
-both scenarios, all roots equal at the announced final tick. Focused networking set **134/134** in GCC Debug
+both scenarios, all roots equal at the announced final tick. Focused networking set **138/138** in GCC Debug
 and Release.
 
 ## HOT-02 — transform frames and the relevant set, 2026-09-09
@@ -242,7 +293,7 @@ exactly as HOT-01's intent class was closed as a primitive and then driven by NE
 
 Verification: **10/10 cases, 598/598 assertions** in GCC Debug and Release; the header and test are
 syntax-clean with `-Wall -Wextra` under GCC 14, Clang with libstdc++ and Clang with libc++. Focused networking
-set **134/134** in GCC Debug and Release; complete project suite **578/578** in GCC Debug.
+set **138/138** in GCC Debug and Release; complete project suite **578/578** in GCC Debug.
 
 ## NET-LAB-01 slice 3 — a relocatable artifact, 2026-09-08
 

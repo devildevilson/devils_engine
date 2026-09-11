@@ -18,6 +18,7 @@
 #include <Jolt/RegisterTypes.h>
 
 #include "devils_engine/utils/deterministic_math.h"
+#include "devils_engine/utils/deterministic_sort.h"
 
 #include <algorithm>
 #include <array>
@@ -33,6 +34,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -113,9 +115,12 @@ public:
 
 struct body_handle {
   uint32_t value = 0;
+  uint32_t generation = 0;
   uint64_t world = 0;
 
-  explicit operator bool() const noexcept { return value != 0 && world != 0; }
+  explicit operator bool() const noexcept {
+    return value != 0 && generation != 0 && world != 0;
+  }
   friend bool operator==(body_handle, body_handle) = default;
 };
 
@@ -164,22 +169,194 @@ private:
   std::vector<JPH::ShapeRefC> shapes_;
 };
 
-class contact_counter final : public JPH::ContactListener {
+enum class contact_phase : uint8_t { added, persisted, removed };
+
+struct contact_event {
+  contact_phase phase;
+  body_handle first;
+  body_handle second;
+  uint32_t first_sub_shape;
+  uint32_t second_sub_shape;
+};
+
+// Callbacks can arrive concurrently and their arrival order is not gameplay
+// evidence. Bodies carry the engine handle in user data, and removed contacts
+// are resolved through the pair cache populated while the bodies were readable.
+class contact_collector final : public JPH::ContactListener {
 public:
-  void OnContactAdded(
-      const JPH::Body&,
-      const JPH::Body&,
-      const JPH::ContactManifold&,
-      JPH::ContactSettings&) override {
-    added_.fetch_add(1, std::memory_order_relaxed);
+  explicit contact_collector(size_t max_contacts)
+      : contact_capacity_(max_contacts), event_capacity_(max_contacts * 2) {
+    active_.reserve(max_contacts);
+    pending_.reserve(event_capacity_);
   }
 
-  uint64_t added() const noexcept {
-    return added_.load(std::memory_order_relaxed);
+  void OnContactAdded(
+      const JPH::Body& first,
+      const JPH::Body& second,
+      const JPH::ContactManifold& manifold,
+      JPH::ContactSettings&) override {
+    record(contact_phase::added, first, second, manifold);
+  }
+
+  void OnContactPersisted(
+      const JPH::Body& first,
+      const JPH::Body& second,
+      const JPH::ContactManifold& manifold,
+      JPH::ContactSettings&) override {
+    record(contact_phase::persisted, first, second, manifold);
+  }
+
+  void OnContactRemoved(const JPH::SubShapeIDPair& pair) override {
+    std::scoped_lock lock(mutex_);
+    const contact_key key{
+        pair.GetBody1ID().GetIndexAndSequenceNumber(),
+        pair.GetBody2ID().GetIndexAndSequenceNumber(),
+        pair.GetSubShapeID1().GetValue(),
+        pair.GetSubShapeID2().GetValue()};
+    const auto it = std::find_if(active_.begin(), active_.end(), [&](const cached_contact& value) {
+      return value.key == key;
+    });
+    if (it == active_.end()) {
+      ++unresolved_removed_;
+      return;
+    }
+    if (pending_.size() >= event_capacity_) {
+      ++overflow_;
+    } else {
+      pending_.push_back({contact_phase::removed, it->first, it->second,
+                          it->first_sub_shape, it->second_sub_shape});
+    }
+    active_.erase(it);
+  }
+
+  std::vector<contact_event> drain(uint64_t world_token) {
+    std::vector<raw_event> raw;
+    {
+      std::scoped_lock lock(mutex_);
+      // Allocation/copy happens on the caller after Update. The callback-owned
+      // vector retains its prepared capacity for the next worker-thread batch.
+      raw = pending_;
+      pending_.clear();
+    }
+    std::vector<contact_event> events;
+    events.reserve(raw.size());
+    for (const raw_event& event : raw) {
+      events.push_back({
+          event.phase,
+          {event.first.value, event.first.generation, world_token},
+          {event.second.value, event.second.generation, world_token},
+          event.first_sub_shape,
+          event.second_sub_shape});
+    }
+    devils_engine::utils::deterministic_sort(
+        events.begin(), events.end(), [](const contact_event& left, const contact_event& right) {
+          const auto key = [](const contact_event& value) {
+            return std::array<uint32_t, 7>{
+                value.first.value, value.first.generation,
+                value.second.value, value.second.generation,
+                value.first_sub_shape, value.second_sub_shape,
+                uint32_t(value.phase)};
+          };
+          return key(left) < key(right);
+        });
+    return events;
+  }
+
+  uint64_t unresolved_removed() const noexcept {
+    return unresolved_removed_.load(std::memory_order_relaxed);
+  }
+
+  uint64_t overflow() const noexcept {
+    return overflow_.load(std::memory_order_relaxed);
   }
 
 private:
-  std::atomic<uint64_t> added_{0};
+  struct local_handle {
+    uint32_t value;
+    uint32_t generation;
+    friend bool operator==(local_handle, local_handle) = default;
+  };
+
+  struct contact_key {
+    uint32_t first_body;
+    uint32_t second_body;
+    uint32_t first_sub_shape;
+    uint32_t second_sub_shape;
+    friend bool operator==(contact_key, contact_key) = default;
+  };
+
+  struct raw_event {
+    contact_phase phase;
+    local_handle first;
+    local_handle second;
+    uint32_t first_sub_shape;
+    uint32_t second_sub_shape;
+  };
+
+  struct cached_contact {
+    contact_key key;
+    local_handle first;
+    local_handle second;
+    uint32_t first_sub_shape;
+    uint32_t second_sub_shape;
+  };
+
+  static local_handle unpack(uint64_t value) noexcept {
+    return {uint32_t(value), uint32_t(value >> 32)};
+  }
+
+  static bool less(local_handle left, local_handle right) noexcept {
+    return left.value < right.value
+        || (left.value == right.value && left.generation < right.generation);
+  }
+
+  void record(
+      contact_phase phase,
+      const JPH::Body& body1,
+      const JPH::Body& body2,
+      const JPH::ContactManifold& manifold) {
+    const contact_key key{
+        body1.GetID().GetIndexAndSequenceNumber(),
+        body2.GetID().GetIndexAndSequenceNumber(),
+        manifold.mSubShapeID1.GetValue(),
+        manifold.mSubShapeID2.GetValue()};
+    local_handle first = unpack(body1.GetUserData());
+    local_handle second = unpack(body2.GetUserData());
+    uint32_t first_sub_shape = manifold.mSubShapeID1.GetValue();
+    uint32_t second_sub_shape = manifold.mSubShapeID2.GetValue();
+    if (less(second, first)) {
+      std::swap(first, second);
+      std::swap(first_sub_shape, second_sub_shape);
+    }
+
+    std::scoped_lock lock(mutex_);
+    const auto it = std::find_if(active_.begin(), active_.end(), [&](const cached_contact& value) {
+      return value.key == key;
+    });
+    const cached_contact cached{key, first, second, first_sub_shape, second_sub_shape};
+    if (it == active_.end()) {
+      if (active_.size() >= contact_capacity_) {
+        ++overflow_;
+        return;
+      }
+      active_.push_back(cached);
+    } else {
+      *it = cached;
+    }
+    if (pending_.size() >= event_capacity_) {
+      ++overflow_;
+    } else {
+      pending_.push_back({phase, first, second, first_sub_shape, second_sub_shape});
+    }
+  }
+
+  const size_t contact_capacity_;
+  const size_t event_capacity_;
+  mutable std::mutex mutex_;
+  std::vector<raw_event> pending_;
+  std::vector<cached_contact> active_;
+  std::atomic<uint64_t> unresolved_removed_{0};
+  std::atomic<uint64_t> overflow_{0};
 };
 
 struct ray_hit {
@@ -194,6 +371,12 @@ struct ray_hit {
 class physics_world final {
 public:
   enum class mode { queries_only, simulation };
+  enum class publish_status { published, nothing_pending, body_capacity_exhausted };
+
+  struct publish_result {
+    publish_status status;
+    size_t count;
+  };
 
   physics_world(
       const shape_catalog& shapes,
@@ -202,7 +385,8 @@ public:
       const uint32_t worker_threads)
       : shapes_(shapes),
         pair_filter_(layers::count),
-        broad_phase_(layers::count, broad_phase_layers::count) {
+        broad_phase_(layers::count, broad_phase_layers::count),
+        contacts_(std::max<JPH::uint>(1024, max_bodies * 4)) {
     pair_filter_.EnableCollision(layers::static_body, layers::moving_body);
     pair_filter_.EnableCollision(layers::moving_body, layers::moving_body);
     broad_phase_.MapObjectToBroadPhaseLayer(
@@ -242,9 +426,9 @@ public:
   ~physics_world() {
     auto& bodies = system_.GetBodyInterface();
     for (auto it = body_slots_.rbegin(); it != body_slots_.rend(); ++it) {
-      if (it->IsInvalid()) continue;
-      bodies.RemoveBody(*it);
-      bodies.DestroyBody(*it);
+      if (it->state != slot_state::published) continue;
+      bodies.RemoveBody(it->id);
+      bodies.DestroyBody(it->id);
     }
   }
 
@@ -255,9 +439,17 @@ public:
       shape_handle shape,
       JPH::RVec3Arg position,
       JPH::EMotionType motion) {
-    const body_handle handle{
-        static_cast<uint32_t>(body_slots_.size() + 1), world_token_};
-    body_slots_.emplace_back();
+    uint32_t slot_index = 0;
+    if (free_slots_.empty()) {
+      slot_index = static_cast<uint32_t>(body_slots_.size());
+      body_slots_.push_back({});
+    } else {
+      slot_index = free_slots_.back();
+      free_slots_.pop_back();
+    }
+    body_slot& slot = body_slots_[slot_index];
+    slot.state = slot_state::pending;
+    const body_handle handle{slot_index + 1, slot.generation, world_token_};
     pending_.push_back({
         handle,
         shapes_.resolve(shape),
@@ -269,8 +461,11 @@ public:
   }
 
   void add_impulse(body_handle handle, JPH::Vec3Arg impulse) {
-    validate(handle);
-    if (body_slots_[handle.value - 1].IsInvalid()) {
+    if (!is_alive(handle)) {
+      std::fputs("PHY01: stale or foreign body handle\n", stderr);
+      std::abort();
+    }
+    if (body_slots_[handle.value - 1].state == slot_state::pending) {
       for (auto& body : pending_) {
         if (body.handle == handle) {
           body.impulse += impulse;
@@ -283,26 +478,49 @@ public:
     system_.GetBodyInterface().AddImpulse(resolve(handle), impulse);
   }
 
-  size_t publish_pending() {
-    if (pending_.empty()) return 0;
+  bool is_alive(body_handle handle) const noexcept {
+    if (!handle || handle.world != world_token_ || handle.value > body_slots_.size()) return false;
+    const body_slot& slot = body_slots_[handle.value - 1];
+    return slot.generation == handle.generation && slot.state != slot_state::free;
+  }
+
+  bool destroy_body(body_handle handle) {
+    if (!is_alive(handle)) return false;
+    body_slot& slot = body_slots_[handle.value - 1];
+    if (slot.state == slot_state::pending) {
+      const auto it = std::find_if(pending_.begin(), pending_.end(), [&](const pending_body& value) {
+        return value.handle == handle;
+      });
+      if (it == pending_.end()) std::abort();
+      pending_.erase(it);
+    } else {
+      auto& bodies = system_.GetBodyInterface();
+      bodies.RemoveBody(slot.id);
+      bodies.DestroyBody(slot.id);
+    }
+    release_slot(handle.value - 1);
+    return true;
+  }
+
+  publish_result publish_pending() {
+    if (pending_.empty()) return {publish_status::nothing_pending, 0};
     auto& bodies = system_.GetBodyInterface();
     std::vector<JPH::BodyID> batch;
     batch.reserve(pending_.size());
     for (const pending_body& pending : pending_) {
-      const JPH::BodyCreationSettings settings(
+      JPH::BodyCreationSettings settings(
           pending.shape,
           pending.position,
           JPH::Quat::sIdentity(),
           pending.motion,
           pending.layer);
+      settings.mUserData = pack(pending.handle);
       JPH::Body* body = bodies.CreateBody(settings);
       if (body == nullptr) {
         for (const JPH::BodyID created : batch) bodies.DestroyBody(created);
-        std::fputs("PHY01: body capacity exhausted during batch prepare\n", stderr);
-        std::abort();
+        return {publish_status::body_capacity_exhausted, 0};
       }
       const JPH::BodyID id = body->GetID();
-      body_slots_[pending.handle.value - 1] = id;
       batch.push_back(id);
     }
 
@@ -311,18 +529,28 @@ public:
     const auto add_state = bodies.AddBodiesPrepare(batch.data(), int(batch.size()));
     bodies.AddBodiesFinalize(
         batch.data(), int(batch.size()), add_state, JPH::EActivation::Activate);
-    for (const pending_body& pending : pending_) {
+    for (size_t i = 0; i < pending_.size(); ++i) {
+      const pending_body& pending = pending_[i];
+      body_slot& slot = body_slots_[pending.handle.value - 1];
+      // batch may have been shuffled, so recover the ID through the user data
+      // attached to each created body rather than pairing by array index.
+      const auto it = std::find_if(batch.begin(), batch.end(), [&](JPH::BodyID id) {
+        return bodies.GetUserData(id) == pack(pending.handle);
+      });
+      if (it == batch.end()) std::abort();
+      slot.id = *it;
+      slot.state = slot_state::published;
       if (!pending.impulse.IsNearZero())
         bodies.AddImpulse(resolve(pending.handle), pending.impulse);
     }
     const size_t count = pending_.size();
     pending_.clear();
-    return count;
+    return {publish_status::published, count};
   }
 
   void optimize() { system_.OptimizeBroadPhase(); }
 
-  void step(float delta_time) {
+  std::vector<contact_event> step(float delta_time) {
     if (temp_allocator_ == nullptr || job_system_ == nullptr) {
       std::fputs("PHY01: a queries-only world cannot be stepped\n", stderr);
       std::abort();
@@ -334,6 +562,7 @@ public:
       std::fprintf(stderr, "PHY01: PhysicsSystem::Update error 0x%x\n", unsigned(error));
       std::abort();
     }
+    return contacts_.drain(world_token_);
   }
 
   ray_hit cast_ray(JPH::RVec3Arg origin, JPH::Vec3Arg direction) const {
@@ -343,8 +572,10 @@ public:
     }
 
     for (size_t i = 0; i < body_slots_.size(); ++i) {
-      if (body_slots_[i] == result.mBodyID) {
-        return {body_handle{static_cast<uint32_t>(i + 1), world_token_}, result.mFraction};
+      const body_slot& slot = body_slots_[i];
+      if (slot.state == slot_state::published && slot.id == result.mBodyID) {
+        return {body_handle{static_cast<uint32_t>(i + 1), slot.generation, world_token_},
+                result.mFraction};
       }
     }
     std::fputs("PHY01: ray returned an unowned body\n", stderr);
@@ -363,14 +594,18 @@ public:
       std::fputs("PHY01: cannot snapshot an unpublished body batch\n", stderr);
       std::abort();
     }
-    bytes.reserve(body_slots_.size() * 64);
+    bytes.reserve(body_slots_.size() * 68);
     const auto& bodies = system_.GetBodyInterface();
-    for (const JPH::BodyID id : body_slots_) {
+    for (size_t i = 0; i < body_slots_.size(); ++i) {
+      const body_slot& slot = body_slots_[i];
+      if (slot.state != slot_state::published) continue;
+      const JPH::BodyID id = slot.id;
       const JPH::RVec3 position = bodies.GetPosition(id);
       const JPH::Quat rotation = bodies.GetRotation(id);
       const JPH::Vec3 linear = bodies.GetLinearVelocity(id);
       const JPH::Vec3 angular = bodies.GetAngularVelocity(id);
-      append(bytes, id.GetIndexAndSequenceNumber());
+      append(bytes, static_cast<uint32_t>(i + 1));
+      append(bytes, slot.generation);
       append(bytes, position.GetX());
       append(bytes, position.GetY());
       append(bytes, position.GetZ());
@@ -393,7 +628,11 @@ public:
     return worker_starts_.load(std::memory_order_relaxed);
   }
 
-  uint64_t contacts_added() const noexcept { return contacts_.added(); }
+  uint64_t unresolved_removed_contacts() const noexcept {
+    return contacts_.unresolved_removed();
+  }
+
+  uint64_t contact_overflow() const noexcept { return contacts_.overflow(); }
 
 private:
   template <typename T>
@@ -413,33 +652,51 @@ private:
     JPH::Vec3 impulse;
   };
 
-  void validate(body_handle handle) const {
-    if (!handle || handle.world != world_token_ || handle.value > body_slots_.size()) {
-      std::fputs("PHY01: stale or foreign body handle\n", stderr);
-      std::abort();
-    }
+  enum class slot_state : uint8_t { free, pending, published };
+
+  struct body_slot {
+    JPH::BodyID id;
+    uint32_t generation = 1;
+    slot_state state = slot_state::free;
+  };
+
+  static uint64_t pack(body_handle handle) noexcept {
+    return uint64_t(handle.generation) << 32 | handle.value;
+  }
+
+  void release_slot(uint32_t slot_index) {
+    body_slot& slot = body_slots_[slot_index];
+    slot.id = JPH::BodyID{};
+    slot.state = slot_state::free;
+    ++slot.generation;
+    if (slot.generation == 0) ++slot.generation;
+    free_slots_.push_back(slot_index);
   }
 
   JPH::BodyID resolve(body_handle handle) const {
-    validate(handle);
-    const JPH::BodyID id = body_slots_[handle.value - 1];
-    if (id.IsInvalid()) {
+    if (!is_alive(handle)) {
+      std::fputs("PHY01: stale or foreign body handle\n", stderr);
+      std::abort();
+    }
+    const body_slot& slot = body_slots_[handle.value - 1];
+    if (slot.state != slot_state::published) {
       std::fputs("PHY01: body batch has not been published\n", stderr);
       std::abort();
     }
-    return id;
+    return slot.id;
   }
 
   const shape_catalog& shapes_;
   JPH::ObjectLayerPairFilterTable pair_filter_;
   JPH::BroadPhaseLayerInterfaceTable broad_phase_;
   std::unique_ptr<JPH::ObjectVsBroadPhaseLayerFilterTable> object_vs_broad_phase_;
-  contact_counter contacts_;
+  contact_collector contacts_;
   JPH::PhysicsSystem system_;
   std::atomic<uint32_t> worker_starts_{0};
   std::unique_ptr<JPH::TempAllocatorImpl> temp_allocator_;
   std::unique_ptr<JPH::JobSystemThreadPool> job_system_;
-  std::vector<JPH::BodyID> body_slots_;
+  std::vector<body_slot> body_slots_;
+  std::vector<uint32_t> free_slots_;
   std::vector<pending_body> pending_;
   inline static std::atomic<uint64_t> next_world_token_{1};
   const uint64_t world_token_ =
@@ -506,8 +763,34 @@ uint64_t hash_bytes(std::span<const std::byte> bytes) {
   return hash;
 }
 
+template <typename T>
+void append_value(std::vector<std::byte>& bytes, const T& value) {
+  static_assert(std::is_trivially_copyable_v<T>);
+  const size_t old_size = bytes.size();
+  bytes.resize(old_size + sizeof(T));
+  std::memcpy(bytes.data() + old_size, &value, sizeof(T));
+}
+
+void append_contact_step(
+    std::vector<std::byte>& bytes,
+    std::span<const contact_event> events,
+    uint64_t& added_count) {
+  append_value(bytes, static_cast<uint32_t>(events.size()));
+  for (const contact_event& event : events) {
+    append_value(bytes, uint8_t(event.phase));
+    append_value(bytes, event.first.value);
+    append_value(bytes, event.first.generation);
+    append_value(bytes, event.second.value);
+    append_value(bytes, event.second.generation);
+    append_value(bytes, event.first_sub_shape);
+    append_value(bytes, event.second_sub_shape);
+    if (event.phase == contact_phase::added) ++added_count;
+  }
+}
+
 struct run_result {
   std::vector<std::byte> state;
+  std::vector<std::byte> contact_stream;
   ray_hit ray;
   uint32_t workers_started = 0;
   uint64_t contacts_added = 0;
@@ -561,17 +844,21 @@ run_result run_scene(
             0.06f * devils_engine::utils::deterministic::sin(angle)));
   }
 
-  const size_t published = world.publish_pending();
+  const auto publication = world.publish_pending();
+  if (publication.status != physics_world::publish_status::published) std::abort();
   world.optimize();
   constexpr float fixed_delta = 1.0f / 60.0f;
-  for (uint32_t step = 0; step < opts.steps; ++step) world.step(fixed_delta);
 
   run_result result;
+  for (uint32_t step = 0; step < opts.steps; ++step) {
+    const std::vector<contact_event> events = world.step(fixed_delta);
+    append_contact_step(result.contact_stream, events, result.contacts_added);
+  }
   result.ray = world.cast_ray(JPH::RVec3(0.0f, 20.0f, 0.0f), JPH::Vec3(0.0f, -40.0f, 0.0f));
   result.state = world.snapshot();
   result.workers_started = world.worker_starts();
-  result.contacts_added = world.contacts_added();
-  result.published = published;
+  result.published = publication.count;
+  if (world.unresolved_removed_contacts() != 0 || world.contact_overflow() != 0) std::abort();
   return result;
 }
 
@@ -588,14 +875,90 @@ query_probe probe_query_only(const fixture_shapes& shapes) {
   const ray_hit before =
       world.cast_ray(JPH::RVec3(0.0f, 3.0f, 0.0f), JPH::Vec3(0.0f, -6.0f, 0.0f));
   const size_t overlap_before = world.overlap_point(JPH::RVec3::sZero());
-  const size_t published = world.publish_pending();
+  const auto publication = world.publish_pending();
   const ray_hit after =
       world.cast_ray(JPH::RVec3(0.0f, 3.0f, 0.0f), JPH::Vec3(0.0f, -6.0f, 0.0f));
   const size_t overlap_after = world.overlap_point(JPH::RVec3::sZero());
   return {
       !before.body && overlap_before == 0,
-      published == 1 && bool(after.body),
+      publication.status == physics_world::publish_status::published
+          && publication.count == 1 && bool(after.body),
       overlap_after};
+}
+
+struct lifecycle_probe {
+  bool failed_batch_invisible = false;
+  bool retry_published = false;
+  bool slot_reused_with_new_generation = false;
+  bool stale_handle_rejected = false;
+};
+
+lifecycle_probe probe_lifecycle(const fixture_shapes& shapes) {
+  physics_world world(shapes.catalog, 2, physics_world::mode::queries_only, 0);
+  const body_handle first = world.queue_body(
+      shapes.query_box, JPH::RVec3(-4.0f, 0.0f, 0.0f), JPH::EMotionType::Static);
+  world.queue_body(
+      shapes.query_box, JPH::RVec3(0.0f, 0.0f, 0.0f), JPH::EMotionType::Static);
+  const body_handle excess = world.queue_body(
+      shapes.query_box, JPH::RVec3(4.0f, 0.0f, 0.0f), JPH::EMotionType::Static);
+
+  const auto refused = world.publish_pending();
+  const bool invisible = !world.cast_ray(
+      JPH::RVec3(0.0f, 3.0f, 0.0f), JPH::Vec3(0.0f, -6.0f, 0.0f)).body;
+  if (!world.destroy_body(excess)) std::abort();
+  const auto retry = world.publish_pending();
+
+  if (!world.destroy_body(first)) std::abort();
+  const bool stale_rejected = !world.is_alive(first) && !world.destroy_body(first);
+  const body_handle replacement = world.queue_body(
+      shapes.query_box, JPH::RVec3(4.0f, 0.0f, 0.0f), JPH::EMotionType::Static);
+  const bool reused = replacement.value == first.value
+      && replacement.generation != first.generation;
+  const bool replacement_invisible = !world.cast_ray(
+      JPH::RVec3(4.0f, 3.0f, 0.0f), JPH::Vec3(0.0f, -6.0f, 0.0f)).body;
+  const auto replacement_commit = world.publish_pending();
+  const ray_hit replacement_hit = world.cast_ray(
+      JPH::RVec3(4.0f, 3.0f, 0.0f), JPH::Vec3(0.0f, -6.0f, 0.0f));
+
+  return {
+      refused.status == physics_world::publish_status::body_capacity_exhausted
+          && refused.count == 0 && invisible,
+      retry.status == physics_world::publish_status::published && retry.count == 2,
+      reused && replacement_invisible
+          && replacement_commit.status == physics_world::publish_status::published
+          && replacement_commit.count == 1 && replacement_hit.body == replacement,
+      stale_rejected};
+}
+
+struct removed_contact_probe {
+  bool attributed_after_destroy = false;
+  bool no_unresolved_events = false;
+};
+
+removed_contact_probe probe_removed_contact(const fixture_shapes& shapes) {
+  physics_world world(shapes.catalog, 4, physics_world::mode::simulation, 0);
+  const body_handle floor = world.queue_body(
+      shapes.floor, JPH::RVec3(0.0f, -1.0f, 0.0f), JPH::EMotionType::Static);
+  const body_handle falling = world.queue_body(
+      shapes.box, JPH::RVec3(0.0f, 0.4f, 0.0f), JPH::EMotionType::Dynamic);
+  const auto publication = world.publish_pending();
+  if (publication.status != physics_world::publish_status::published) std::abort();
+  const std::vector<contact_event> first_step = world.step(1.0f / 60.0f);
+  const bool contact_was_cached = std::any_of(
+      first_step.begin(), first_step.end(), [](const contact_event& event) {
+        return event.phase == contact_phase::added;
+      });
+  if (!world.destroy_body(falling)) std::abort();
+  const std::vector<contact_event> second_step = world.step(1.0f / 60.0f);
+  const bool attributed = std::any_of(
+      second_step.begin(), second_step.end(), [&](const contact_event& event) {
+        return event.phase == contact_phase::removed
+            && ((event.first == floor && event.second == falling)
+                || (event.first == falling && event.second == floor));
+      });
+  return {
+      contact_was_cached && attributed,
+      world.unresolved_removed_contacts() == 0 && world.contact_overflow() == 0};
 }
 
 struct math_probe {
@@ -635,6 +998,8 @@ int main(int argc, const char** argv) {
 
   const math_probe math = probe_math();
   const query_probe queries = probe_query_only(shapes);
+  const lifecycle_probe lifecycle = probe_lifecycle(shapes);
+  const removed_contact_probe removed_contact = probe_removed_contact(shapes);
   const run_result threaded = run_scene(opts, shapes, opts.threads);
 
   std::cout << "PHY01 Jolt 5.6.0 basics\n"
@@ -651,12 +1016,23 @@ int main(int argc, const char** argv) {
             << "  scene.state_hash=0x" << std::hex << hash_bytes(threaded.state) << std::dec
             << " contacts_added=" << threaded.contacts_added
             << " batch_published=" << threaded.published << '\n'
+            << "  contacts.canonical_hash=0x" << std::hex
+            << hash_bytes(threaded.contact_stream) << std::dec << '\n'
             << "  ray.hit_handle=" << threaded.ray.body.value
             << " fraction=" << threaded.ray.fraction << '\n'
             << "  query_only.before_commit="
             << (queries.invisible_before_commit ? "invisible" : "VISIBLE")
             << " after_commit=" << (queries.visible_after_commit ? "visible" : "MISSING")
             << " point_overlaps=" << queries.overlap_count << '\n'
+            << "  lifecycle.rollback="
+            << (lifecycle.failed_batch_invisible ? "invisible" : "LEAKED")
+            << " retry=" << (lifecycle.retry_published ? "published" : "FAILED")
+            << " reuse="
+            << (lifecycle.slot_reused_with_new_generation ? "new-generation" : "STALE")
+            << " stale=" << (lifecycle.stale_handle_rejected ? "rejected" : "ACCEPTED") << '\n'
+            << "  contacts.removed_after_destroy="
+            << (removed_contact.attributed_after_destroy ? "attributed" : "LOST")
+            << " unresolved=" << (removed_contact.no_unresolved_events ? 0 : 1) << '\n'
             << "  math.sin_cos_hash=0x" << std::hex << math.signature << std::dec
             << " max_unit_circle_error=" << math.max_unit_circle_error
             << " matches_jolt=" << (math.matches_jolt ? "yes" : "NO") << '\n';
@@ -665,7 +1041,10 @@ int main(int argc, const char** argv) {
       || threaded.published != size_t(opts.bodies) + 1
       || threaded.workers_started != opts.threads || !math.matches_jolt
       || !queries.invisible_before_commit || !queries.visible_after_commit
-      || queries.overlap_count != 1) {
+      || queries.overlap_count != 1 || !lifecycle.failed_batch_invisible
+      || !lifecycle.retry_published || !lifecycle.slot_reused_with_new_generation
+      || !lifecycle.stale_handle_rejected || !removed_contact.attributed_after_destroy
+      || !removed_contact.no_unresolved_events) {
     std::fputs("PHY01: basic scene or worker startup check failed\n", stderr);
     return 1;
   }
@@ -676,11 +1055,14 @@ int main(int argc, const char** argv) {
     // Handles from different worlds intentionally do not compare equal; the
     // stable slots and hit fractions should still correspond.
     const bool ray_equal = serial.ray.body.value == threaded.ray.body.value
+        && serial.ray.body.generation == threaded.ray.body.generation
         && std::bit_cast<uint32_t>(serial.ray.fraction)
             == std::bit_cast<uint32_t>(threaded.ray.fraction);
+    const bool contacts_equal = serial.contact_stream == threaded.contact_stream;
     std::cout << "  verify.serial_vs_threaded_state=" << (state_equal ? "bit-exact" : "DIFF")
-              << " ray=" << (ray_equal ? "bit-exact" : "DIFF") << '\n';
-    if (!state_equal || !ray_equal) return 1;
+              << " ray=" << (ray_equal ? "bit-exact" : "DIFF")
+              << " contacts=" << (contacts_equal ? "bit-exact" : "DIFF") << '\n';
+    if (!state_equal || !ray_equal || !contacts_equal) return 1;
   }
 
   return 0;
