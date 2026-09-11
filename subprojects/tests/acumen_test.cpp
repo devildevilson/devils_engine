@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <vector>
@@ -101,6 +102,48 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
     REQUIRE(buf[0]->name == "draw_weapon");
     REQUIRE(buf[1] != nullptr);
     REQUIRE(buf[1]->name == "attack");
+  }
+
+  // Регрессия 2026-09-11: провалившийся поиск не имеет права испортить контейнер.
+  //
+  // Контейнер ПЕРЕИСПОЛЬЗУЕТСЯ между поисками (один на поток исполнения). Раньше free_all
+  // уничтожал start ВТОРОЙ раз — он уже лежал в closedlist, — и список свободных узлов пула
+  // замыкался сам на себя: closedlist=[start,A,B] → свободные B→A→start, затем ещё раз start →
+  // start→B→A→start. Дальше пул раздавал одни и те же адреса по кругу, живые узлы накладывались
+  // друг на друга, и полоса оставалась отравленной до конца жизни.
+  //
+  // Проверка идёт ПО ПУЛУ, а не по плану: испорченный список свободных — это факт о контейнере,
+  // и ловить его надо там. Сверка планов сквозь порчу проходила (маленький поиск успевал
+  // «повезти»), то есть была слишком слабой.
+  SUBCASE("a failed search must not poison the reused container") {
+    // Недостижимая цель: enemy_dead ставит только attack, а он требует has_weapon; вернуть
+    // has_weapon в false не умеет ни одно действие. Оба бита значащие ⇒ ключ кеша соунден.
+    acumen::scoped_state unreachable;
+    unreachable.set(has_weapon, false);
+    unreachable.set(enemy_dead, true);
+
+    const acumen::state start; // has_weapon = false, enemy_dead = false
+
+    astar<acumen::astar_data>::container reused;
+    std::array<const acumen::action*, 8> buf{};
+    acumen::decide_params fail_dp;
+    fail_dp.start = start;
+    fail_dp.goal = unreachable;
+    fail_dp.scratch = &reused;
+    REQUIRE(sys.decide(fail_dp, buf) == 0); // поиск обязан провалиться
+
+    // После неудачи пул обязан раздавать РАЗНЫЕ адреса. Цикл в списке свободных проявляется как
+    // повтор: длина цикла равна числу узлов, попавших в него, поэтому берём с запасом.
+    std::vector<astar<acumen::astar_data>::node*> handed_out;
+    for (int i = 0; i < 16; ++i) {
+      handed_out.push_back(
+        reused.node_pool.create(acumen::astar_data{acumen::scoped_state(start), 0.0, nullptr}));
+    }
+    std::sort(handed_out.begin(), handed_out.end());
+    const auto duplicate = std::adjacent_find(handed_out.begin(), handed_out.end());
+    CHECK_MESSAGE(duplicate == handed_out.end(),
+                  "node pool handed out the same address twice: its free list is a cycle");
+    for (auto* node : handed_out) reused.node_pool.destroy(node);
   }
 
   SUBCASE("start already satisfies the goal => empty plan") {

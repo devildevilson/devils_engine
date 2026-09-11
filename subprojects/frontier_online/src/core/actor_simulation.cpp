@@ -1114,10 +1114,6 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   dp.start = start;
   dp.goal = goal_state;
   dp.goal_id = goal_id;
-  // ВНИМАНИЕ (открытый дефект, см. README «Найденные дефекты» №2): переиспользуемый полосный
-  // контейнер A* переносит состояние между поисками, из-за чего план зависит от того, сколько
-  // поисков полоса сделала до этого — то есть от ЧИСЛА ПОТОКОВ. Свежий контейнер на каждый вызов
-  // это снимает (проверено: 1/2/4/8 дают один корень), но стоит аллокации на каждое решение.
   dp.scratch = &scratch.planner;
   dp.cache = &scratch.cache;
   const size_t n = goap->decide(dp, plan);

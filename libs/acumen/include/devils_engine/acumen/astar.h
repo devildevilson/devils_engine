@@ -58,7 +58,7 @@ struct astar {
     void add_successor(T data);
     void free_solution(node* start, node* goal) noexcept;
     void clear_memory(node* start, node* goal) noexcept;
-    void free_all(node* start, node*) noexcept;
+    void free_all(node*, node* goal) noexcept; // start уже лежит в одном из списков
     void free_unused() noexcept;
   };
 
@@ -147,8 +147,20 @@ void astar<T>::container::clear_memory(node* start, node* goal) noexcept {
   node_pool.clear();
 }
 
+// Путь НЕУДАЧИ: вернуть пулу всё, что создал поиск.
+//
+// start здесь НЕ уничтожается отдельно, и это существенно: он всегда лежит в одном из двух
+// списков — в openlist до первого извлечения, в closedlist после разворачивания, — поэтому циклы
+// выше его уже уничтожили. Прежний дополнительный destroy(start) клал ОДИН И ТОТ ЖЕ узел в список
+// свободных ВТОРОЙ раз и замыкал этот список сам на себя:
+//   closedlist = [start, A, B] → свободные: B→A→start, затем destroy(start) → start→B→A→start.
+// Дальше пул раздавал по кругу одни и те же адреса, живые узлы накладывались друг на друга, и
+// контейнер оставался отравленным до конца жизни — а он ПЕРЕИСПОЛЬЗУЕТСЯ между поисками.
+//
+// goal, наоборот, не попадает ни в один список никогда, и на этом пути его не освобождал никто:
+// каждый неудачный поиск терял один узел безвозвратно. Освобождаем здесь.
 template <typename T>
-void astar<T>::container::free_all(node* start, node*) noexcept {
+void astar<T>::container::free_all(node*, node* goal) noexcept {
   for (size_t i = 0; i < openlist.size(); ++i) {
     node_pool.destroy(openlist[i]);
   }
@@ -159,12 +171,9 @@ void astar<T>::container::free_all(node* start, node*) noexcept {
   }
   closedlist.clear();
 
-  if (start != nullptr) {
-    node_pool.destroy(start);
+  if (goal != nullptr) {
+    node_pool.destroy(goal);
   }
-  // по идее goal тоже отсутствует в openlist или closedlist
-
-  start = nullptr;
 }
 
 template <typename T>
