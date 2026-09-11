@@ -2,97 +2,33 @@
 #define FRONTIER_ONLINE_CORE_TILE_MAP_H
 
 #include <cstdint>
-#include <span>
-#include <string_view>
-#include <vector>
 
-#include <devils_engine/demiurg/resource_system.h>
 #include <glm/glm.hpp>
 
-// Главная (геймплейная) сторона: модель мира под рендер тайловой карты.
-//  - tile        : одна клетка со stable handle своей текстуры
-//  - tile_grid   : плоская квадратная сетка W x H, row-major, мировые координаты
-//  - tile_chunk  : CPU payload одного чанка; пока генерируется mock-ассетами
-//  - texture_set : palette stable handles, собранный из реестра ассетов по префиксу пути
-//  - camera2d    : ортографическая top-down камера; её "фрустум" = мировой прямоугольник
-//  - tile_span   : прямоугольный срез сетки (пересечение view rect с сеткой)
-//  - tile_instance : то, что уедет на GPU одним инстансом (layout "v2ui1")
+#include "terrain.h" // причинная модель земли: код рельефа, чанк, сетка
+
+// ПРЕЗЕНТАЦИОННАЯ сторона карты: как причинную сетку смотрят и во что её превращают для GPU.
+//  - camera2d     : ортографическая top-down камера; её «фрустум» = мировой прямоугольник
+//  - tile_span    : прямоугольный срез сетки (пересечение view rect с сеткой)
+//  - tile_instance: то, что уедет на GPU одним инстансом (layout "v2ui1")
 //
-// Никакой зависимости от painter здесь нет — это чистая модель на glm. Упаковка в байты
-// (draw_intent) живёт отдельно в tile_batch.h.
+// Сама земля (tile / tile_grid / tile_chunk / terrain_source) живёт в terrain.h и про рендер не
+// знает: клетка определяется КОДОМ РЕЛЬЕФА, а текстура — его отображение, и выбирается она здесь.
 
 namespace frontier_online {
 namespace core {
 
-// Одна клетка карты хранит stable logical resource handle. GPU slot является render-owned
-// деталью и вычисляется только при сборке tile_instance.
-struct tile {
-  devils_engine::demiurg::resource_handle texture;
-};
+// Мировой центр тайла. Начало сетки в (0,0), тайл (x,y) занимает [x*size,(x+1)*size).
+inline glm::vec2 tile_world_center(const tile_grid& grid, const uint32_t x,
+                                   const uint32_t y) noexcept {
+  return glm::vec2((float(x) + 0.5f) * grid.tile_size, (float(y) + 0.5f) * grid.tile_size);
+}
 
-// Плоская квадратная сетка тайлов. Тайл (x,y), x в [0,width), y в [0,height).
-// Мировые координаты: центр тайла = ((x+0.5)*tile_size, (y+0.5)*tile_size). Начало в (0,0).
-struct tile_grid {
-  uint32_t width = 0;
-  uint32_t height = 0;
-  float tile_size = 1.0f;
-  std::vector<tile> tiles; // row-major, размер = width*height
+// Мировой размер всей сетки.
+inline glm::vec2 grid_world_extent(const tile_grid& grid) noexcept {
+  return glm::vec2(float(grid.width), float(grid.height)) * grid.tile_size;
+}
 
-  void resize(const uint32_t w, const uint32_t h);
-  bool in_bounds(const uint32_t x, const uint32_t y) const noexcept {
-    return x < width && y < height;
-  }
-  tile& at(const uint32_t x, const uint32_t y) noexcept {
-    return tiles[size_t(y) * width + x];
-  }
-  const tile& at(const uint32_t x, const uint32_t y) const noexcept {
-    return tiles[size_t(y) * width + x];
-  }
-
-  glm::vec2 world_center(const uint32_t x, const uint32_t y) const noexcept {
-    return glm::vec2((float(x) + 0.5f) * tile_size, (float(y) + 0.5f) * tile_size);
-  }
-  // мировой размер всей карты
-  glm::vec2 world_extent() const noexcept {
-    return glm::vec2(float(width), float(height)) * tile_size;
-  }
-};
-
-struct chunk_coord {
-  int32_t x = 0;
-  int32_t y = 0;
-};
-
-// CPU-представление одного квадратного чанка. tiles.size() == size*size, row-major.
-// Чанк (cx,cy) покрывает глобальные тайлы:
-//   x in [cx*size, (cx+1)*size), y in [cy*size, (cy+1)*size)
-struct tile_chunk {
-  chunk_coord coord{};
-  uint32_t size = 0;
-  std::vector<tile> tiles;
-
-  bool valid() const noexcept {
-    return size != 0 && tiles.size() == size_t(size) * size;
-  }
-  tile& at(const uint32_t x, const uint32_t y) noexcept {
-    return tiles[size_t(y) * size + x];
-  }
-  const tile& at(const uint32_t x, const uint32_t y) const noexcept {
-    return tiles[size_t(y) * size + x];
-  }
-};
-
-// Mock "asset load": детерминированно генерирует содержимое чанка на CPU. Реальная версия позже
-// заменит тело на чтение/декод demiurg-ресурса, но contract останется тем же: coord -> tile_chunk.
-tile_chunk generate_mock_chunk(
-  chunk_coord coord,
-  uint32_t chunk_size,
-  std::span<const devils_engine::demiurg::resource_handle> textures);
-
-// Скопировать чанк в глобальную сетку. Часть чанка за границей grid молча отбрасывается.
-void apply_chunk(tile_grid& grid, const tile_chunk& chunk);
-
-// Прямоугольный срез сетки: полуоткрытый диапазон [x0,x1) x [y0,y1).
 struct tile_span {
   uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   uint32_t width() const noexcept {

@@ -77,17 +77,20 @@ void frontier_online_game::begin_scene(const scene_start_context& context) {
         command.generation = context.generation;
         command.x = int32_t(cx);
         command.y = int32_t(cy);
-        command.size = chunk_size_;
-        command.textures.assign(textures_.handles().begin(), textures_.handles().end());
+        command.chunk_size = chunk_size_;
+        command.world_seed = context.config.world_seed;
+        command.generator = context.config.terrain_generator;
         context.messages.load_chunk.try_push(std::move(command));
         chunks_requested_[index] = true;
       }
     }
     DE_LOG(catalogue::log_domain::gameplay, flow,
-           "main: requested {} mock world chunks via assets", chunks_requested_.size());
+           "main: requested {} world chunks from generator '{}' (seed {})",
+           chunks_requested_.size(), context.config.terrain_generator,
+           context.config.world_seed);
   }
 
-  const glm::vec2 extent = grid_.world_extent();
+  const glm::vec2 extent = grid_world_extent(grid_);
   world_extent_ = extent;
   camera_.center = extent * 0.5f;
   camera_.half_width = context.config.camera_half_width;
@@ -226,9 +229,9 @@ void frontier_online_game::drain_loaded_chunks(broker& messages, const uint64_t 
     tile_chunk chunk;
     chunk.coord = chunk_coord{command.x, command.y};
     chunk.size = command.size;
-    chunk.tiles.resize(command.textures.size());
-    for (size_t i = 0; i < command.textures.size(); ++i) {
-      chunk.tiles[i].texture = command.textures[i];
+    chunk.tiles.resize(command.terrain.size());
+    for (size_t i = 0; i < command.terrain.size(); ++i) {
+      chunk.tiles[i].terrain = command.terrain[i];
     }
     apply_chunk(grid_, chunk);
 
@@ -244,7 +247,7 @@ void frontier_online_game::drain_loaded_chunks(broker& messages, const uint64_t 
 
   if (!chunks_logged_ && chunks_loaded_count_ == chunks_loaded_.size()) {
     DE_LOG(catalogue::log_domain::gameplay, flow,
-           "main: all {} mock world chunks loaded", chunks_loaded_count_);
+           "main: all {} world chunks generated", chunks_loaded_count_);
     chunks_logged_ = true;
   }
 }

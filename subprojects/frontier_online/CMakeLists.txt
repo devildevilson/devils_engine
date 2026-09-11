@@ -23,6 +23,7 @@ set(PROJECT_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/${PROJECT_NAME}")
 
 set(CAUSAL_HDR_LIST
   include/core/color32.h
+  include/core/terrain.h
   include/core/actor_simulation.h
   include/core/actor_checkpoint.h
   include/core/actor_snapshot.h
@@ -33,6 +34,7 @@ set(CAUSAL_HDR_LIST
 )
 
 set(CAUSAL_SRC_LIST
+  src/core/terrain.cpp
   src/core/actor_simulation.cpp
   src/core/actor_checkpoint.cpp
   src/core/brain_config_loader.cpp
@@ -48,6 +50,13 @@ target_link_libraries(frontier_causal PUBLIC
   devils_engine::catalogue
   devils_engine::demiurg
   devils_engine::network
+  # Земля: генератор объявлен в конфиге (originator_config), тела шагов — lua (originator_lua),
+  # шум и вороной — примитивы. Ни одна из этих целей не тянет презентацию: lua-хост генератора
+  # headless по построению, поэтому земля законно живёт в ПРИЧИННОМ слое.
+  devils_engine::originator
+  devils_engine::originator_config
+  devils_engine::originator_lua
+  devils_engine::originator_primitives
   devils_engine::utils
   devils_engine::options
   devils_engine::prefab
@@ -67,6 +76,7 @@ set(CLIENT_HDR_LIST
   include/core/messages.h
   include/core/instance_layout.h
   include/core/draw_intent.h
+  include/core/frame_capture.h
   include/core/actor_batch.h
   include/core/render_system.h
   include/core/runtime.h
@@ -85,6 +95,7 @@ set(CLIENT_SRC_LIST
   src/core/config.cpp
   src/core/app_config_resource.cpp
   src/core/actor_batch.cpp
+  src/core/frame_capture.cpp
   src/core/render_system.cpp
   src/core/assets_system.cpp
   src/core/texture_set.cpp
@@ -177,6 +188,12 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   set_tests_properties(frontier_server_headless PROPERTIES LABELS devils_engine)
   # Два одинаковых прогона обязаны дать один причинный корень. Формулировка нарочно слабая:
   # именно она падала, пока полоса scratch выбиралась по потоку ОС.
+  # Земля: считается ли она без окна и текстур, не зависит ли от ПОРЯДКА обхода чанков и не
+  # выродилась ли в один класс. Первые два — контракт «чанк = функция (зерно, ключ)», без которого
+  # нельзя считать землю на обеих сторонах вместо того, чтобы гонять её по сети. Третье ловит
+  # сорванную калибровку: генератор отработал, а мира нет.
+  add_test(NAME frontier_terrain COMMAND frontier_online_server --terrain=8 --ticks=20260911)
+  set_tests_properties(frontier_terrain PROPERTIES LABELS devils_engine)
   add_test(NAME frontier_server_reproducible
     COMMAND ${CMAKE_COMMAND}
       -DFRONTIER_SERVER=$<TARGET_FILE:frontier_online_server>

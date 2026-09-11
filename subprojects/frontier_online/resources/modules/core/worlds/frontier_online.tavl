@@ -5,9 +5,15 @@ chunk_size = 16
 chunks_x = 8
 chunks_y = 8
 actor_count = 4096
-camera_half_width = 8.0
+// Ширина обзора выбрана так, чтобы в кадр попадало несколько черт рельефа (черта = 14
+// тайлов): при 8.0 в кадре было 16 тайлов, то есть один склон, и мир выглядел однотонным
+// независимо от того, что посчитал генератор.
+camera_half_width = 28.0
 actor_script = "scripts/actor_is_hungry"
 fsm_prefix = "fsm"
 goap_prefix = "goap"
 actor_prefab_cycle = [prey, prey, prey, actor]
 prefab_prefix = "prefab/"
+// Земля: точка входа генератора originator и зерно мира.
+terrain_generator = "generator/world"
+world_seed = 20260911

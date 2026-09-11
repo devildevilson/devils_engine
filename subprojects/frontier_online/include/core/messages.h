@@ -10,6 +10,8 @@
 
 #include <devils_engine/simul/messages.h>
 
+#include "terrain.h" // terrain_code — причинная величина клетки
+
 // Контракты между системами: структуры, которые ходят через диспетчер сообщений.
 // Это намеренно "тупые" POD-подобные сообщения без логики и без тяжёлых зависимостей
 // (окно/пул объявлены вперёд), чтобы хедер был дешёвым для включения отовсюду.
@@ -97,24 +99,33 @@ struct command_current_loading_state {
 
 using command_load_resource = simul::command_load_resource;
 
-// main → assets: запросить CPU-чанк мира. textures — конкретный palette stable handles;
-// assets выбирает для каждой клетки ресурс из него, не предполагая ничего о GPU slots.
-// Позже coord/size останутся ключом запроса, а генератор заменится на demiurg-backed ресурс.
+// main → assets: посчитать чанк. Запрос САМООПИСЫВАЮЩИЙ — он называет мир, к которому относится.
+//
+// Это не избыточность. Отдельное сообщение «открой мир» жило бы в своей очереди, и порядок между
+// двумя очередями ничем не задан: запрос чанка мог бы прийти раньше мира, и его пришлось бы либо
+// уронить (чанк никогда не загрузится), либо копить. Мир, названный в самом запросе, снимает
+// вопрос целиком, а заодно оказывается ровно тем, что понадобится сетевой стороне: чанк
+// принадлежит (генератор, зерно, размер), а не «текущему состоянию загрузчика».
 struct command_load_chunk {
   uint64_t generation = 0;
   int32_t x = 0;
   int32_t y = 0;
-  uint32_t size = 0;
-  std::vector<demiurg::resource_handle> textures;
+  uint32_t chunk_size = 0;
+  uint64_t world_seed = 0;
+  std::string generator; // demiurg-id точки входа генератора
 };
 
-// assets → main: готовые texture handles клеток. textures.size() == size*size, row-major.
+// assets → main: КОДЫ РЕЛЬЕФА клеток, terrain.size() == size*size, row-major.
+//
+// Раньше здесь ездили handle'ы текстур, то есть сырые указатели в реестр ресурсов. Теперь едет
+// причинная величина: тот же чанк можно сохранить, сравнить с чанком другого процесса и вообще
+// посчитать у себя, не имея ни одной текстуры.
 struct command_chunk_loaded {
   uint64_t generation = 0;
   int32_t x = 0;
   int32_t y = 0;
   uint32_t size = 0;
-  std::vector<demiurg::resource_handle> textures;
+  std::vector<terrain_code> terrain;
 };
 
 using command_gpu_transition = simul::command_gpu_transition;

@@ -11,3 +11,6 @@ fsm_prefix = "fsm"
 goap_prefix = "goap"
 actor_prefab_cycle = []
 prefab_prefix = "prefab/"
+// Земля: точка входа генератора originator и зерно мира.
+terrain_generator = "generator/world"
+world_seed = 7

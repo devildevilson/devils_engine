@@ -5,73 +5,11 @@
 
 #include "tile_map.h"
 
+// Реализация презентационной стороны карты. Модель земли (resize/apply_chunk/генерация) живёт в
+// terrain.cpp и сюда не заглядывает.
+
 namespace frontier_online {
 namespace core {
-
-void tile_grid::resize(const uint32_t w, const uint32_t h) {
-  width = w;
-  height = h;
-  tiles.assign(size_t(w) * size_t(h), tile{});
-}
-
-tile_chunk generate_mock_chunk(
-  const chunk_coord coord,
-  const uint32_t chunk_size,
-  const std::span<const devils_engine::demiurg::resource_handle> textures) {
-  tile_chunk chunk;
-  chunk.coord = coord;
-  chunk.size = chunk_size;
-  chunk.tiles.assign(size_t(chunk_size) * chunk_size, tile{});
-
-  if (textures.empty()) {
-    return chunk;
-  }
-  const uint32_t tex_count = uint32_t(textures.size());
-  const int32_t base_x = coord.x * int32_t(chunk_size);
-  const int32_t base_y = coord.y * int32_t(chunk_size);
-
-  for (uint32_t y = 0; y < chunk_size; ++y) {
-    for (uint32_t x = 0; x < chunk_size; ++x) {
-      const int32_t wx = base_x + int32_t(x);
-      const int32_t wy = base_y + int32_t(y);
-
-      // Достаточно разнообразный, но стабильный паттерн: крупные полосы + локальный шум от coord.
-      const uint32_t bands = uint32_t((wx / 4) + (wy / 7));
-      const uint32_t ux = uint32_t(wx);
-      const uint32_t uy = uint32_t(wy);
-      const uint32_t ucx = uint32_t(coord.x);
-      const uint32_t ucy = uint32_t(coord.y);
-      const uint32_t noise = (ucx * 73856093u) ^ (ucy * 19349663u) ^ (ux * 83492791u) ^ (uy * 2654435761u);
-      chunk.at(x, y).texture = textures[(bands + (noise >> 29)) % tex_count];
-    }
-  }
-
-  return chunk;
-}
-
-void apply_chunk(tile_grid& grid, const tile_chunk& chunk) {
-  if (!chunk.valid() || grid.width == 0 || grid.height == 0) {
-    return;
-  }
-
-  const int32_t base_x = chunk.coord.x * int32_t(chunk.size);
-  const int32_t base_y = chunk.coord.y * int32_t(chunk.size);
-
-  for (uint32_t y = 0; y < chunk.size; ++y) {
-    const int32_t gy = base_y + int32_t(y);
-    if (gy < 0 || gy >= int32_t(grid.height)) {
-      continue;
-    }
-
-    for (uint32_t x = 0; x < chunk.size; ++x) {
-      const int32_t gx = base_x + int32_t(x);
-      if (gx < 0 || gx >= int32_t(grid.width)) {
-        continue;
-      }
-      grid.at(uint32_t(gx), uint32_t(gy)) = chunk.at(x, y);
-    }
-  }
-}
 
 glm::mat4 camera2d::view_proj() const {
   // Ортопроекция мирового прямоугольника во view rect камеры. Z игнорируем (плоская карта),

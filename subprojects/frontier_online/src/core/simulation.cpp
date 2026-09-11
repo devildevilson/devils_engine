@@ -10,6 +10,7 @@
 #include "render_system.h"
 #include "runtime.h"
 #include "simulation.h"
+#include "frame_capture.h"
 #include "frontier_online_game.h"
 #include "world_scene_resource.h"
 
@@ -57,7 +58,9 @@ void simulation::init() {
 }
 
 bool simulation::stop_predicate() const {
-  return host_stop_predicate();
+  // Снятый кадр — законная причина закончить: стенд запускается из скрипта, и висящее окно после
+  // съёмки означало бы, что скрипт ждёт вечно.
+  return host_stop_predicate() || capture_request().finished();
 }
 
 void simulation::update(const size_t time) {

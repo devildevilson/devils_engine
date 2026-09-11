@@ -54,9 +54,11 @@ TEST_CASE("painter step derives resource usages from named descriptor sets [pain
 TEST_CASE("painter color write masks replace RGBA and can disable color writes [painter]") {
   const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
   const auto mask_only_slot = storage.find_execution_step("draw_triangles");
-  const auto ui_slot = storage.find_execution_step("draw_ui");
+  // Частичная маска проверяется на ТЕСТ-ОНЛИ шаге. На draw_ui она когда-то стояла и, после
+  // починки парсера, ожила в боевом конфиге: интерфейс перестал писать синий канал.
+  const auto partial_slot = storage.find_execution_step("draw_regions");
   REQUIRE(mask_only_slot != painter::invalid_resource_slot);
-  REQUIRE(ui_slot != painter::invalid_resource_slot);
+  REQUIRE(partial_slot != painter::invalid_resource_slot);
 
   const auto& mask_only = storage.steps[mask_only_slot];
   REQUIRE(mask_only.blending.size() == 1);
@@ -64,11 +66,17 @@ TEST_CASE("painter color write masks replace RGBA and can disable color writes [
   CHECK(std::get<1>(mask_only.blending.front()).srcColorBlendFactor != UINT32_MAX);
   CHECK(std::get<1>(mask_only.blending.front()).colorBlendOp != UINT32_MAX);
 
+  const auto& partial = storage.steps[partial_slot];
+  REQUIRE(partial.blending.size() == 1);
+  // Vulkan ColorComponent R/G bits are 0x1/0x2; keep this parsing test independent of Vulkan-Hpp/VMA.
+  CHECK(std::get<1>(partial.blending.front()).colorWriteMask == 0x3u);
+
+  // А боевой шаг интерфейса обязан писать ВСЕ каналы: 0xf.
+  const auto ui_slot = storage.find_execution_step("draw_ui");
+  REQUIRE(ui_slot != painter::invalid_resource_slot);
   const auto& ui = storage.steps[ui_slot];
   REQUIRE(ui.blending.size() == 1);
-  // Vulkan ColorComponent R/G bits are 0x1/0x2; keep this parsing test independent of Vulkan-Hpp/VMA.
-  CHECK(std::get<1>(ui.blending.front()).colorWriteMask ==
-        0x3u);
+  CHECK(std::get<1>(ui.blending.front()).colorWriteMask == 0xfu);
 }
 
 TEST_CASE("painter resolves dynamic stencil state from a step constant [painter]") {

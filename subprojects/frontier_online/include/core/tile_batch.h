@@ -27,14 +27,14 @@ public:
     return intent_.valid();
   }
 
-  // собрать инстансы: stable texture handle тайла разрешается в текущий bindless GPU slot.
+  // собрать инстансы: КОД РЕЛЬЕФА клетки разрешается палитрой в текущий bindless GPU slot.
   void build(const tile_grid& grid, const tile_span& span, const texture_set& textures) {
     instances_.clear();
     instances_.reserve(span.count());
     for (uint32_t y = span.y0; y < span.y1; ++y) {
       for (uint32_t x = span.x0; x < span.x1; ++x) {
-        const auto texture = textures.gpu_index(grid.at(x, y).texture);
-        instances_.push_back(tile_instance{grid.world_center(x, y), texture});
+        const auto texture = textures.gpu_index_for_terrain(grid.at(x, y).terrain);
+        instances_.push_back(tile_instance{tile_world_center(grid, x, y), texture});
       }
     }
   }

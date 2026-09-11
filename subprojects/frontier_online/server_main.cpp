@@ -14,6 +14,9 @@
 // причинного состояния. Тот же корень на том же зерне обязан получиться у клиента и у любой
 // другой сборки — это и есть общая основа, на которую потом ложится сеть.
 
+#include <algorithm>
+#include <array>
+#include <ranges>
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +32,7 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/mood/fsm_resource.h>
 #include <devils_engine/network/state_digest.h>
+#include <devils_engine/originator/generator_resource.h>
 #include <devils_engine/prefab/resource.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/simulation_time.h>
@@ -37,6 +41,7 @@
 #include "core/actor_checkpoint.h"
 #include "core/actor_simulation.h"
 #include "core/brain_config_loader.h"
+#include "core/terrain.h"
 #include "core/script_environment.h"
 
 using namespace devils_engine;
@@ -59,6 +64,12 @@ struct options {
   bool verify = false;       // режим проверки: печатать только итог и вернуть код
   bool trace = false;        // печатать корень КАЖДЫЙ тик: ищем ПЕРВЫЙ разошедшийся тик, а не
                              // финальный (итоговый корень говорит только, что расхождение было)
+  // Проба земли: посчитать квадрат radius x radius чанков и напечатать их корень. Земля по сети не
+  // едет, поэтому единственный способ узнать, что две стороны видят один мир, — сверить этот
+  // корень; здесь же проверяется само право так делать (чанк не зависит от порядка вычисления).
+  uint32_t terrain_probe = 0;
+  uint32_t chunk_size = 16;
+  std::string generator = "generator/world";
   std::string resource_root = FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT;
   std::string dump_path;     // куда положить канонический документ состояния (для сверки байтами)
   // Смесь стартовых префабов: i-й актор = cycle[i % size]. Ключ существует потому, что состав
@@ -118,6 +129,20 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.workers = uint32_t(number);
       continue;
     }
+    if (const auto v = value_of("--terrain="); !v.empty()) {
+      if (!parse_u64(v, number) || number == 0 || number > 64) return false;
+      out.terrain_probe = uint32_t(number);
+      continue;
+    }
+    if (const auto v = value_of("--chunk-size="); !v.empty()) {
+      if (!parse_u64(v, number) || number == 0 || number > 256) return false;
+      out.chunk_size = uint32_t(number);
+      continue;
+    }
+    if (const auto v = value_of("--generator="); !v.empty()) {
+      out.generator = std::string(v);
+      continue;
+    }
     if (const auto v = value_of("--dump="); !v.empty()) {
       out.dump_path = std::string(v);
       continue;
@@ -156,6 +181,7 @@ public:
     resources_.register_type<mood::fsm_resource>("fsm", "tavl");
     resources_.register_type<acumen::goap_resource>("goap", "tavl", &scripts_);
     resources_.register_type<prefab::prefab_resource>("prefab", "tavl");
+    originator::register_generator_resources(resources_);
     resources_.parse_resources(&modules_);
     config_ = fo::load_required_brain_config(resources_, "scripts/actor_is_hungry", "fsm", "goap",
                                              "prefab/");
@@ -163,6 +189,9 @@ public:
 
   const fo::brain_config& config() const noexcept {
     return config_;
+  }
+  const demiurg::resource_system& resources() const noexcept {
+    return resources_;
   }
 
 private:
@@ -172,6 +201,116 @@ private:
   fo::brain_config config_;
 };
 
+
+// ПРОБА ЗЕМЛИ. Отвечает на три вопроса, и все три нужны раньше, чем сеть.
+//
+//   1. Считается ли земля вообще без окна и без единой текстуры (она причинная, значит обязана).
+//   2. Чанк — чистая функция ключа: тот же ключ даёт те же байты.
+//   3. Чанк не зависит от ПОРЯДКА вычисления. Это обещание originator, и проверить его надо на
+//      своём генераторе: обратный обход обязан дать тот же мир, иначе два игрока, идущие с разных
+//      сторон, увидят разную землю на одном и том же месте.
+//
+// Корень печатается, чтобы его можно было сверить между процессами: земля по сети не едет, и это
+// единственный способ убедиться, что стороны считают один мир.
+int probe_terrain(const options& opts, const causal_content& content) {
+  fo::terrain_source source(content.resources(), opts.generator, opts.chunk_size, opts.ticks);
+
+  const int32_t side = int32_t(opts.terrain_probe);
+  const auto digest_of = [](const std::vector<fo::tile_chunk>& chunks) {
+    std::string bytes;
+    for (const auto& chunk : chunks) {
+      for (const auto& t : chunk.tiles) bytes.push_back(char(t.terrain));
+    }
+    return utils::murmur_hash64A(bytes);
+  };
+
+  std::vector<fo::tile_chunk> forward;
+  std::array<uint64_t, 4> histogram{};
+  // Диапазоны СЫРЫХ полей. Именно они отвечают, верен ли фиксированный перевод шума в [0,1]:
+  // «воды нет» — это утверждение не про порог, а про то, доходит ли до него поле.
+  double height_min = 1e30, height_max = -1e30, moisture_min = 1e30, moisture_max = -1e30;
+  std::vector<double> height_samples, moisture_samples;
+  forward.reserve(size_t(side) * side);
+  for (int32_t y = 0; y < side; ++y) {
+    for (int32_t x = 0; x < side; ++x) {
+      forward.push_back(source.generate(fo::chunk_coord{x, y}));
+      for (const auto& t : forward.back().tiles) {
+        if (t.terrain < histogram.size()) ++histogram[t.terrain];
+      }
+      for (size_t i = 0; i < forward.back().tiles.size(); ++i) {
+        const double h = source.raw_field("height", i);
+        const double m = source.raw_field("moisture", i);
+        height_min = std::min(height_min, h);
+        height_max = std::max(height_max, h);
+        moisture_min = std::min(moisture_min, m);
+        moisture_max = std::max(moisture_max, m);
+        height_samples.push_back(h);
+        moisture_samples.push_back(m);
+      }
+    }
+  }
+
+  // Обратный обход тем же источником: порядок другой, мир обязан быть тем же.
+  std::vector<fo::tile_chunk> backward(forward.size());
+  for (int32_t y = side - 1; y >= 0; --y) {
+    for (int32_t x = side - 1; x >= 0; --x) {
+      backward[size_t(y) * side + x] = source.generate(fo::chunk_coord{x, y});
+    }
+  }
+
+  const uint64_t forward_root = digest_of(forward);
+  const uint64_t backward_root = digest_of(backward);
+  const uint64_t tiles = uint64_t(side) * side * opts.chunk_size * opts.chunk_size;
+
+  std::printf("terrain.generator = %s\n", opts.generator.c_str());
+  std::printf("terrain.world_seed = %llu\n", static_cast<unsigned long long>(opts.ticks));
+  std::printf("terrain.chunk_size = %u\n", opts.chunk_size);
+  std::printf("terrain.chunks = %u x %u\n", opts.terrain_probe, opts.terrain_probe);
+  std::printf("terrain.tiles = %llu\n", static_cast<unsigned long long>(tiles));
+  std::printf("terrain.world_fingerprint = %llu\n",
+              static_cast<unsigned long long>(source.fingerprint()));
+  std::printf("terrain.root = %llu\n", static_cast<unsigned long long>(forward_root));
+  std::printf("terrain.height_range = [%.4f, %.4f]\n", height_min, height_max);
+  std::printf("terrain.moisture_range = [%.4f, %.4f]\n", moisture_min, moisture_max);
+  // ДЕЦИЛИ, а не только края. Порог задаёт ДОЛЮ («сколько воды»), и подобрать его по диапазону
+  // нельзя: у поля с длинным хвостом край говорит о редком выбросе, а не о том, где лежит масса.
+  const auto deciles = [](std::vector<double>& samples, const char* label) {
+    if (samples.empty()) return;
+    std::sort(samples.begin(), samples.end());
+    std::printf("terrain.%s_deciles =", label);
+    for (int q = 1; q <= 9; ++q) {
+      std::printf(" %.3f", samples[samples.size() * size_t(q) / 10]);
+    }
+    std::printf("\n");
+  };
+  deciles(height_samples, "height");
+  deciles(moisture_samples, "moisture");
+  for (size_t i = 0; i < histogram.size(); ++i) {
+    std::printf("terrain.class.%zu = %llu (%.1f%%)\n", i,
+                static_cast<unsigned long long>(histogram[i]),
+                tiles == 0 ? 0.0 : 100.0 * double(histogram[i]) / double(tiles));
+  }
+
+  if (forward_root != backward_root) {
+    std::fprintf(stderr,
+                 "frontier_online_server: terrain depends on generation ORDER (%llu vs %llu)\n",
+                 static_cast<unsigned long long>(forward_root),
+                 static_cast<unsigned long long>(backward_root));
+    return EXIT_FAILURE;
+  }
+  // Весь мир из одного класса — это не «мир», а сорванная калибровка порогов: генератор
+  // отработал, картинки нет. Молчать об этом нельзя, иначе оно доедет до экрана.
+  const auto used = std::ranges::count_if(histogram, [](const uint64_t n) { return n != 0; });
+  if (used < 2) {
+    std::fprintf(stderr, "frontier_online_server: terrain is uniform, %lld class(es) in use\n",
+                 static_cast<long long>(used));
+    return EXIT_FAILURE;
+  }
+
+  std::printf("frontier_online_server: terrain ok\n");
+  return EXIT_SUCCESS;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -179,6 +318,10 @@ int main(int argc, char** argv) {
   if (!parse_options(argc, argv, opts)) return EXIT_FAILURE;
 
   causal_content content(opts.resource_root);
+
+  if (opts.terrain_probe != 0) {
+    return probe_terrain(opts, content);
+  }
 
   const utils::simulation_rate rate(opts.rate);
   utils::timelines clocks(rate);

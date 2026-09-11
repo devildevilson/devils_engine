@@ -37,6 +37,10 @@ void world_scene_resource::load_cold(const utils::safe_handle_t&) {
   if (config_.tile_size <= 0.0f || config_.camera_half_width <= 0.0f) {
     utils::error{}("world scene resource '{}': tile_size and camera_half_width must be positive", id);
   }
+  if (config_.terrain_generator.empty()) {
+    utils::error{}("world scene resource '{}': terrain_generator is required — мир без генератора "
+                   "земли не существует, а молчаливая пустая карта выглядела бы как загрузка", id);
+  }
   if (config_.tile_texture_group.empty() || config_.sound_group.empty() ||
       config_.actor_script.empty() || config_.fsm_prefix.empty() ||
       config_.goap_prefix.empty() || config_.prefab_prefix.empty()) {

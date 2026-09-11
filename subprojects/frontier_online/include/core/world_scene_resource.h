@@ -29,6 +29,11 @@ struct world_scene_config {
   std::string prefab_prefix;
   // Микс актёрных префабов при стартовом спавне: i-й актор = cycle[i % size]. Пусто ⇒ все «actor».
   std::vector<std::string> actor_prefab_cycle;
+  // Земля. terrain_generator — demiurg-id точки входа генератора originator; world_seed — зерно
+  // мира. Вместе с текстами генератора они и составляют отпечаток мира, который поедет на
+  // рукопожатии: сама земля по сети не едет, обе стороны считают её сами.
+  std::string terrain_generator;
+  uint64_t world_seed = 0;
 };
 
 class world_scene_resource : public devils_engine::demiurg::resource_interface {

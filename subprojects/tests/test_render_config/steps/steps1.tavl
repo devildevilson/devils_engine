@@ -38,8 +38,14 @@
   command = "draw_ui ui_vertices ui_indices ui_commands"
   sets = [ globals, textures ]
   push_constants = [ ui_push ]
+  // Маска ЯВНО полная. Здесь стояло `mask = rg` — значение, выбранное как фикстура для проверки
+  // «объявленная маска ЗАМЕНЯЕТ RGBA, а не дописывается в неё». Пока парсер начинал с RGBA, оно
+  // было безвредной декорацией; после починки парсера оно ожило, и интерфейс перестал писать синий
+  // канал: панель получала R и G от себя, а B — от того, что лежало в кадре от мира. Этот же файл
+  // копируется в проекты как БОЕВОЙ render config, поэтому фикстура переехала на тест-онли шаг
+  // draw_regions, которого нет ни в одном графе.
   blending = {
-    albedo_res = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha", mask = rg }
+    albedo_res = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha", mask = rgba }
   }
 }
 {
@@ -52,6 +58,9 @@
   // specialization constants: имя из SPIR-V шейдера либо 'id_<N>' для констант без OpName
   shader_constants = [ region_quality = "2", id_7 = "0.5" ]
   command = "draw_regions region_gpu_data region_commands"
+  // ФИКСТУРА парсера масок: частичная маска обязана ЗАМЕНИТЬ RGBA, а не дописаться в неё. Шаг
+  // тест-онли (его нет ни в одном render_graph), поэтому фикстура ничего не рисует в проектах.
+  blending = { albedo_res = { mask = rg } }
 }
 {
   name = blit_to_swapchain

@@ -36,6 +36,18 @@ struct texture_set {
 
   // Разрешить logical handle тайла в bindless GPU slot. Чужой или неготовый ресурс invalid.
   uint32_t gpu_index(demiurg::resource_handle handle) const noexcept;
+
+  // Код рельефа -> bindless GPU slot. ЗДЕСЬ и проходит граница причинного и презентационного:
+  // генератор выдаёт код, палитра решает, чем его показать.
+  //
+  // Отображение ПОЗИЦИОННОЕ, и порядок палитры объявлен конфигом: группа tile_textures в манифесте
+  // сцены перечисляет текстуры в порядке кодов рельефа. Значит «чем показать воду» меняется правкой
+  // манифеста, без C++ и без генератора. Код вне палитры сворачивается по модулю, а не роняет кадр:
+  // генератор вправе завести новый класс раньше, чем художник — картинку для него.
+  uint32_t gpu_index_for_terrain(uint32_t terrain) const noexcept {
+    if (textures.empty()) return uint32_t(-1);
+    return gpu_index(textures[terrain % textures.size()]);
+  }
 };
 
 } // namespace core

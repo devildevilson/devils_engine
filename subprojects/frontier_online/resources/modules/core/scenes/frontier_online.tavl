@@ -1,12 +1,20 @@
 project = "worlds/frontier_online"
 
 resources = [
-  { id = "textures/grass",    target = "final", group = "tile_textures", alias = "grass",    startup = true }
-  { id = "textures/grass1_0", target = "final", group = "tile_textures", alias = "grass1_0", startup = true }
-  { id = "textures/grass3",   target = "final", group = "tile_textures", alias = "grass3",   startup = true }
-  { id = "textures/grad1",    target = "final", group = "aux_textures", alias = "grad1", startup = true }
-  { id = "textures/grad2",    target = "final", group = "aux_textures", alias = "grad2", startup = true }
-  { id = "textures/quad",     target = "final", group = "aux_textures", alias = "quad",  startup = true }
+  // ПОРЯДОК ГРУППЫ tile_textures ЗНАЧИМ: i-я текстура = рельеф с кодом i (0 вода, 1 сухая суша,
+  // 2 обычная, 3 влажная). Соответствие «код -> чем показать» объявлено в конфиге, а не спрятано
+  // в C++: поменять вид рельефа можно, не трогая ни генератор, ни код.
+  //
+  // Настоящих текстур рельефа у стенда нет, поэтому взяты те, что есть, и выбраны они по одному
+  // признаку — чтобы классы БЫЛО ВИДНО. Три почти одинаковые травы на четыре класса давали ровное
+  // зелёное поле: земля считалась разная, а показать её было нечем.
+  { id = "textures/grad2",    target = "final", group = "tile_textures", alias = "terrain_water",  startup = true }
+  { id = "textures/grad1",    target = "final", group = "tile_textures", alias = "terrain_dry",    startup = true }
+  { id = "textures/grass",    target = "final", group = "tile_textures", alias = "terrain_normal", startup = true }
+  { id = "textures/grass3",   target = "final", group = "tile_textures", alias = "terrain_wet",    startup = true }
+  // quad остаётся у ИНТЕРФЕЙСА: его использует демо-виджет image_mix как маску 4-смешения.
+  { id = "textures/quad",     target = "final", group = "aux_textures", alias = "quad", startup = true }
+  { id = "textures/grass1_0", target = "final", group = "aux_textures", alias = "grass1_0", startup = true }
 
   { id = "sounds/eating/freesound_community-chomp-chew-bite-102031", target = "warm", group = "sounds", alias = "eating", startup = false }
   { id = "sounds/fleeing/freesound_community-escaping-downstairs-104907", target = "warm", group = "sounds", alias = "fleeing", startup = false }

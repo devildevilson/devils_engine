@@ -16,6 +16,7 @@
 #include "actor_simulation.h"
 #include "broker.h"
 #include "draw_intent.h"
+#include "frame_capture.h"
 #include "global_ubo.h"
 #include "interpolation.h"
 #include "messages.h"
@@ -457,6 +458,16 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
     container->ctx.prepare();
     container->ctx.draw();
     container->base->submit_frame();
+
+    // Съём кадра — инструмент разработчика: посмотреть на результат, не имея перед собой экрана.
+    auto& capture = capture_request();
+    if (capture.wanted() && !capture.done.load(std::memory_order_relaxed)) {
+      const uint64_t drawn = capture.drawn.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (drawn >= capture.at_frame) {
+        capture_frame(*container->base, "albedo_res", capture.path);
+        capture.done.store(true, std::memory_order_release);
+      }
+    }
   }
 }
 
