@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-09.
+Last updated: 2026-09-12.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -45,10 +45,63 @@ recorded here only after it is reproduced by an executable test or directly obse
 | HOT-02 over the stand | complete; 2 981 samples verified against the receiver's own computation, 0 corrections, both halves of the two-lane generation race staged and refused |
 | Automatic transport reconnect and multi-process exchange | NET-LAB-01 slices 1-3 complete: authority + 3 followers + intruder as separate processes, all roots equal; artifact relocatable (4 shared deps, glibc 2.38 floor) and addressed by `--listen`/`--connect`; a second machine is the remaining gap |
 | Compatible/incompatible build exchange | NET-LAB-02 complete locally: current v2 and compatible v1 run to one root; six compatibility-field mismatches and breaking v3 produce exact pre-tick refusals; 125/125 harness checks in GCC Debug and Release |
+| SERVER-01 headless authority process | complete; causal/presentation split builds and ships as a separate executable, 593/593 project suite |
+| TF-NET-01 join (authority listens, client joins) | first slice complete; real GNS handshake, world declaration, chunked checkpoint and a cross-process causal root match, plus two exact refusals; `frontier_join_smoke` in ctest |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## TF-NET-01 slice 1 — join in the real project, 2026-09-12
+
+The first networking slice inside `frontier_online` rather than a synthetic stand. Session, handshake and
+transport come from `libs/network` unchanged; the project adds exactly four message classes (world declaration,
+checkpoint begin, checkpoint chunk, join report).
+
+### Result
+
+An authority listening on a declared port serves a joining process: handshake, world declaration, an 81 KB
+canonical checkpoint over the bulk lane, and the joiner's own recomputed causal root reported back. The
+authority compares and reports:
+
+```
+authority: peer 2 join ok (loaded), tick 221 root 13552259054345674819 vs local 13552259054345674819
+```
+
+This is the first cross-process causal root match in a real project world, not a stand fixture.
+
+### Land does not travel; its identity does
+
+The land decision holds: a chunk is a pure function of (world seed, chunk key), so only the world parameters
+travel. The joiner computes the world itself and verifies two independent things — the generator fingerprint,
+which is hashed from the config TEXTS and catches a different config, and the root of probe chunk (0,0), which
+catches the same config computed by a different `originator` build.
+
+`content_root` is SHA-256 over the FILES of the causal subtree (predicates, FSM, GOAP, prefabs, generator).
+Equal build versions prove nothing: editing a threshold in `values.tavl` changes the world without touching a
+line of C++. The directory list is explicit, because client and authority hold different resource trees and a
+whole-tree hash would refuse a join over a font; the builder therefore REFUSES a declared directory that is
+missing or empty, so a silently empty manifest cannot become a root two different worlds share.
+
+### Two defects, one cause: sending is not delivery
+
+`try_send` only copies bytes into a prepared slot, and `gns_transport::close` closes WITHOUT linger. Both
+mistakes followed:
+
+- The joiner sent its report and exited. The authority recorded "peer dropped before reporting" — the join
+  looked failed although the state had arrived intact.
+- The authority sent a refusal and closed immediately. The reason was discarded, so "incompatible build" looked
+  exactly like "silently does not work" — the one outcome the handshake exists to prevent.
+
+Both were invisible as themselves: each appeared to be somebody else's fault. The fix is symmetric — the joiner
+waits for the authority's close as its acknowledgement, and a refused peer's close is deferred 500 ms, not
+forever.
+
+### Verification
+
+`frontier_join_smoke` runs two endpoints over real loopback UDP in one process and one thread, because GNS has
+one dispatcher per interface with a single owner thread. Three cases: a completed join with matching roots, and
+two DIFFERENT compatibility fields each refused with its own reason. Project suite 593/593 in GCC Release.
 
 ## NET-LAB-02 — one success contract and seven exact refusals, 2026-09-09
 

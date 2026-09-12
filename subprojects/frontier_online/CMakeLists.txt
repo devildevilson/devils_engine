@@ -24,6 +24,8 @@ set(PROJECT_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/${PROJECT_NAME}")
 set(CAUSAL_HDR_LIST
   include/core/color32.h
   include/core/terrain.h
+  include/core/content_root.h
+  include/core/causal_content.h
   include/core/actor_simulation.h
   include/core/actor_checkpoint.h
   include/core/actor_snapshot.h
@@ -35,6 +37,8 @@ set(CAUSAL_HDR_LIST
 
 set(CAUSAL_SRC_LIST
   src/core/terrain.cpp
+  src/core/content_root.cpp
+  src/core/causal_content.cpp
   src/core/actor_simulation.cpp
   src/core/actor_checkpoint.cpp
   src/core/brain_config_loader.cpp
@@ -66,6 +70,33 @@ target_link_libraries(frontier_causal PUBLIC
 target_include_directories(frontier_causal PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>")
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Сетевой слой. Отдельная цель, а не часть причинного ядра, и это тот же принцип, что и раскол
+# выше: транспорт НЕ определяет состояние мира. Причинное ядро обязано собираться и считать без
+# единого сокета — и собирается, потому что `frontier_causal` о существовании этой цели не знает.
+#
+# Существует только там, где есть настоящий бэкенд: GNS-адаптер собирается по флагу.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+
+if (TARGET devils_engine::network_gns)
+  set(NET_HDR_LIST
+    include/net/link.h
+    include/net/protocol.h
+    include/net/authority.h
+    include/net/follower.h
+  )
+  set(NET_SRC_LIST
+    src/net/link.cpp
+    src/net/protocol.cpp
+    src/net/authority.cpp
+    src/net/follower.cpp
+  )
+  add_library(frontier_net STATIC ${NET_SRC_LIST} ${NET_HDR_LIST})
+  target_link_libraries(frontier_net PUBLIC frontier_causal devils_engine::network_gns)
+  target_include_directories(frontier_net PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
+endif()
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 # Клиент: причинное ядро + презентация. Здесь и только здесь появляются painter/visage/sound.
@@ -128,6 +159,10 @@ set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PRO
 
 add_executable(frontier_online_server server_main.cpp)
 target_link_libraries(frontier_online_server frontier_causal)
+if (TARGET frontier_net)
+  target_link_libraries(frontier_online_server frontier_net)
+  target_compile_definitions(frontier_online_server PRIVATE FRONTIER_ONLINE_HAS_NETWORK=1)
+endif()
 target_compile_definitions(frontier_online_server PRIVATE
   FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
 set_target_properties(frontier_online_server PROPERTIES
@@ -159,6 +194,15 @@ target_link_libraries(frontier_resume_smoke
 target_compile_definitions(frontier_resume_smoke PRIVATE
   FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
 set_target_properties(frontier_resume_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
+if (TARGET frontier_net)
+  add_executable(frontier_join_smoke join_smoke.cpp)
+  target_link_libraries(frontier_join_smoke frontier_net)
+  target_compile_definitions(frontier_join_smoke PRIVATE
+    FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
+  set_target_properties(frontier_join_smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+endif()
 
 add_executable(frontier_time_smoke time_smoke.cpp src/core/actor_batch.cpp ${FRONTIER_BRAIN_TEST_SOURCES})
 target_link_libraries(frontier_time_smoke
@@ -192,8 +236,14 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   # выродилась ли в один класс. Первые два — контракт «чанк = функция (зерно, ключ)», без которого
   # нельзя считать землю на обеих сторонах вместо того, чтобы гонять её по сети. Третье ловит
   # сорванную калибровку: генератор отработал, а мира нет.
-  add_test(NAME frontier_terrain COMMAND frontier_online_server --terrain=8 --ticks=20260911)
+  add_test(NAME frontier_terrain COMMAND frontier_online_server --terrain=8 --world-seed=20260911)
   set_tests_properties(frontier_terrain PROPERTIES LABELS devils_engine)
+  # Присоединение: настоящий транспорт, настоящее рукопожатие, сверка причинного корня двух
+  # независимо загруженных миров — и отказ С ПРИЧИНОЙ на двух разных полях совместимости.
+  if (TARGET frontier_join_smoke)
+    add_test(NAME frontier_join_smoke COMMAND frontier_join_smoke)
+    set_tests_properties(frontier_join_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
+  endif()
   add_test(NAME frontier_server_reproducible
     COMMAND ${CMAKE_COMMAND}
       -DFRONTIER_SERVER=$<TARGET_FILE:frontier_online_server>
