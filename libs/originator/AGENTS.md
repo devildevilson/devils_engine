@@ -25,6 +25,8 @@
 | кэш планов устройства | `include/.../device_executor.h` |
 | разбор конфига, пайплайн, шаги, чанки, диапазоны настройки | `include/.../pipeline.h` |
 | id ресурса -> тексты генератора | `include/.../generator_resource.h` |
+| программа пристыковки авторских блоков, проходы и прямые стыки | `include/.../motif_layout.h` |
+| полоса одной ширины вокруг оси, L1/L2/M, реальные порты кромок, наклонные проёмы, SAT и обрезка свободных торцов | `include/.../motif_path.h` |
 | lua-хост, биндинги, бюджет | `include/.../script_host.h` |
 | `devils_script` над буфером | `include/.../script_program.h` |
 | куда уходят часы и что годно к устройству | `include/.../execution_profile.h` |
@@ -32,7 +34,8 @@
 | FastNoise2 и jc_voronoi | `include/.../primitives.h` |
 
 Инструменты по наборам: `src/originator/standard_tools.cpp`, `graph_tools.cpp`, `volume_tools.cpp`,
-`constraint_tools.cpp`, `scatter_tools.cpp`, `noise_tools.cpp`, `voronoi_tools.cpp`. Каждый файл
+`constraint_tools.cpp`, `structure_tools.cpp`, `scatter_tools.cpp`, `noise_tools.cpp`,
+`voronoi_tools.cpp`. Каждый файл
 начинается блоком, объясняющим, ПОЧЕМУ набор отдельный.
 
 Цели сборки: `devils_originator` (ядро), `_script`, `_primitives`, `_lua`, `_config`, `_device`.
@@ -178,6 +181,8 @@ cd build-release && ctest -R originator -j 4
 | инструменты ядра/графа | `originator_tools_test`, `originator_scatter_test` |
 | объём | `originator_volume_test` |
 | решатель | `originator_collapse_test` |
+| постройки (нора и зоны здания, план в мере против картинки) | `originator_structure_test` |
+| авторские планы и цельные полосы путей | `originator_motif_test`, GN06 `--mode=site --verify` |
 | очередь, слияние | `originator_queue_test`, `originator_queue_lua_test` |
 | устройство | `originator_device_test`, `originator_device_queue_test` |
 | транслятор | `originator_translate_test` |
@@ -187,7 +192,7 @@ cd build-release && ctest -R originator -j 4
 Тесты с устройством сами проверяют `painter::compute_device_available()` и молча пропускают сверку,
 если GPU нет: зелёный прогон без устройства ничего не доказывает про GPU-путь.
 
-Живые потребители — площадки `subprojects/playgrounds/GN01..GN05`. У каждой свой `--verify`, и
+Живые потребители — площадки `subprojects/playgrounds/GN01..GN06`. У каждой свой `--verify`, и
 серьёзную правку разумно прогнать через них: они ловят то, чего не видит юнит-тест (иерархия
 названных мест, швы чанков, дыры в поверхности).
 

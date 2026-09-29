@@ -151,6 +151,11 @@ target_link_libraries(resolve_pipeline_test PRIVATE devils_engine::resolve devil
 devils_add_doctest(input_bindings_test input_bindings_test.cpp)
 target_link_libraries(input_bindings_test PRIVATE devils_engine::input devils_engine::utils tavl)
 
+# Проверка списка свойств GN06 без окна/GPU: панель принимает ограниченное число строк,
+# но у одной области может быть сколько угодно частей и соединений.
+devils_add_doctest(gn06_viewer_details_test gn06_viewer_details_test.cpp
+  ../playgrounds/GN06_dungeon_layout/src/viewer_detail_page.cpp)
+
 devils_add_doctest(simul_lifecycle_test simul_lifecycle_test.cpp)
 target_link_libraries(simul_lifecycle_test PRIVATE devils_engine::simul)
 
@@ -303,6 +308,12 @@ target_link_libraries(originator_profile_test PRIVATE devils_engine::originator 
 
 devils_add_doctest(originator_collapse_test originator_collapse_test.cpp)
 target_link_libraries(originator_collapse_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_structure_test originator_structure_test.cpp)
+target_link_libraries(originator_structure_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_motif_test originator_motif_test.cpp)
+target_link_libraries(originator_motif_test PRIVATE devils_engine::originator devils_engine::utils)
 
 # Lua-поверхность очереди. Отдельная цель потому, что она линкует скриптовый слой: ядру генератора
 # lua не нужна, а этому тесту нужна — он проверяет и то, что регистрация неймспейса не портит память.

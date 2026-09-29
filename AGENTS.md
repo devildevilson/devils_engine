@@ -4,6 +4,238 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN06 COMPLETES BOTH PATH CAPS (2026-09-29). Site catalogue v9; `218/218` originator+GN06+viewer
+  tests in Release, `18/18` motif tests, 768 site+WFC runs (0..255 at all sizes). Each path declares
+  separate start/end `trim / accent / vary` policies; occupied caps remain connected and unchanged.
+  `shared_motif_boundary` exposes EXACT shared intervals; `trim_motif_path_end` moves only an
+  axial outer cap and protects those intervals, clearance and the inner miter. It never deletes
+  parts, re-scales L1/L2/M or shifts neighbours/doors; tests include both ends, turns and 1/256-unit
+  port coordinates. Completion runs after placement and BEFORE projection/WFC/perception.
+  Author-provided `service_alcove` adds a convex part of the SAME utility area and a store WFC
+  block; optional collision falls back to trim with its cause, mandatory accent refuses.
+  For large/seed 0, #13 ends in an alcove, #14 loses 6 units; graph and route remain unchanged.
+  End outcomes and exact cap geometry are validated without raster and replayed; viewer shows
+  policy/outcome/removed length and uses authored accent colour. Native viewer run and image QA
+  passed (the upper alcove is partly covered by the overlay); no claim of interactive-key testing.
+  Terminology: location -> section -> functional/technical area -> convex zones/parts. A motif is
+  an authored RESOURCE, not another nesting level. Sections remain conceptual/one implicit section;
+  ageing and cave habitation remain future transformations, not implemented generators here.
+
+- GN06 VIEWER PROPERTY PAGES (2026-09-29). `211/211` originator+GN06+viewer tests in Release.
+  Selecting an area with 18/26 detail rows exceeded the shared Visage panel's 14-row contract;
+  startup-only viewer smoke had missed it. GN06 now paginates before `set_detail_lines`:
+  two plan-summary rows stay pinned, PgUp/PgDn reads every property, selection/part/seed changes
+  reset to page one. The overlay publishes its unchanged limit; it still refuses excess rows.
+  `gn06_viewer_details_test` covers capacity, exact reconstruction and page clamping;
+  site `--verify` exercises the actual selected/hovered property formatter for every convex part.
+  Large/seed 0 verification and native Wayland startup passed; automated X11 keyboard inspection
+  could not locate a window, so it is NOT evidence of interactive paging.
+
+- REAL WALL PORTS, NOT RESERVATION PORTS (2026-09-29). GN06 `site` catalogue v8;
+  `26/26` focused motif+GN06 tests, `206/206` originator+GN06 tests in Release, 768 site
+  layouts (seeds 0..255 at all three sizes), 32 exactly mirrored hall pairs; viewer checked.
+  Door `part_ref (12,0)` on large/seed 0 exposed a FALSE PROOF: neighbouring raster cells
+  had hidden a gap between the axis-aligned door and the slanted gallery wall. `site` now
+  places POLYGONS through `motif_path.h` edge ports, not bounding rectangles. Port endpoints
+  lie exactly on an edge's integer lattice; the consumer uses 1/256-unit coordinates.
+  `make_motif_edge_port`, `attach_motif_rect`, `share_motif_boundary`: real edge segment,
+  parallel child frontage and oriented aperture, positive-length contact (not a point).
+  Path ports exclude internal miter sections. Independent `check_site_plan` runs BEFORE
+  projection; a test clears every raster and still validates, then moves a bend door by
+  1/256 unit and demands refusal. WFC rectangles may overlap and are validated separately
+  before projection: they do not own geometry. `motif_layout` remains the old rectangular
+  API for `motifs`; the new site placer no longer uses it to choose connections.
+  Site rules: `attachment = cap / wall / bend / paired_wall`, centred terminal halls,
+  exact mirrored pairs, `turns = straight / left / right` for open corridor chains,
+  `open_percent` for occasional direct hall entries; technical width is aperture frontage,
+  height is wall depth. L1/L2/M ranges and mirroring vary profiles, min_bend_length regulates
+  short LM independently. SAT candidate rejection can bypass geometry, NOT route between
+  two fixed endpoints. Frontage needed a DATA correction: L1 minimum 450 -> 550 after
+  medium/seed 132 ran out of space for its cells. A paired-hall template likewise needs a
+  longer continuation (the check uses 32..40 rather than 16..22). Refusal is still normal
+  for an impossible template; increasing the empty footprint is not a packing algorithm.
+
+- THE PLAN LIVES IN UNITS, THE RASTER IS A VIEW (2026-09-13). GN06 building `31/31`, cave `14/14`,
+  structure unit tests `35/35`, `631/631` project tests. `zone_joins` derives joins from the ZONE LIST
+  (no raster input); `open_doors` no longer paints doors; `place_columns` emits a LIST of wall
+  rectangles; new `project_zones` (last step, window + scale -> cells).
+  THE POINT OF THE SLICE: the author asked to "decouple the pixels from the zones — pick an arbitrary
+  region, cut it by the same rules, then PROJECT it onto a picture". It turned out not to be about
+  display but about where the truth lives. While joins were derived from the raster, the plan was tied to
+  the picture THREE TIMES, each tie looking like a detail: the plot could not be larger than the image,
+  the unit of length was a pixel, and the cost of deriving joins grew with the number of cells — though a
+  join is a property of dozens of places. Now no building tool reads a cell, `project_zones` is last, and
+  nothing reads its output (trivially checkable: there is no later step).
+  A PROJECTION IS A SAMPLE AT THE CELL CENTRE, not area coverage, and everything follows: a cell has one
+  centre, so it has one zone, nobody contends for it, write order is irrelevant, and what remains an
+  overwrite is an overlap in the PLAN — a refusal. THE PICTURE MUST SAY WHAT IS NOT ON IT, and it takes
+  TWO numbers because it coarsens two ways: LOST (a place that caught no cell centre) and MERGED (cells
+  side by side whose places have a wall between them in units). The second is the dangerous one — a flood
+  fill over such a picture would find a passage the plan does not have — so every raster check now stands
+  BEHIND the check "both are zero", and the report draws a line under the picture row.
+  THE MOVE WAS VERIFIED BY NUMBER, NOT BY EYE: places, joins and columns at every size are exactly what
+  they were when joins were read off the raster (`256` -> `1113` places, `1620` joins, `243` columns), so
+  geometry over the list reproduced geometry over the cells exactly, ORDER INCLUDED — and therefore the
+  choice of doors too. Three new checks state what this was all for: a picture twice as large moved no
+  place, link or column; a window of the plot matches the same piece of the whole picture cell for cell;
+  the one-to-one projection lost and merged nothing. On a `256` plot the plan costs `4.2` ms at any
+  picture size, while a `1024x1024` picture of the same plan costs `17.0` ms: THE VIEW PAYS, NOT THE
+  PLAN. Joins are found through a table of side starts rather than a scan of all pairs (a join demands an
+  EXACT meeting), and "who else lies in this wall" is asked of a coarse grid.
+  SHAPE SURVIVED THE MOVE and had to: a run is measured along the place's EDGE LINE, not its extent, so a
+  chamfered room still has less straight edge than side and a door is not put into the chamfer. One copy
+  of the geometry remains (`inside_shape`) — it simply has three callers now, and no imprint of the shape
+  is stored anywhere, so two imprints have nowhere to diverge.
+  `--size=301 --view=78` shows a three-hundred-unit plot in seventy-eight cells; `--window=X,Y,W,H` cuts
+  out a piece one-to-one. A third ctest (`--size=157`) exists because that plot is deliberately not the
+  size of any sensible raster: before, such a run was not slow but impossible.
+
+- ARCHITECTURE IS DATA: SHAPES, UNCUT VOLUMES AND COLONNADES (2026-09-12). GN06 building `27/27`, cave
+  `14/14`, structure unit tests `33/33`, `626/626` project tests. `paint_rects` gained an optional SHAPE
+  input and refuses to overwrite another element's cell; new `place_columns`; `slice_zones` gained
+  `reserve_percent`.
+  THE POINT OF THE SLICE: a rectangular subdivision reads as a warehouse. A building is recognised by
+  something else — large uncut volumes, chamfered and rounded corners, round halls, and columns the
+  walls run into. ALL OF IT WENT IN AS DATA, with not one edit to doors, connectivity or the checks,
+  because THE JOINS ARE DERIVED FROM THE RASTER: a round hall's joins are found by the same sweep as a
+  rectangular closet's.
+  A LARGE PLACE CAN ONLY BE LEFT UNCUT — cutting tends to the mean and a hall never comes out of it. The
+  declared quantity is a SHARE, not a count: a small plot has only two parts, and a declared three left
+  EVERYTHING whole, at which point the building stopped depending on the seed at all. The check "another
+  seed gives another building" caught exactly that.
+  SHAPE SITS NEXT TO THE EXTENT (`rectangle`/`chamfer`/`rounded`/`ellipse`) and is computed in INTEGERS
+  (cell taken by its centre in doubled coordinates): a shape decided by comparing doubles would differ by
+  a cell on another machine — and a cell here is a doorway. SHAPE IS CHOSEN BY SIZE, ROLE BY THE SOLVER
+  FROM ADJACENCY, and that order is not a preference but forced: the role is assigned after the joins are
+  derived from the raster, and the shape is what creates the raster.
+  A ONE-CELL CHAMFER is invisible alone and very visible at a crossing: where four rooms meet, four
+  chamfers leave a stub of wall — exactly the column the walls run into, and no separate mechanism was
+  needed for it.
+  A COLUMN IS A PIECE OF WALL, NOT A ZONE. `place_columns` asks the RASTER which cells belong to the
+  place instead of recomputing the shape (a second copy would one day let the colonnade escape a rounded
+  corner), centres the grid on the place, and measures the margin as the square "column plus margin":
+  that alone promises both "does not stick to the wall" and "does not merge with its neighbour". The
+  wall check got STRONGER than the old "the wall is connected": before the doors the wall is ONE MASS
+  PLUS ONE PIECE PER COLUMN, and it now fails from both sides.
+  TWO REFUSALS FOUND REAL THINGS, AND BOTH WERE IN THE DECLARATION, NOT THE CODE: a one-cell chamfer on a
+  four-cell room left two cells of straight edge, no door would fit, and the room ended up with no joins
+  at all (hence the rule "the chamfer shrinks while the edge still holds a doorway" rather than a tuned
+  number); and overwriting another place's cell while painting — invisible before and, with shapes, no
+  longer catchable by comparing areas — became a refusal in `paint_rects`: the one who loses data must
+  refuse, not the one who counts afterwards.
+  DIAGONAL CORRIDORS DEFERRED WITH A REASON: in a guillotine subdivision places stand in rows,
+  circulation is already connected, and a diagonal would be decoration rather than a route. It needs
+  either a different subdivision or PARTS on a zone — a diagonal gallery cuts a large place in two, and
+  the halves must be one place of two pieces, or the check "a place is one connected piece" fails
+  correctly. The raster shape for it already exists.
+- THE STREET IS A ZONE, SO AN OUTER DOOR IS JUST A DOOR (2026-09-12). GN06 building `25/25`, cave
+  `14/14`, structure unit tests `26/26`, `619/619` project tests. `slice_zones` gained
+  `origin_x`/`origin_y`; `open_doors` gained an optional matrix of REQUIRED doors and grows its tree
+  differently (see below).
+  THE MODEL PAID OFF: outer doors needed NOT ONE LINE of new mechanism. The raster became a PLOT (a
+  street band, the building footprint, a yard band), the playground writes the street and the yard into
+  the same list of places, and the rules decide who faces what. BOTH ENTRANCES ARE GUARANTEED BY THE
+  SPANNING TREE rather than by a rule saying "make two entrances": the street and the yard are DIFFERENT
+  places with no link between them (the plot is cut at the raster edge), and both must be reachable.
+  A THIRD RULE TABLE — REQUIRED DOORS — because A REQUIREMENT IS NOT EXPRESSIBLE AS A PROHIBITION: "the
+  front door leads into the hall", "the service door into the kitchen" is not a statement about what
+  never happens. Required doors open FIRST (what was declared must not lose the race for link-limit slots
+  to an arbitrary join), must be a subset of the allowed table, and a pair declared both required and
+  forbidden is refused before any work. The solver's conditions moved onto the same axis: the hall is the
+  largest place FACING THE STREET (a hall you cannot reach from the street stops being a hall), the
+  kitchen the largest FACING THE YARD.
+  FOUND BY A REFUSAL, AND IT IS THE DAY'S REAL LESSON: after the street appeared the generator stopped
+  assembling and named a zone nobody could reach. The cause was not the street — GREEDY-BY-LENGTH
+  (Kruskal) WIRES PLACES TO EACH OTHER: the kitchen spent its link limit on two stores before it ever
+  reached a corridor, and the cluster "kitchen + stores + yard" stayed severed from the house. A formally
+  correct spanning tree on a graph without limits — and a useless building. THE TREE NOW GROWS FROM THE
+  CIRCULATION: from the LARGEST already-connected part, which after the wide openings is exactly the
+  circulation network (the tool still knows nothing about kinds).
+  MEASURED, AND PAID ONCE FOR NOTHING: picking the BEST join at every step means rescanning every join
+  after every door — `26.8` ms at `256x256` against `6.0` for the old greedy set. Sweeping the sorted
+  list in PASSES (the component grows mid-pass, and a handful of passes suffice because places hang off
+  the circulation rather than in chains) gives `9.3` ms with the same result.
+  THE REFUSAL LEARNED TO CARRY ITS CAUSE: how many joins the zone has, how many are forbidden by the door
+  rules, how many are blocked by a link limit, and who the neighbours are with their link counts. The
+  invariant "a refusal carries its cause" had been satisfied only formally — the old message listed both
+  possible causes and left the author to guess which one fired.
+- ZONES INSTEAD OF ROOMS AND CORRIDORS: GN06'S SECOND POSTURE (2026-09-12). GN06 building `20/20`, cave
+  `14/14`, structure unit tests `20/20`, `615/615` project tests. Four tools added to
+  `libs/originator/.../structure_tools.cpp` (`slice_zones`, `zone_joins`, `zone_graph`, `open_doors`);
+  `carve_rooms` renamed to `paint_rects` because both families use it and only one of them has rooms.
+  WHY THE MODEL CHANGED: a real floor is not "rooms plus corridors". It is a long corridor with rows of
+  places along it, a hall a kitchen opens into, a store with exactly one door — and none of those can be
+  said about a KIND OF GEOMETRY. They can only be said about A PLACE WITH A KIND. So PF09's model was
+  taken whole: a ZONE carries passability, a link limit and the rule tables; a corridor is a kind with no
+  link limit, a store a kind limited to one door. WHAT WAS STRUCTURE BECAME DATA.
+  THREE PF09 STATEMENTS REPEATED VERBATIM: connectivity is DATA, not a function of geometry (geometry
+  runs exactly once — `zone_joins` derives the joins from the raster and every later decision reads the
+  list); A DOOR IS A ZONE, not a property of an edge (a door has two sides and a place has one
+  passability); a WIDE OPENING STAYS AN EDGE (a corridor band and the spine touch with no wall between —
+  a link that needs no door).
+  TWO RULE TABLES, BECAUSE ADJACENCY AND CONNECTION ARE DIFFERENT STATEMENTS: a kitchen shares a wall
+  with the chambers all the time, and must not share a door. One table would have lost one of the two.
+  The solver reads adjacency, `open_doors` reads the door table.
+  KINDS ARE LAID OUT BY GN05'S `graph_collapse` and nothing new was needed — the vertex is a room
+  instead of a sphere cell. But it buys a PROHIBITION, not a REQUIREMENT: "the kitchen must be next to
+  the hall" is set as a PRE-TAKEN zone, exactly like the peaks and basins on the sphere. Three conditions,
+  each for its own reason: corridors (circulation is STRUCTURE — connectivity is global, a prohibition is
+  local), the hall (the solver cannot see area at all), the kitchen (a positive requirement). The rest is
+  the solver's, and it shows: chambers cannot sit next to the kitchen, so stores do.
+  THE THREE LAYERS OF DOOR CHOICE ARE SPLIT BY WHAT IS PROMISED: the spanning tree REFUSES (a cut-off
+  zone), the kind rules REFUSE (a forbidden door appears neither for connectivity nor for generosity),
+  generosity is CLAMPED (a spare door promises nothing). Spare doors are marked, and the mark is not
+  decoration: PF09's rule — only what connectivity survives without may be locked — is checked on them.
+  MEASURED: SUBDIVISION HAS NO DENSITY CEILING BECAUSE IT DOES NOT TRY — on the same `64x64` footprint
+  the cave tops out at `42` rooms after `25600` attempts and `6.50` ms, while the building yields `59`
+  places with not one rejected attempt in `0.86` ms (`256x256`: `1489` places in `6.0` ms). DEPTH FROM
+  CIRCULATION averages `0.8`–`0.95` doors, at most `3` across every measured size and seed — and the
+  three is not taste but the LENGTH OF THE RULE CHAIN (corridor -> hall -> kitchen -> store).
+  THE WALL IS CONNECTED ONLY UNTIL THE DOORS: a door cuts more than a passage, and after them the wall
+  falls into `11` pieces on `64x64`. The check demands connectivity BEFORE doors, because that is a
+  property of the SUBDIVISION; walls as ZONES (with an owner and a part in visibility, as in PF09) would
+  need raster component labelling, which the library does not have — a named debt, not a forgotten one.
+  FIVE OF SIX FIRST FAILURES WERE IN THE CHECKS, NOT THE GENERATOR: a 1x1 door has no orientation (its
+  extent says nothing), a door zone is an edge of the place graph and not a vertex, the largest zone
+  search started at zone 0 which is the spine. The sixth was real and changed a claim: the wall is one
+  place only before the doors.
+- STRUCTURE TOOLS AND GN06: THE FIRST GLOBAL PROMISE (2026-09-12). `164/164` originator+GN tests, GN06's own
+  `14/14`, structure unit tests `12/12`. New set `libs/originator/.../structure_tools.cpp`
+  (`add_structure_tools`) plus the lab `subprojects/playgrounds/GN06_dungeon_layout`.
+  WHY IT EARNS ITS PLACE: THE PROMISE IS OF A DIFFERENT KIND. Everything the generator could do until now
+  promises PER ELEMENT — noise smoothness, Voronoi regions, graph flood reachability-by-cost, the solver a
+  hard LOCAL prohibition. A dungeon promises GLOBALLY: every room is reachable from every other. No local
+  rule gives that — a map where every neighbouring pair is legal falls apart into two severed halves and
+  looks exactly like a whole one. That is why the set is separate: not by how it addresses memory, but by
+  what it promises.
+  FIVE TOOLS, TWO HALVES: `place_rooms` and `link_rooms` are the PLAN (dozens of elements), `paint_rects`
+  and `carve_corridors` are the GEOMETRY (tens of thousands of cells), and `link_path` is the SEAM. The
+  seam is a tool rather than four extra numbers written into the link list on the way: a copy of the room
+  centres would drift from the plan silently (move a room, the link keeps the old end, the corridor leads
+  into a wall). Because the ends arrive as COORDINATES, `carve_corridors` knows nothing about rooms — the
+  same call cuts a road or a canal — and the capacity coupling disappears (a `scatter` range applies to
+  its INPUTS, so a room list on the input would have capped the number of links by the number of rooms).
+  THE SPANNING TREE IS WHERE THE PROMISE COMES FROM: an MST connects all vertices without cycles BY
+  DEFINITION, so "links == rooms - 1" and "one component" are definitions, not properties of the layout.
+  Loops are added ON TOP of an already complete answer. Distance is MANHATTAN, not Euclidean, because the
+  corridor is cut as an elbow of two axial runs and its length IS the Manhattan distance — an Euclidean
+  tree would minimise something other than what gets built.
+  TWO CHECKS, NOT ONE, AND THE SECOND DOES NOT FOLLOW FROM THE FIRST: union-find over the link list says
+  the links suffice; a flood fill over the raster says what they carved is walkable. Carving sits between
+  those statements, and a corridor clipped at the map edge breaks the second while leaving the first true.
+  CLAMP vs REFUSAL IS DECIDED BY WHAT WAS PROMISED: loops that do not fit are clamped (a loop promises
+  nothing, and the counter shows it), a spanning tree that does not fit REFUSES LOUDLY (rooms nobody can
+  reach, on a map that looks ordinary), a room outside the raster REFUSES (plan and carving disagree about
+  the bounds), corridor thickness at the edge is clamped (geometry, not plan).
+  CAPACITY IS A WISH, THE COUNTER IS THE FACT: how many rooms fit is unknown before the run, so the ranges
+  of later steps come from `range = { count = ... }` and the tail of the list stays zero.
+  MEASURED, AND BOTH NUMBERS ARE THE POINT: COST IS SET BY DENSITY, NOT BY MAP SIZE — `512x512` builds in
+  `1.4` ms against `5.6` ms for `128x128` (sixteen times more cells, four times faster), because on a
+  roomy map nearly every attempt is accepted; memory meanwhile grows exactly with the raster, so the two
+  are different quantities and both must be measured. And REJECTION SAMPLING HAS A CEILING THAT BUDGET
+  DOES NOT MOVE: on `64x64` doubling the attempt budget from `12800` to `25600` yields ZERO extra rooms
+  (`42` either way) and doubles the time. Denser means a different algorithm (BSP), not a bigger budget —
+  and now that is a number rather than a feeling.
 - SESSION-04 + THE PROTOBUF CONFLICT: ONE CAUSE, TWO FAILURES (2026-09-07).
   `network/reconnect.h`. The slice STOPS SHORT of the transport on purpose: no socket, no byte, no replayed
   tick. What the library owns is what MUST NOT BE GUESSED. SILENCE IS NOT LOSS — two budgets, not one, so a

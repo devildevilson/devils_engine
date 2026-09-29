@@ -13,6 +13,9 @@ add_library(devils_originator
   src/originator/standard_tools.cpp
   src/originator/scatter_tools.cpp
   src/originator/constraint_tools.cpp
+  src/originator/structure_tools.cpp
+  src/originator/motif_layout.cpp
+  src/originator/motif_path.cpp
   src/originator/volume_tools.cpp
   src/originator/graph_tools.cpp
   src/originator/pipeline.cpp
@@ -23,6 +26,8 @@ add_library(devils_originator
   include/devils_engine/originator/common.h
   include/devils_engine/originator/buffer.h
   include/devils_engine/originator/tools.h
+  include/devils_engine/originator/motif_layout.h
+  include/devils_engine/originator/motif_path.h
   include/devils_engine/originator/pipeline.h
   include/devils_engine/originator/computation_queue.h
   include/devils_engine/originator/execution_profile.h

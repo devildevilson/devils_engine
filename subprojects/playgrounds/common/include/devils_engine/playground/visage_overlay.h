@@ -1,6 +1,7 @@
 #ifndef DEVILS_ENGINE_PLAYGROUND_VISAGE_OVERLAY_H
 #define DEVILS_ENGINE_PLAYGROUND_VISAGE_OVERLAY_H
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -33,6 +34,8 @@ struct rgba_image_view {
 // The playground host remains responsible for uploading the produced POD buffers through Painter.
 class visage_overlay {
 public:
+  static constexpr size_t max_detail_lines = 14;
+
   visage_overlay(std::string font_path, std::string script_path, overlay_description description);
   ~visage_overlay() noexcept;
   visage_overlay(visage_overlay&&) noexcept;
@@ -46,7 +49,8 @@ public:
   const visage::font_t& font_metrics() const noexcept;
   void set_font_texture(uint32_t texture_slot);
   // Optional lab-owned diagnostic rows rendered below the common scene/controls/frame meter.
-  // Strings are copied into the overlay's Lua environment and may be replaced every frame.
+  // At most max_detail_lines rows; hosts paginate longer lists. Strings are copied into
+  // the overlay's Lua environment and may be replaced every frame.
   void set_detail_lines(std::span<const std::string> lines);
   void set_number(std::string_view name, double value);
   double number(std::string_view name, double fallback) const;

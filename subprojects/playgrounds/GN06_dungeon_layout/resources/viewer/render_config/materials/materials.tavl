@@ -1,0 +1,26 @@
+{
+  name = fill_material
+  shaders = { vertex = "zone.vert.glsl", fragment = "zone.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = line_material
+  shaders = { vertex = "zone.vert.glsl", fragment = "zone.frag.glsl" }
+  depth = { test = true, write = false, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  // Надписи над персонажами глубиной не проверяются намеренно: имя, закрытое стеной, которую в этот
+  // момент срезает cutaway, читалось бы как ошибка. Порядок задаёт сам список шагов.
+  name = label_material
+  shaders = { vertex = "label.vert.glsl", fragment = "label.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = ui_material
+  shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}

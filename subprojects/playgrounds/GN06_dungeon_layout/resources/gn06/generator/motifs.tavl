@@ -1,0 +1,161 @@
+// Авторский словарь одного тёмного замка. Это ДАННЫЕ ПЛОЩАДКИ, а не виды `originator`.
+// `motif` может указывать на модель или отдельную процедуру проекта; пока стенд показывает
+// габарит цветом и знаком. Программа задаёт смысл и порядок частей, но не их координаты.
+// Порядок правил важен: родитель должен быть объявлен раньше ребёнка.
+
+version = 1
+
+locations = [ torture, laboratory ]
+
+scales = [
+  { name = small,  side = 72 }
+  { name = medium, side = 96 }
+  { name = large,  side = 128 }
+]
+
+motifs = [
+  { name = gallery,         glyph = "=", colour = [113, 87, 73],   palette = grime }
+  { name = focus,           glyph = "T", colour = [155, 74, 66],   palette = grime }
+  { name = torture_cell,    glyph = "c", colour = [81, 56, 45],    palette = grime }
+  { name = experiment_hall, glyph = "L", colour = [125, 116, 95],  palette = conduits }
+  { name = holding,         glyph = "h", colour = [97, 83, 78],    palette = conduits }
+  { name = service_run,     glyph = "+", colour = [119, 112, 105], palette = conduits }
+  { name = store,           glyph = "s", colour = [85, 77, 66],    palette = conduits }
+  { name = study,           glyph = "a", colour = [111, 98, 83],   palette = conduits }
+]
+
+// Малые авторские образцы (Wang-тайлы): четыре сокета описывают ВИДИМЫЙ след на полу, не
+// проходимость. Край блока получает первый образец с нулевыми сокетами. Поэтому ни один узор
+// не может обрубиться в проёме и локальный WFC не выбирает судьбу глобального маршрута.
+palettes = [
+  {
+    name = grime
+    tiles = [
+      { name = stone,   glyph = ".", colour = [82, 61, 51],  weight = 12, east = 0, west = 0, south = 0, north = 0 }
+      { name = smear_h, glyph = "-", colour = [111, 49, 42], weight = 2,  east = 1, west = 1, south = 0, north = 0 }
+      { name = smear_v, glyph = "|", colour = [111, 49, 42], weight = 2,  east = 0, west = 0, south = 1, north = 1 }
+      { name = bend_es, glyph = "1", colour = [118, 52, 44], weight = 1,  east = 1, west = 0, south = 1, north = 0 }
+      { name = bend_sw, glyph = "2", colour = [118, 52, 44], weight = 1,  east = 0, west = 1, south = 1, north = 0 }
+      { name = bend_wn, glyph = "3", colour = [118, 52, 44], weight = 1,  east = 0, west = 1, south = 0, north = 1 }
+      { name = bend_ne, glyph = "4", colour = [118, 52, 44], weight = 1,  east = 1, west = 0, south = 0, north = 1 }
+      { name = pool,     glyph = "*", colour = [138, 48, 42], weight = 1,  east = 1, west = 1, south = 1, north = 1 }
+      { name = end_e,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 1, west = 0, south = 0, north = 0 }
+      { name = end_w,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 0, west = 1, south = 0, north = 0 }
+      { name = end_s,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 0, west = 0, south = 1, north = 0 }
+      { name = end_n,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 0, west = 0, south = 0, north = 1 }
+    ]
+  }
+  {
+    name = conduits
+    tiles = [
+      { name = stone,   glyph = ".", colour = [120, 116, 99], weight = 12, east = 0, west = 0, south = 0, north = 0 }
+      { name = pipe_h,  glyph = "-", colour = [159, 134, 76], weight = 2,  east = 1, west = 1, south = 0, north = 0 }
+      { name = pipe_v,  glyph = "|", colour = [159, 134, 76], weight = 2,  east = 0, west = 0, south = 1, north = 1 }
+      { name = elbow_es,glyph = "1", colour = [172, 147, 83], weight = 1,  east = 1, west = 0, south = 1, north = 0 }
+      { name = elbow_sw,glyph = "2", colour = [172, 147, 83], weight = 1,  east = 0, west = 1, south = 1, north = 0 }
+      { name = elbow_wn,glyph = "3", colour = [172, 147, 83], weight = 1,  east = 0, west = 1, south = 0, north = 1 }
+      { name = elbow_ne,glyph = "4", colour = [172, 147, 83], weight = 1,  east = 1, west = 0, south = 0, north = 1 }
+      { name = manifold,glyph = "*", colour = [187, 161, 88], weight = 1,  east = 1, west = 1, south = 1, north = 1 }
+      { name = socket_e,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 1, west = 0, south = 0, north = 0 }
+      { name = socket_w,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 0, west = 1, south = 0, north = 0 }
+      { name = socket_s,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 0, west = 0, south = 1, north = 0 }
+      { name = socket_n,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 0, west = 0, south = 0, north = 1 }
+    ]
+  }
+]
+
+rules = [
+  {
+    name = gallery
+    motif = gallery
+    location = torture
+    parent = none
+    min_width = [17, 22, 28]
+    max_width = [21, 27, 35]
+    min_height = 3
+    max_height = 4
+  }
+  {
+    name = focus
+    motif = focus
+    location = torture
+    parent = gallery
+    sides = [ east ]
+    min_width = [6, 6, 6]
+    max_width = [9, 9, 9]
+    min_height = 6
+    max_height = 8
+  }
+  {
+    name = experiment_hall
+    motif = experiment_hall
+    location = laboratory
+    parent = focus
+    sides = [ east ]
+    min_width = [10, 13, 17]
+    max_width = [13, 17, 22]
+    min_height = 10
+    max_height = 14
+  }
+  {
+    name = service_run
+    motif = service_run
+    location = laboratory
+    parent = experiment_hall
+    sides = [ east ]
+    min_width = [6, 6, 6]
+    max_width = [9, 9, 9]
+    min_height = 3
+    max_height = 4
+  }
+  {
+    name = store
+    motif = store
+    location = laboratory
+    parent = service_run
+    sides = [ north, south ]
+    min_width = [5, 5, 5]
+    max_width = [7, 7, 7]
+    min_height = 4
+    max_height = 6
+  }
+  {
+    name = study
+    motif = study
+    location = laboratory
+    parent = service_run
+    sides = [ north, south ]
+    min_width = [5, 5, 5]
+    max_width = [7, 7, 7]
+    min_height = 4
+    max_height = 6
+  }
+  {
+    name = torture_cell
+    motif = torture_cell
+    location = torture
+    parent = gallery
+    sides = [ north, south ]
+    min_width = [4, 4, 4]
+    max_width = [5, 5, 5]
+    min_height = 4
+    max_height = 6
+    count = [4, 6, 8]
+    required = [3, 5, 7]
+    optional_chance = 60
+  }
+  {
+    name = holding
+    motif = holding
+    location = laboratory
+    parent = experiment_hall
+    sides = [ north, south ]
+    min_width = [4, 4, 4]
+    max_width = [5, 5, 5]
+    min_height = 4
+    max_height = 6
+    count = [2, 2, 3]
+    required = [2, 2, 2]
+    optional_chance = 65
+  }
+]
