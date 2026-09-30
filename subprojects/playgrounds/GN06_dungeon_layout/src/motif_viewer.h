@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "site_graph.h"
+
 namespace gn06 {
 
 struct site_view_scene;
@@ -21,7 +23,8 @@ int run_motif_viewer(uint64_t seed, std::string_view scale, size_t requested_sid
 
 int run_site_viewer(uint64_t seed, std::string_view scale, int32_t entry_y,
                     bool surface_cut, std::string_view source,
-                    std::string_view motifs_source, uint32_t frame_limit);
+                    std::string_view motifs_source, uint32_t frame_limit,
+                    site_bounds bounds = {});
 
 } // namespace gn06
 

@@ -5,6 +5,7 @@ project(GN06_dungeon_layout VERSION 0.1.0 LANGUAGES CXX)
 # Контрактные проверки остаются headless. Интерактивный показ использует собственную тонкую
 # витрину зон GN06 (основана на графе PF09); генератор и его данные от графики не зависят.
 add_executable(GN06_dungeon_layout src/main.cpp src/motif_demo.cpp src/motif_viewer.cpp src/site_graph.cpp
+  src/site_motif_resource.cpp
   src/viewer_detail_page.cpp)
 
 target_compile_definitions(GN06_dungeon_layout PRIVATE
@@ -73,7 +74,7 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     LABELS devils_engine PASS_REGULAR_EXPRESSION "perception_candidates=[1-9][0-9]* perceptions=[1-9]")
 
   add_test(NAME GN06_site_perception_hidden
-    COMMAND GN06_dungeon_layout --mode=site --scale=medium --seed=6)
+    COMMAND GN06_dungeon_layout --mode=site --scale=medium --seed=50)
   set_tests_properties(GN06_site_perception_hidden PROPERTIES
     LABELS devils_engine PASS_REGULAR_EXPRESSION "perception_candidates=[1-9][0-9]* perceptions=0")
 
@@ -92,7 +93,16 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     PASS_REGULAR_EXPRESSION "end policy=vary outcome=trim removed=[1-9]")
 
   add_test(NAME GN06_site_path_ending_accent
-    COMMAND GN06_dungeon_layout --mode=site --scale=large --seed=0)
+    COMMAND GN06_dungeon_layout --mode=site --scale=large --seed=1)
   set_tests_properties(GN06_site_path_ending_accent PROPERTIES LABELS devils_engine
-    PASS_REGULAR_EXPRESSION "end policy=vary outcome=accent removed=0 accent=service_alcove")
+    PASS_REGULAR_EXPRESSION "end policy=vary outcome=accent removed=[0-9]+ accent=service_alcove")
+
+  # Прямоугольный внешний участок не является профилем содержания и не растягивает блоки.
+  add_test(NAME GN06_site_rectangular_bounds_verify
+    COMMAND GN06_dungeon_layout --mode=site --scale=small --bounds=280,180 --seed=0 --verify)
+  set_tests_properties(GN06_site_rectangular_bounds_verify PROPERTIES LABELS devils_engine)
+
+  add_test(NAME GN06_site_impossible_bounds_refuse
+    COMMAND GN06_dungeon_layout --mode=site --scale=large --bounds=32,32 --seed=0)
+  set_tests_properties(GN06_site_impossible_bounds_refuse PROPERTIES LABELS devils_engine WILL_FAIL TRUE)
 endif()

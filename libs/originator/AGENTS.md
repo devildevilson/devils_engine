@@ -27,6 +27,7 @@
 | id ресурса -> тексты генератора | `include/.../generator_resource.h` |
 | программа пристыковки авторских блоков, проходы и прямые стыки | `include/.../motif_layout.h` |
 | полоса одной ширины вокруг оси, L1/L2/M, реальные порты кромок, наклонные проёмы, SAT и обрезка свободных торцов | `include/.../motif_path.h` |
+| расширяемые процедуры локальной геометрии мотивов и общая проверка выпуклых частей | `include/.../motif_geometry.h` |
 | lua-хост, биндинги, бюджет | `include/.../script_host.h` |
 | `devils_script` над буфером | `include/.../script_program.h` |
 | куда уходят часы и что годно к устройству | `include/.../execution_profile.h` |
@@ -183,6 +184,7 @@ cd build-release && ctest -R originator -j 4
 | решатель | `originator_collapse_test` |
 | постройки (нора и зоны здания, план в мере против картинки) | `originator_structure_test` |
 | авторские планы и цельные полосы путей | `originator_motif_test`, GN06 `--mode=site --verify` |
+| зарегистрированные геометрические процедуры мотивов | `originator_motif_geometry_test`, `gn06_motif_resource_test`, GN06 `--mode=site --verify` |
 | очередь, слияние | `originator_queue_test`, `originator_queue_lua_test` |
 | устройство | `originator_device_test`, `originator_device_queue_test` |
 | транслятор | `originator_translate_test` |

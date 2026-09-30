@@ -196,7 +196,7 @@ void line(geometry& out, const float x0, const float y0, const float x1, const f
 // Общая кромка частей или открытого стыка — не стена. Вычитаем только совпавший
 // участок; техническая дверь отдельно сохраняет свой контур и ориентированное полотно.
 void part_boundary(geometry& out, const site_view_scene& scene, const site_view_part& part,
-                   const uint32_t tint) {
+                   const uint32_t tint, const bool show_parts) {
   for (size_t i = 0; i < part.outline.size(); ++i) {
     const auto a = part.outline[i], b = part.outline[(i + 1) % part.outline.size()];
     const auto dx = int64_t(b.x) - a.x, dy = int64_t(b.y) - a.y;
@@ -204,7 +204,7 @@ void part_boundary(geometry& out, const site_view_scene& scene, const site_view_
     std::vector<std::pair<double, double>> visible{{0.0, 1.0}};
     for (const auto& zone : scene.zones) {
       for (const auto& other : zone.parts) {
-        if (other.ref == part.ref) continue;
+        if (other.ref == part.ref || (show_parts && other.ref.area == part.ref.area)) continue;
         for (size_t j = 0; j < other.outline.size(); ++j) {
           const auto c = other.outline[j], d = other.outline[(j + 1) % other.outline.size()];
           if (dx * (int64_t(c.y) - a.y) != dy * (int64_t(c.x) - a.x) ||
@@ -235,44 +235,29 @@ void part_boundary(geometry& out, const site_view_scene& scene, const site_view_
   }
 }
 
-geometry build_geometry(const motif_view_scene& scene, const bool show_detail) {
+geometry build_geometry(const motif_view_scene& scene, const bool show_parts) {
   geometry out;
   const auto& layout = scene.layout;
   quad(out, 0.0f, 0.0f, float(layout.width), float(layout.height), -0.05f,
        rgba(0x17191d), no_slot);
 
-  if (show_detail) {
-    for (int32_t y = 0; y < layout.height; ++y) {
-      for (int32_t x = 0; x < layout.width; ++x) {
-        const auto rgb = scene.cell_colours[size_t(y) * layout.width + x];
-        if (rgb == 0x17191du) continue;
-        uint32_t slot = no_slot;
-        for (uint32_t i = 0; i < layout.instances.size(); ++i) {
-          const auto& r = layout.instances[i].rect;
-          if (x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h) {
-            slot = i;
-            break;
-          }
-        }
-        quad(out, float(x), float(y), float(x + 1), float(y + 1), 0.10f, rgba(rgb), slot);
-      }
-    }
-  } else {
-    for (uint32_t i = 0; i < layout.instances.size(); ++i) {
-      const auto& r = layout.instances[i].rect;
-      quad(out, float(r.x), float(r.y), float(r.x + r.w), float(r.y + r.h), 0.10f,
-           rgba(scene.zones[i].colour), i);
-    }
-    for (const auto& passage : layout.passages)
-      quad(out, float(passage.x), float(passage.y), float(passage.x + 1), float(passage.y + 1),
-           0.15f, rgba(0xe1d3a5), passage.b);
-    quad(out, 0.0f, float(layout.entry_y), 1.0f, float(layout.entry_y + 1),
-         0.15f, rgba(0xe1d3a5), no_slot);
-    for (const auto& exposed : layout.exposures)
-      quad(out, float(exposed.x), float(exposed.y), float(exposed.x + 1), float(exposed.y + 1),
-           0.18f, rgba(0xb8c8d9), exposed.instance);
+  for (uint32_t i = 0; i < layout.instances.size(); ++i) {
+    const auto& r = layout.instances[i].rect;
+    quad(out, float(r.x), float(r.y), float(r.x + r.w), float(r.y + r.h), 0.10f,
+         rgba(scene.zones[i].colour), i);
+  }
+  for (const auto& passage : layout.passages) {
+    quad(out, float(passage.x), float(passage.y), float(passage.x + 1), float(passage.y + 1),
+         0.15f, rgba(0xe1d3a5), passage.b);
+  }
+  quad(out, 0.0f, float(layout.entry_y), 1.0f, float(layout.entry_y + 1),
+       0.15f, rgba(0xe1d3a5), no_slot);
+  for (const auto& exposed : layout.exposures) {
+    quad(out, float(exposed.x), float(exposed.y), float(exposed.x + 1), float(exposed.y + 1),
+         0.18f, rgba(0xb8c8d9), exposed.instance);
   }
 
+  if (!show_parts) return out;
   for (const auto& item : layout.instances) {
     const auto& r = item.rect;
     const float x0 = float(r.x), y0 = float(r.y);
@@ -286,14 +271,13 @@ geometry build_geometry(const motif_view_scene& scene, const bool show_detail) {
   return out;
 }
 
-geometry build_geometry(const motif_view_scene& scene, const bool show_detail, const bool) {
-  return build_geometry(scene, show_detail);
+geometry build_geometry(const motif_view_scene& scene, const bool show_parts, const bool) {
+  return build_geometry(scene, show_parts);
 }
 
-geometry build_geometry(const site_view_scene& scene, const bool show_detail,
+geometry build_geometry(const site_view_scene& scene, const bool show_parts,
                         const bool show_route) {
   geometry out;
-  const auto width = size_t(scene.layout.width);
   quad(out, 0.0f, 0.0f, float(scene.layout.width), float(scene.layout.height), -0.05f,
        rgba(0x17191d), no_slot);
   for (uint32_t slot = 0; slot < scene.zones.size(); ++slot) {
@@ -304,17 +288,16 @@ geometry build_geometry(const site_view_scene& scene, const bool show_detail,
         [&](const site_path_ending& ending) { return ending.accent_part == part.ref; });
       const auto part_colour = accent == scene.endings.end() ? zone.colour : accent->colour;
       polygon(out, outline, 0.10f, rgba(part_colour), slot);
-      for (int32_t y = part.bounds.y; y < part.bounds.y + part.bounds.h; ++y)
+      for (int32_t y = part.bounds.y; y < part.bounds.y + part.bounds.h; ++y) {
         for (int32_t x = part.bounds.x; x < part.bounds.x + part.bounds.w; ++x) {
-          const auto cell = size_t(y) * width + x;
+          const auto cell = size_t(y) * scene.layout.width + x;
           if (scene.part_owner[cell] != part.ref) continue;
-          uint32_t colour = show_detail ? scene.cell_colours[cell] : part_colour;
+          uint32_t colour = part_colour;
           if (scene.exposed[cell] != 0) colour = 0xb8c8d9u;
-          else if (show_route && scene.route[cell] != 0 && !zone.connector)
-            colour = 0x78c4b8u;
           if (colour != part_colour)
             polygon(out, clipped_cell(outline, x, y), 0.11f, rgba(colour), slot);
         }
+      }
     }
   }
   for (const auto& zone : scene.zones) {
@@ -323,7 +306,7 @@ geometry build_geometry(const site_view_scene& scene, const bool show_detail,
       const auto& r = part.bounds;
       const float x0 = float(r.x), y0 = float(r.y);
       const float x1 = float(r.x + r.w);
-      part_boundary(out, scene, part, tint);
+      part_boundary(out, scene, part, tint, show_parts);
       if (zone.connector && zone.glyph == 'D') {
         if (part.outline.size() == 4) {
           const auto& p = part.outline;
@@ -341,6 +324,10 @@ geometry build_geometry(const site_view_scene& scene, const bool show_detail,
       }
     }
   }
+  if (show_route)
+    for (const auto& span : scene.route_spans)
+      line(out, float(span.a.x) / site_precision, float(span.a.y) / site_precision,
+           float(span.b.x) / site_precision, float(span.b.y) / site_precision, rgba(0x42f5d1u));
   return out;
 }
 
@@ -386,7 +373,7 @@ uint32_t pick_zone(const site_view_scene& scene, const double x, const double y)
 }
 
 std::vector<std::string> zone_details(const motif_view_scene& scene, const uint32_t selected,
-                                      const uint32_t hovered, const bool show_detail,
+                                      const uint32_t hovered, const bool show_parts,
                                       const std::string_view status) {
   std::vector<std::string> lines;
   const auto& layout = scene.layout;
@@ -394,7 +381,7 @@ std::vector<std::string> zone_details(const motif_view_scene& scene, const uint3
                               scene.scale, layout.width, layout.height));
   lines.push_back(std::format("{} zones  {} passages  {} surface contacts  {} view",
                               layout.instances.size(), layout.passages.size(), layout.exposures.size(),
-                              show_detail ? "detail" : "zones"));
+                              show_parts ? "parts" : "areas"));
   if (!status.empty()) lines.push_back(std::string(status));
   const auto index = selected != no_slot ? selected : hovered;
   if (index == no_slot || index >= layout.instances.size()) {
@@ -420,31 +407,35 @@ std::vector<std::string> zone_details(const motif_view_scene& scene, const uint3
   lines.push_back(std::format("{} {}", joins, links == 0 ? "none" : ""));
   uint32_t contacts = 0;
   for (const auto& exposure : layout.exposures) contacts += uint32_t(exposure.instance == index);
-  lines.push_back(std::format("WFC detail cells {}  surface contacts {}", info.detail_cells, contacts));
+  lines.push_back(std::format("surface contacts {}", contacts));
   return lines;
 }
 
 std::vector<std::string> zone_details(const motif_view_scene& scene, const uint32_t selected,
-                                      const uint32_t hovered, const bool show_detail,
+                                      const uint32_t hovered, const bool show_parts,
                                       const bool, const std::string_view status,
                                       const site_part_ref, const site_part_ref) {
-  return zone_details(scene, selected, hovered, show_detail, status);
+  return zone_details(scene, selected, hovered, show_parts, status);
 }
 
 std::vector<std::string> zone_details(const site_view_scene& scene, const uint32_t selected,
-                                      const uint32_t hovered, const bool show_detail,
+                                      const uint32_t hovered, const bool show_parts,
                                       const bool show_route, const std::string_view status,
                                       const site_part_ref selected_part,
                                       const site_part_ref hovered_part) {
   std::vector<std::string> lines;
-  lines.push_back(std::format("seed {}  rules v{}  {} {}x{}", scene.seed,
-    scene.catalogue_version, scene.scale, scene.layout.width, scene.layout.height));
+  lines.push_back(std::format("seed {}  rules v{} motifs v{}  {} {}x{}", scene.seed,
+    scene.catalogue_version, scene.motif_catalogue_version, scene.scale, scene.layout.width, scene.layout.height));
   const auto connectors = std::count_if(scene.zones.begin(), scene.zones.end(),
     [](const site_view_zone& zone) { return zone.connector; });
-  lines.push_back(std::format("{} areas  {} transitions  {} perceptions  {} WFC cells  {} / {}",
+  lines.push_back(std::format("{} areas  {} transitions  {} perceptions  {} / {}",
     scene.zones.size(), connectors,
-    scene.perceptions, scene.detail_cells, show_detail ? "detail" : "zones",
+    scene.perceptions, show_parts ? "detail" : "zones",
     show_route ? "route" : "no route"));
+  if (!scene.projection_quality.exact())
+    lines.push_back(std::format("view loss: parts {}  false/missing links {}/{}  unreachable cells {}",
+      scene.projection_quality.lost_parts, scene.projection_quality.false_links,
+      scene.projection_quality.missing_links, scene.projection_quality.unreachable_cells));
   if (!status.empty()) lines.push_back(std::string(status));
   const auto id = selected != no_slot ? selected : hovered;
   if (id == no_slot || id >= scene.zones.size()) {
@@ -615,11 +606,11 @@ int run_viewer(const uint64_t initial_seed, SceneFactory&& make_scene,
     const std::string common = std::string(PLAYGROUND_COMMON_RESOURCE_ROOT) + "/";
     playground::visage_overlay overlay(common + "fonts/crimson.roman.ttf", common + "ui/lab_overlay.lua",
       playground::overlay_description{mode == "site" ? "GN06 site areas" : "GN06 motif zones",
-        mode == "site" ? "functional + technical areas | authored WFC motifs" :
-                         "authored places + passages + local WFC detail",
+        mode == "site" ? "functional + technical areas | convex geometry" :
+                         "legacy rectangular blocks + passages",
         mode == "site" ?
-          "WASD pan | wheel zoom | LMB select | N/B seed | Tab detail | R route | F fit | Esc quit" :
-          "WASD pan | wheel zoom | LMB select | N/B seed | Tab detail | F fit | Esc quit"});
+          "WASD pan | wheel zoom | LMB select | N/B seed | Tab parts | R route | F fit | Esc quit" :
+          "WASD pan | wheel zoom | LMB select | N/B seed | Tab parts | F fit | Esc quit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(font_texture,
@@ -636,7 +627,7 @@ int run_viewer(const uint64_t initial_seed, SceneFactory&& make_scene,
     bind_key("pan_right", "key_d");
     bind_key("next_seed", "key_n");
     bind_key("previous_seed", "key_b");
-    bind_key("toggle_detail", "tab");
+    bind_key("toggle_parts", "tab");
     bind_key("toggle_route", "key_r");
     bind_key("fit_view", "key_f");
     bind_key("previous_properties", "page_up");
@@ -647,9 +638,9 @@ int run_viewer(const uint64_t initial_seed, SceneFactory&& make_scene,
     input::set_window_callback(window, &scroll_callback);
     input::set_window_callback(window, &mouse_callback);
 
-    bool show_detail = false;
+    bool show_parts = false;
     bool show_route = mode == "site";
-    bool next_latch = false, previous_latch = false, detail_latch = false;
+    bool next_latch = false, previous_latch = false, parts_latch = false;
     bool route_latch = false, fit_latch = false;
     bool previous_properties_latch = false, next_properties_latch = false;
     size_t properties_page = 0;
@@ -659,7 +650,7 @@ int run_viewer(const uint64_t initial_seed, SceneFactory&& make_scene,
     site_part_ref selected_part;
     uint64_t requested_seed = initial_seed;
     std::string status;
-    geometry drawing = build_geometry(scene, show_detail, show_route);
+    geometry drawing = build_geometry(scene, show_parts, show_route);
     double centre_x = 0.0, centre_y = 0.0, span = 64.0;
     const auto fit_scene = [&](const auto& current) {
       int32_t left = 0, top = current.layout.entry_y;
@@ -715,7 +706,7 @@ int run_viewer(const uint64_t initial_seed, SceneFactory&& make_scene,
           inspected = no_slot;
           inspected_part = {};
           status.clear();
-          drawing = build_geometry(scene, show_detail, show_route);
+          drawing = build_geometry(scene, show_parts, show_route);
           fit_scene(scene);
           utils::info("GN06 viewer: generated seed {} with {} zones", scene.seed, scene.zones.size());
         } catch (const std::exception& error) {
@@ -723,13 +714,13 @@ int run_viewer(const uint64_t initial_seed, SceneFactory&& make_scene,
           utils::warn("GN06 viewer: {}", status);
         }
       }
-      if (pressed_once("toggle_detail", detail_latch)) {
-        show_detail = !show_detail;
-        drawing = build_geometry(scene, show_detail, show_route);
+      if (pressed_once("toggle_parts", parts_latch)) {
+        show_parts = !show_parts;
+        drawing = build_geometry(scene, show_parts, show_route);
       }
       if (pressed_once("toggle_route", route_latch)) {
         show_route = !show_route;
-        drawing = build_geometry(scene, show_detail, show_route);
+        drawing = build_geometry(scene, show_parts, show_route);
       }
       if (pressed_once("fit_view", fit_latch)) fit_scene(scene);
       if (scroll_delta != 0.0) {
@@ -765,7 +756,7 @@ int run_viewer(const uint64_t initial_seed, SceneFactory&& make_scene,
       const auto next_properties = pressed_once("next_properties", next_properties_latch);
       if (previous_properties && properties_page != 0) --properties_page;
       if (next_properties) ++properties_page;
-      const auto details = zone_details(scene, selected, hovered, show_detail, show_route,
+      const auto details = zone_details(scene, selected, hovered, show_parts, show_route,
         status, selected_part, hovered_part);
       const auto page = make_viewer_detail_page(details, properties_page,
         playground::visage_overlay::max_detail_lines);
@@ -831,9 +822,9 @@ int run_motif_viewer(const uint64_t initial_seed, const std::string_view scale,
 int run_site_viewer(const uint64_t initial_seed, const std::string_view scale,
                     const int32_t entry_y, const bool surface_cut,
                     const std::string_view source, const std::string_view motifs_source,
-                    const uint32_t frame_limit) {
+                    const uint32_t frame_limit, const site_bounds bounds) {
   return run_viewer(initial_seed, [&](const uint64_t seed) {
-    return make_site_view_scene(seed, scale, entry_y, surface_cut, source, motifs_source);
+    return make_site_view_scene(seed, scale, entry_y, surface_cut, source, motifs_source, bounds);
   }, "site", frame_limit);
 }
 

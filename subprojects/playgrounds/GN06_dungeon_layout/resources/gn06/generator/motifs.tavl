@@ -3,7 +3,7 @@
 // габарит цветом и знаком. Программа задаёт смысл и порядок частей, но не их координаты.
 // Порядок правил важен: родитель должен быть объявлен раньше ребёнка.
 
-version = 1
+version = 2
 
 locations = [ torture, laboratory ]
 
@@ -14,54 +14,14 @@ scales = [
 ]
 
 motifs = [
-  { name = gallery,         glyph = "=", colour = [113, 87, 73],   palette = grime }
-  { name = focus,           glyph = "T", colour = [155, 74, 66],   palette = grime }
-  { name = torture_cell,    glyph = "c", colour = [81, 56, 45],    palette = grime }
-  { name = experiment_hall, glyph = "L", colour = [125, 116, 95],  palette = conduits }
-  { name = holding,         glyph = "h", colour = [97, 83, 78],    palette = conduits }
-  { name = service_run,     glyph = "+", colour = [119, 112, 105], palette = conduits }
-  { name = store,           glyph = "s", colour = [85, 77, 66],    palette = conduits }
-  { name = study,           glyph = "a", colour = [111, 98, 83],   palette = conduits }
-]
-
-// Малые авторские образцы (Wang-тайлы): четыре сокета описывают ВИДИМЫЙ след на полу, не
-// проходимость. Край блока получает первый образец с нулевыми сокетами. Поэтому ни один узор
-// не может обрубиться в проёме и локальный WFC не выбирает судьбу глобального маршрута.
-palettes = [
-  {
-    name = grime
-    tiles = [
-      { name = stone,   glyph = ".", colour = [82, 61, 51],  weight = 12, east = 0, west = 0, south = 0, north = 0 }
-      { name = smear_h, glyph = "-", colour = [111, 49, 42], weight = 2,  east = 1, west = 1, south = 0, north = 0 }
-      { name = smear_v, glyph = "|", colour = [111, 49, 42], weight = 2,  east = 0, west = 0, south = 1, north = 1 }
-      { name = bend_es, glyph = "1", colour = [118, 52, 44], weight = 1,  east = 1, west = 0, south = 1, north = 0 }
-      { name = bend_sw, glyph = "2", colour = [118, 52, 44], weight = 1,  east = 0, west = 1, south = 1, north = 0 }
-      { name = bend_wn, glyph = "3", colour = [118, 52, 44], weight = 1,  east = 0, west = 1, south = 0, north = 1 }
-      { name = bend_ne, glyph = "4", colour = [118, 52, 44], weight = 1,  east = 1, west = 0, south = 0, north = 1 }
-      { name = pool,     glyph = "*", colour = [138, 48, 42], weight = 1,  east = 1, west = 1, south = 1, north = 1 }
-      { name = end_e,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 1, west = 0, south = 0, north = 0 }
-      { name = end_w,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 0, west = 1, south = 0, north = 0 }
-      { name = end_s,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 0, west = 0, south = 1, north = 0 }
-      { name = end_n,    glyph = ":", colour = [122, 48, 42], weight = 1,  east = 0, west = 0, south = 0, north = 1 }
-    ]
-  }
-  {
-    name = conduits
-    tiles = [
-      { name = stone,   glyph = ".", colour = [120, 116, 99], weight = 12, east = 0, west = 0, south = 0, north = 0 }
-      { name = pipe_h,  glyph = "-", colour = [159, 134, 76], weight = 2,  east = 1, west = 1, south = 0, north = 0 }
-      { name = pipe_v,  glyph = "|", colour = [159, 134, 76], weight = 2,  east = 0, west = 0, south = 1, north = 1 }
-      { name = elbow_es,glyph = "1", colour = [172, 147, 83], weight = 1,  east = 1, west = 0, south = 1, north = 0 }
-      { name = elbow_sw,glyph = "2", colour = [172, 147, 83], weight = 1,  east = 0, west = 1, south = 1, north = 0 }
-      { name = elbow_wn,glyph = "3", colour = [172, 147, 83], weight = 1,  east = 0, west = 1, south = 0, north = 1 }
-      { name = elbow_ne,glyph = "4", colour = [172, 147, 83], weight = 1,  east = 1, west = 0, south = 0, north = 1 }
-      { name = manifold,glyph = "*", colour = [187, 161, 88], weight = 1,  east = 1, west = 1, south = 1, north = 1 }
-      { name = socket_e,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 1, west = 0, south = 0, north = 0 }
-      { name = socket_w,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 0, west = 1, south = 0, north = 0 }
-      { name = socket_s,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 0, west = 0, south = 1, north = 0 }
-      { name = socket_n,glyph = ":", colour = [178, 151, 86], weight = 1,  east = 0, west = 0, south = 0, north = 1 }
-    ]
-  }
+  { name = gallery,         glyph = "=", colour = [113, 87, 73] }
+  { name = focus,           glyph = "T", colour = [155, 74, 66] }
+  { name = torture_cell,    glyph = "c", colour = [81, 56, 45] }
+  { name = experiment_hall, glyph = "L", colour = [125, 116, 95] }
+  { name = holding,         glyph = "h", colour = [97, 83, 78] }
+  { name = service_run,     glyph = "+", colour = [119, 112, 105] }
+  { name = store,           glyph = "s", colour = [85, 77, 66] }
+  { name = study,           glyph = "a", colour = [111, 98, 83] }
 ]
 
 rules = [

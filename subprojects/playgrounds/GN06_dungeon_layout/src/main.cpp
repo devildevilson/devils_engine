@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -74,6 +75,8 @@ struct options {
   std::string dump;
   std::string motif_scale = "medium";
   bool motif_scale_set = false;
+  gn06::site_bounds site_bounds;
+  bool site_bounds_set = false;
   bool side_set = false;
   int32_t motif_entry_y = -1;
   bool motif_entry_set = false;
@@ -193,6 +196,22 @@ options parse_options(const int argc, const char** argv) {
     } else if (starts_with(argument, "--scale=")) {
       result.motif_scale = std::string(argument.substr(8));
       result.motif_scale_set = true;
+    } else if (starts_with(argument, "--bounds=")) {
+      const auto text = argument.substr(9);
+      const auto comma = text.find(',');
+      if (comma == std::string_view::npos) {
+        utils::error{}("GN06: --bounds wants width,height in plot units");
+      }
+      const auto parse_dimension = [&](const std::string_view number) {
+        uint32_t dimension = 0;
+        const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), dimension);
+        if (error != std::errc{} || end != number.data() + number.size() || dimension < 32 || dimension > 4096) {
+          utils::error{}("GN06: --bounds dimensions must be in 32..4096, got '{}'", number);
+        }
+        return dimension;
+      };
+      result.site_bounds = {parse_dimension(text.substr(0, comma)), parse_dimension(text.substr(comma + 1))};
+      result.site_bounds_set = true;
     } else if (starts_with(argument, "--entry-y=")) {
       result.motif_entry_y = std::stoi(std::string(argument.substr(10)));
       result.motif_entry_set = true;
@@ -206,9 +225,10 @@ options parse_options(const int argc, const char** argv) {
       std::cout << "GN06 dungeon layout lab\n"
                 << "  --mode=NAME     building (по умолчанию), cave, motifs, site (граф одной локации)\n"
                 << "  --scale=NAME    small, medium или large для motifs/site\n"
+                << "  --bounds=W,H    жёсткий прямоугольный участок site, независимо от --scale\n"
                 << "  --entry-y=N     высота основного входа на западном краю (motifs/site)\n"
                 << "  --surface=NAME  flat или cut: синтетическое пересечение с поверхностью (motifs/site)\n"
-                << "  --viewer        интерактивный 2D-просмотр motifs/site (N/B seed, Tab детали, R маршрут, PgUp/PgDn свойства)\n"
+                << "  --viewer        интерактивный 2D-просмотр motifs/site (N/B seed, Tab части, R маршрут, PgUp/PgDn свойства)\n"
                 << "  --frames=N      закрыть просмотрщик после N кадров (для smoke-проверки)\n"
                 << "  --size=N        сторона УЧАСТКА в мере (по умолчанию 64)\n"
                 << "  --view=N        сторона картинки в клетках (по умолчанию как участок, один к одному)\n"
@@ -1600,17 +1620,20 @@ int main(const int argc, const char** argv) {
           opts.extra_links >= 0 || opts.corridor_width >= 0)
         utils::error{}("GN06 site: --size, --view, --window, --rooms, --loops and --corridor do not apply");
       const auto source = originator::read_generator_source(generator().resources, "generator/site");
-      const auto motifs = originator::read_generator_source(generator().resources, "generator/motifs");
+      const auto motifs = originator::read_generator_source(generator().resources, "generator/site_motifs");
       if (opts.viewer) {
         if (opts.verify || opts.ascii || !opts.dump.empty())
           utils::error{}("GN06 site viewer: --verify, --ascii and --dump are separate headless views");
         return gn06::run_site_viewer(opts.seed, opts.motif_scale, opts.motif_entry_y,
-                                     opts.surface_cut, source, motifs, opts.viewer_frames);
+                                     opts.surface_cut, source, motifs, opts.viewer_frames, opts.site_bounds);
       }
       if (opts.viewer_frames_set)
         utils::error{}("GN06 site: --frames requires --viewer");
       return gn06::run_site_graph(opts.seed, opts.motif_scale, opts.motif_entry_y,
-                                  opts.surface_cut, opts.verify, opts.ascii, opts.dump, source, motifs);
+                                  opts.surface_cut, opts.verify, opts.ascii, opts.dump, source, motifs, opts.site_bounds);
+    }
+    if (opts.site_bounds_set) {
+      utils::error{}("GN06: --bounds belongs to --mode=site");
     }
     if (opts.mode != generator_mode::motifs &&
         (opts.motif_scale_set || opts.motif_entry_set || opts.surface_set || opts.viewer || opts.viewer_frames_set))

@@ -1,0 +1,95 @@
+// Единый ресурс строительных блоков site: локальная геометрия, пристыковка и оформление.
+// Профили пока остаются авторскими наборами размеров; это НЕ границы внешнего участка.
+version = 1
+profiles = [small, medium, large]
+
+motifs = [
+  {
+    name = entry
+    geometry = { operation = rectangle, width = [6,6,7],   height = [6,6,7] }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "E", colour = [149,151,138] }
+  }
+  {
+    name = junction
+    geometry = { operation = rectangle, width = [9,11,13], height = [8,10,12], height_policy = frontage, frontage_margin = 2, frontage_gap = 2 }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "+", colour = [125,119,108] }
+  }
+  {
+    name = gallery
+    geometry = {
+      operation = path, width = [36,40,48], width_max = [40,46,54], height = [6,6,8]
+      path = {
+        mode = offset, l1_per_mille = [550,550,550], l1_max = [650,650,650]
+        l2_per_mille = [200,200,200], l2_max = [300,300,300]
+        bend = [4,6,8], bend_max = [10,14,18], mirror = 1, min_bend_length = 2
+        start = { policy = trim, clearance = 2, minimum_length = 4 }
+        end = { policy = vary, accent = service_alcove, trim_percent = 75, clearance = 2, minimum_length = 4 }
+      }
+    }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "=", colour = [113,87,73] }
+  }
+  {
+    name = exit_run
+    geometry = {
+      operation = path, width = [12,14,16], width_max = [16,18,22], height = [6,6,8]
+      path = {
+        mode = offset, l1_per_mille = [750,750,750], l2_per_mille = [250,250,250], bend = [0,0,0]
+        start = { policy = trim, clearance = 2, minimum_length = 4 }
+        end = { policy = vary, accent = service_alcove, trim_percent = 75, clearance = 2, minimum_length = 4 }
+      }
+    }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "=", colour = [113,87,73] }
+  }
+  {
+    name = threshold
+    geometry = { operation = rectangle, width = [1,1,1],   height = [1,1,1] }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = ":", colour = [174,154,122] }
+  }
+  {
+    name = door
+    geometry = { operation = rectangle, width = [2,2,2], width_max = [3,3,3], height = [1,1,1] }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "D", colour = [225,211,165] }
+  }
+  {
+    name = prison_cell
+    geometry = { operation = rectangle, width = [4,5,5], width_max = [6,7,8], height = [4,5,6], height_max = [6,7,8] }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "c", colour = [81,56,45] }
+  }
+  {
+    name = torture
+    geometry = { operation = rectangle, width = [7,8,9], width_max = [11,14,17], height = [7,8,9], height_max = [10,12,14] }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "T", colour = [155,74,66] }
+  }
+  {
+    name = watch_post
+    geometry = { operation = rectangle, width = [7,8,9], width_max = [8,9,10], height = [7,8,9], height_max = [8,9,10] }
+    placement = { strategy = edge_parallel, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "W", colour = [120,105,87] }
+  }
+  {
+    name = laboratory
+    geometry = { operation = rounded_east, width = [12,14,16], width_max = [16,18,20], height = [10,10,12] }
+    placement = { strategy = quarter_turn, entrance_edge = 5, wall_edges = [0,2,4,5] }
+    presentation = { glyph = "L", colour = [125,116,95] }
+  }
+  {
+    name = store
+    geometry = { operation = rectangle, width = [4,5,6], width_max = [6,7,9], height = [4,5,6], height_max = [6,7,8] }
+    placement = { strategy = quarter_turn, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "s", colour = [85,77,66] }
+  }
+  {
+    name = observation_walk
+    geometry = { operation = rectangle, width = [7,8,9], width_max = [10,12,14], height = [10,10,12] }
+    placement = { strategy = parent_wrap, entrance_edge = 3, wall_edges = [0,1,2,3] }
+    presentation = { glyph = "~", colour = [106,124,120] }
+  }
+]

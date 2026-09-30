@@ -7,6 +7,8 @@
 #include <format>
 #include <iostream>
 #include <map>
+#include <numeric>
+#include <optional>
 #include <queue>
 #include <set>
 #include <stdexcept>
@@ -20,53 +22,17 @@
 #include "devils_engine/originator/motif_layout.h"
 #include "devils_engine/utils/shared.h"
 
-#include "motif_demo.h"
+#include "site_motif_resource.h"
 #include "motif_viewer.h"
 
 namespace gn06 {
 namespace {
-
-struct part_decl {
-  std::string name;
-  std::vector<uint32_t> width;
-  std::vector<uint32_t> width_max;
-  std::vector<uint32_t> height;
-  std::vector<uint32_t> height_max;
-  std::vector<std::string> sides;
-  std::string align;
-  std::string passage_align;
-  std::string attach_to;
-  std::string join;
-  std::string shape;
-};
-
-struct path_end_decl {
-  std::string policy; // trim, accent, vary; только для свободного торца
-  std::string accent;
-  uint32_t clearance = 2;
-  uint32_t minimum_length = 4;
-  uint32_t trim_percent = 75;
-};
 
 struct ending_decl {
   std::string name;
   std::string motif;
   std::vector<uint32_t> depth;
   uint32_t frontage_extra = 4;
-};
-
-struct path_decl {
-  std::string mode;
-  std::vector<uint32_t> l1_per_mille;
-  std::vector<uint32_t> l2_per_mille;
-  std::vector<int32_t> bend;
-  std::vector<uint32_t> l1_max;
-  std::vector<uint32_t> l2_max;
-  std::vector<int32_t> bend_max;
-  uint32_t mirror = 0;
-  uint32_t min_bend_length = 1;
-  path_end_decl start;
-  path_end_decl end;
 };
 
 struct kind_decl {
@@ -78,7 +44,9 @@ struct kind_decl {
   std::vector<uint32_t> width_max;
   std::vector<uint32_t> height;
   std::vector<uint32_t> height_max;
-  std::string shape;
+  std::string geometry_operation;
+  std::vector<devils_engine::originator::motif_geometry_parameter> geometry_parameters;
+  site_motif_placement placement;
   std::string height_policy;
   uint32_t frontage_margin = 0;
   uint32_t frontage_gap = 0;
@@ -103,6 +71,7 @@ struct rule_decl {
   std::string port;
   std::vector<std::string> sides;
   std::string attachment; // wall, cap, bend — геометрическое назначение, не лорный port
+  std::string leaf_policy; // omit: переходный путь без продолжения не нужен композиции
   uint32_t open_percent = 0;
   std::vector<std::string> turns;
 };
@@ -116,6 +85,25 @@ struct perception_decl {
   uint32_t max_distance = 0;
 };
 
+struct area_decl {
+  std::string name;
+  std::string category;
+  std::string function;
+  std::string motif;
+};
+
+struct site_document {
+  uint32_t version = 0;
+  std::string name;
+  std::string theme;
+  std::vector<std::string> scales;
+  std::vector<uint32_t> footprints;
+  std::vector<area_decl> kinds;
+  std::vector<rule_decl> rules;
+  std::vector<ending_decl> endings;
+  perception_decl perception;
+};
+
 struct site_decl {
   uint32_t version = 0;
   std::string name;
@@ -126,7 +114,37 @@ struct site_decl {
   std::vector<rule_decl> rules;
   std::vector<ending_decl> endings;
   perception_decl perception;
+  site_motif_catalogue motifs;
+  site_bounds bounds;
 };
+
+struct site_motif_binding {
+  uint32_t id = 0;
+  uint32_t colour = 0;
+};
+
+std::vector<site_motif_binding> motif_bindings(const site_decl& site) {
+  std::vector<site_motif_binding> result;
+  const auto append = [&](const std::string_view name) {
+    const auto& motif = find_site_motif(site.motifs, name);
+    const auto& colour = motif.presentation.colour;
+    result.push_back({uint32_t(&motif - site.motifs.motifs.data()) + 1,
+      (colour[0] << 16) | (colour[1] << 8) | colour[2]});
+  };
+  for (const auto& kind : site.kinds) { append(kind.motif); }
+  for (const auto& ending : site.endings) { append(ending.motif); }
+  return result;
+}
+
+site_bounds resolve_bounds(const site_decl& site, const size_t profile, const site_bounds requested) {
+  if (requested.width == 0 && requested.height == 0) {
+    return {site.footprints[profile], site.footprints[profile]};
+  }
+  if (requested.width < 32 || requested.height < 32 || requested.width > 4096 || requested.height > 4096) {
+    throw std::runtime_error("site: hard bounds need width and height in 32..4096; they are not clamped");
+  }
+  return requested;
+}
 
 uint32_t kind_id(const site_decl& site, const std::string_view name) {
   const auto it = std::find_if(site.kinds.begin(), site.kinds.end(),
@@ -136,23 +154,60 @@ uint32_t kind_id(const site_decl& site, const std::string_view name) {
   return uint32_t(it - site.kinds.begin());
 }
 
-site_decl read_site(const std::string_view source) {
+site_decl read_site(const std::string_view source, const std::string_view motifs_source) {
   tavl::parser parser;
   parser.add_default_operator();
   parser.flush(std::string(source));
   parser.finish();
   tavl::ct_context context;
-  site_decl site;
-  if (!tavl::deserialize_next(parser, context, site))
+  site_document document;
+  if (!tavl::deserialize_next(parser, context, document))
     throw std::runtime_error("site: empty declaration");
   for (const auto& diagnostic : context.diagnostics)
     if (diagnostic.error.is_critical())
       throw std::runtime_error(std::format("site: parse error '{}' at {}:{} field '{}'",
         tavl::to_string(diagnostic.error.type), diagnostic.error.span.line,
         diagnostic.error.span.column, diagnostic.field));
-  if (site.version != 9 || site.name.empty() || site.theme.empty() || site.scales.empty() ||
+  site_decl site;
+  site.version = document.version;
+  site.name = std::move(document.name);
+  site.theme = std::move(document.theme);
+  site.scales = std::move(document.scales);
+  site.footprints = std::move(document.footprints);
+  site.rules = std::move(document.rules);
+  site.endings = std::move(document.endings);
+  site.perception = std::move(document.perception);
+  site.motifs = read_site_motifs(motifs_source);
+  if (site.scales != site.motifs.profiles) {
+    throw std::runtime_error("site: content profiles do not match the motif catalogue");
+  }
+  for (const auto& area : document.kinds) {
+    const auto& motif = find_site_motif(site.motifs, area.motif);
+    const auto& geometry = motif.geometry;
+    kind_decl kind;
+    kind.name = area.name;
+    kind.category = area.category;
+    kind.function = area.function;
+    kind.motif = area.motif;
+    kind.width = geometry.width;
+    kind.width_max = geometry.width_max;
+    kind.height = geometry.height;
+    kind.height_max = geometry.height_max;
+    kind.geometry_operation = geometry.operation;
+    kind.geometry_parameters = geometry.parameters;
+    kind.placement = motif.placement;
+    kind.height_policy = geometry.height_policy;
+    kind.frontage_margin = geometry.frontage_margin;
+    kind.frontage_gap = geometry.frontage_gap;
+    kind.parts = geometry.parts;
+    kind.path = geometry.path;
+    kind.glyph = motif.presentation.glyph;
+    kind.colour = motif.presentation.colour;
+    site.kinds.push_back(std::move(kind));
+  }
+  if (site.version != 11 || site.name.empty() || site.theme.empty() || site.scales.empty() ||
       site.kinds.empty() || site.rules.empty() || site.footprints.size() != site.scales.size())
-    throw std::runtime_error("site: version 9 needs a name, theme, scales, kinds and rules");
+    throw std::runtime_error("site: version 11 needs a name, theme, scales, kinds and rules");
   for (size_t i = 0; i < site.scales.size(); ++i)
     if (site.scales[i].empty() ||
         std::find(site.scales.begin(), site.scales.begin() + i, site.scales[i]) != site.scales.begin() + i ||
@@ -171,96 +226,20 @@ site_decl read_site(const std::string_view source) {
   }
   for (size_t i = 0; i < site.kinds.size(); ++i) {
     const auto& kind = site.kinds[i];
-    if (kind.name.empty() || kind.function.empty() || kind.motif.empty() ||
+    if (kind.name.empty() || kind.function.empty() ||
         (kind.category != "functional" && kind.category != "technical") ||
-        kind.width.size() != site.scales.size() || kind.height.size() != site.scales.size() ||
-        (!kind.width_max.empty() && kind.width_max.size() != site.scales.size()) ||
-        (!kind.height_max.empty() && kind.height_max.size() != site.scales.size()) ||
-        (!kind.shape.empty() && kind.shape != "round_east" && kind.shape != "wrap_east" &&
-         kind.shape != "oblique") ||
-        (kind.shape == "wrap_east" && !kind.parts.empty()) ||
-        (!kind.height_policy.empty() && kind.height_policy != "frontage") ||
-        (kind.height_policy.empty() && (kind.frontage_margin != 0 || kind.frontage_gap != 0)) ||
-        kind.frontage_margin > 32 || kind.frontage_gap > 32 ||
-        kind.glyph.size() != 1 ||
-        kind.colour.size() != 3 ||
-        std::any_of(kind.width.begin(), kind.width.end(), [](const auto width) { return width == 0 || width > 256; }) ||
-        std::any_of(kind.height.begin(), kind.height.end(), [](const auto height) { return height == 0 || height > 256; }) ||
-        std::any_of(kind.width_max.begin(), kind.width_max.end(), [](const auto v) { return v == 0 || v > 256; }) ||
-        std::any_of(kind.height_max.begin(), kind.height_max.end(), [](const auto v) { return v == 0 || v > 256; }) ||
-        std::any_of(kind.colour.begin(), kind.colour.end(), [](const auto channel) { return channel > 255; }) ||
-        std::find_if(site.kinds.begin(), site.kinds.begin() + i,
-          [&](const kind_decl& prior) { return prior.name == kind.name; }) != site.kinds.begin() + i)
-      throw std::runtime_error(std::format("site: invalid or duplicate kind '{}'", kind.name));
-    for (size_t scale = 0; scale < site.scales.size(); ++scale)
-      if ((!kind.width_max.empty() && kind.width_max[scale] < kind.width[scale]) ||
-          (!kind.height_max.empty() && kind.height_max[scale] < kind.height[scale]))
-        throw std::runtime_error(std::format("site: size range is reversed for '{}'", kind.name));
+        std::any_of(site.kinds.begin(), site.kinds.begin() + i,
+          [&](const kind_decl& prior) { return prior.name == kind.name; })) {
+      throw std::runtime_error(std::format("site: invalid or duplicate area type '{}'", kind.name));
+    }
     if (!kind.path.mode.empty()) {
       for (const auto* ending : {&kind.path.start, &kind.path.end}) {
-        if ((ending->policy != "trim" && ending->policy != "accent" && ending->policy != "vary") ||
-            ending->clearance > 32 || ending->minimum_length == 0 || ending->minimum_length > 64 ||
-            ending->trim_percent > 100 ||
-            (ending->policy == "trim" && !ending->accent.empty()) ||
-            (ending->policy != "trim" && std::none_of(site.endings.begin(), site.endings.end(),
-              [&](const ending_decl& accent) { return accent.name == ending->accent; }))) {
-          throw std::runtime_error(std::format("site: invalid start/end policy for '{}'", kind.name));
+        if (ending->policy != "trim" && std::none_of(site.endings.begin(), site.endings.end(),
+              [&](const ending_decl& accent) { return accent.name == ending->accent; })) {
+          throw std::runtime_error(std::format("site: motif '{}' needs missing accent '{}'",
+            kind.motif, ending->accent));
         }
       }
-      if ((kind.path.mode != "offset" && kind.path.mode != "corner") ||
-          !kind.parts.empty() || !kind.shape.empty() ||
-          kind.path.l1_per_mille.size() != site.scales.size() ||
-          kind.path.l2_per_mille.size() != site.scales.size() ||
-          kind.path.bend.size() != site.scales.size()) {
-        throw std::runtime_error(std::format("site: invalid path recipe for '{}'", kind.name));
-      }
-      if ((!kind.path.l1_max.empty() && kind.path.l1_max.size() != site.scales.size()) ||
-          (!kind.path.l2_max.empty() && kind.path.l2_max.size() != site.scales.size()) ||
-          (!kind.path.bend_max.empty() && kind.path.bend_max.size() != site.scales.size()) ||
-          kind.path.mirror > 1 || kind.path.min_bend_length == 0) {
-        throw std::runtime_error("site: invalid path variation ranges");
-      }
-      for (size_t scale = 0; scale < site.scales.size(); ++scale) {
-        const auto shape = devils_engine::originator::make_motif_path({kind.width[scale],
-          kind.height[scale], kind.path.l1_per_mille[scale], kind.path.l2_per_mille[scale],
-          kind.path.bend[scale], kind.path.mode == "corner" ?
-            devils_engine::originator::motif_path_mode::corner :
-            devils_engine::originator::motif_path_mode::offset, kind.path.min_bend_length});
-        if (!shape.valid()) throw std::runtime_error("site: " + shape.refusal);
-        if ((!kind.path.l1_max.empty() && (kind.path.l1_max[scale] < kind.path.l1_per_mille[scale] || kind.path.l1_max[scale] > 1000)) ||
-            (!kind.path.l2_max.empty() && (kind.path.l2_max[scale] < kind.path.l2_per_mille[scale] || kind.path.l2_max[scale] > 1000)) ||
-            (!kind.path.bend_max.empty() && (kind.path.bend_max[scale] < kind.path.bend[scale] || kind.path.bend_max[scale] > 4096))) {
-          throw std::runtime_error("site: reversed or unsupported path variation range");
-        }
-      }
-    }
-    for (size_t part_index = 0; part_index < kind.parts.size(); ++part_index) {
-      const auto& part = kind.parts[part_index];
-      if (part.name.empty() || part.name == "main" || part.name == "last" ||
-          part.width.size() != site.scales.size() || part.height.size() != site.scales.size() ||
-          (!part.width_max.empty() && part.width_max.size() != site.scales.size()) ||
-          (!part.height_max.empty() && part.height_max.size() != site.scales.size()) ||
-          part.sides.empty() || (part.align != "start" && part.align != "end" &&
-                                 part.align != "centre" && part.align != "random") ||
-          (!part.passage_align.empty() && part.passage_align != "start" &&
-           part.passage_align != "centre" && part.passage_align != "end") ||
-          (!part.attach_to.empty() && part.attach_to != "main" && part.attach_to != "previous") ||
-          (!part.join.empty() && part.join != "direct") ||
-          (!part.shape.empty() && part.shape != "diagonal") ||
-          std::any_of(part.width.begin(), part.width.end(), [](const auto v) { return v < 3 || v > 256; }) ||
-          std::any_of(part.height.begin(), part.height.end(), [](const auto v) { return v < 3 || v > 256; }) ||
-          std::any_of(part.width_max.begin(), part.width_max.end(), [](const auto v) { return v < 3 || v > 256; }) ||
-          std::any_of(part.height_max.begin(), part.height_max.end(), [](const auto v) { return v < 3 || v > 256; }) ||
-          std::find_if(kind.parts.begin(), kind.parts.begin() + part_index,
-            [&](const part_decl& earlier) { return earlier.name == part.name; }) != kind.parts.begin() + part_index)
-        throw std::runtime_error(std::format("site: invalid part of kind '{}'", kind.name));
-      for (size_t scale = 0; scale < site.scales.size(); ++scale)
-        if ((!part.width_max.empty() && part.width_max[scale] < part.width[scale]) ||
-            (!part.height_max.empty() && part.height_max[scale] < part.height[scale]))
-          throw std::runtime_error(std::format("site: size range is reversed for part '{}'", part.name));
-      for (const auto& side : part.sides)
-        if (side != "east" && side != "west" && side != "north" && side != "south")
-          throw std::runtime_error(std::format("site: unknown part side '{}'", side));
     }
   }
   std::vector<uint32_t> earlier;
@@ -288,10 +267,10 @@ site_decl read_site(const std::string_view source) {
         throw std::runtime_error(std::format("site: anchor '{}' for '{}' must be spawned earlier",
           anchor, rule.kind));
     }
-    if (site.kinds[id].shape == "wrap_east") {
+    if (site.kinds[id].placement.strategy == "parent_wrap") {
       if (rule.anchors.size() != 1 || rule.sides != std::vector<std::string>{"east"} ||
           rule.port != "centre" || rule.via.empty() ||
-          site.kinds[kind_id(site, rule.anchors.front())].shape != "round_east")
+          site.kinds[kind_id(site, rule.anchors.front())].geometry_operation != "rounded_east")
         throw std::runtime_error("site: wrap_east needs one rounded parent, east side and centred connector");
       const auto& parent = site.kinds[kind_id(site, rule.anchors.front())];
       for (size_t scale = 0; scale < site.scales.size(); ++scale)
@@ -336,6 +315,11 @@ site_decl read_site(const std::string_view source) {
     if (rule.open_percent > 100 || (!rule.attachment.empty() && rule.attachment != "wall" &&
         rule.attachment != "cap" && rule.attachment != "bend" && rule.attachment != "paired_wall")) {
       throw std::runtime_error("site: invalid aperture policy or attachment kind");
+    }
+    if (!rule.leaf_policy.empty() &&
+        (rule.leaf_policy != "omit" || site.kinds[id].category != "functional" ||
+         site.kinds[id].path.mode.empty() || !rule.via.empty())) {
+      throw std::runtime_error("site: leaf_policy=omit needs a functional path without a connector");
     }
     if (rule.attachment == "paired_wall" && (rule.per_anchor != 1 || rule.unique_port ||
         !site.kinds[id].path.mode.empty() ||
@@ -474,6 +458,30 @@ graph assemble(const site_decl& site, const size_t scale, const uint64_t seed) {
       }
     }
   }
+  // Правила собираются по порядку: будущий ребёнок ещё не известен в момент
+  // появления переходного пути. После сборки графа убираем только явно
+  // объявленные пути-листья. Родительский торец затем завершит finish_paths.
+  std::vector<bool> omit_kind(site.kinds.size(), false);
+  for (const auto& rule : site.rules)
+    if (rule.leaf_policy == "omit") omit_kind[kind_id(site, rule.kind)] = true;
+  std::vector<bool> omitted(result.nodes.size(), false);
+  for (uint32_t id = 1; id < result.nodes.size(); ++id)
+    if (omit_kind[result.nodes[id].kind] &&
+        std::none_of(result.edges.begin(), result.edges.end(),
+          [&](const edge& link) { return link.a == id; }))
+      omitted[id] = true;
+  if (std::any_of(omitted.begin(), omitted.end(), [](const bool value) { return value; })) {
+    std::vector<uint32_t> remap(result.nodes.size(), UINT32_MAX);
+    graph compact;
+    for (uint32_t id = 0; id < result.nodes.size(); ++id)
+      if (!omitted[id]) {
+        remap[id] = uint32_t(compact.nodes.size());
+        compact.nodes.push_back(result.nodes[id]);
+      }
+    for (const auto& link : result.edges)
+      if (!omitted[link.b]) compact.edges.push_back({remap[link.a], remap[link.b], link.port});
+    result = std::move(compact);
+  }
   const auto& p = site.perception;
   std::vector<uint32_t> starts, ends;
   for (uint32_t id = 0; id < result.nodes.size(); ++id) {
@@ -508,6 +516,15 @@ void check(const site_decl& site, const graph& graph) {
     if (graph.nodes[id].connector &&
         (site.kinds[graph.nodes[id].kind].category != "technical" || neighbours(graph, id).size() != 2))
       throw std::runtime_error(std::format("site verify: connector #{} is not a two-sided technical area", id));
+  for (const auto& rule : site.rules)
+    if (rule.leaf_policy == "omit") {
+      const auto kind = kind_id(site, rule.kind);
+      for (uint32_t id = 0; id < graph.nodes.size(); ++id)
+        if (graph.nodes[id].kind == kind &&
+            std::none_of(graph.edges.begin(), graph.edges.end(),
+              [&](const edge& link) { return link.a == id; }))
+          throw std::runtime_error(std::format("site verify: unused transition #{} was not omitted", id));
+    }
   const auto& p = site.perception;
   if (graph.route.empty() || graph.nodes[graph.route.front()].kind != kind_id(site, p.from) ||
       graph.nodes[graph.route.back()].kind != kind_id(site, p.to) || graph.cues.empty())
@@ -624,14 +641,6 @@ site_view_part rectangular_part(const site_part_ref ref, const devils_engine::or
     {r.x + r.w, r.y + r.h}, {r.x, r.y + r.h}}, seam);
 }
 
-site_view_part diagonal_part(const site_part_ref ref, const devils_engine::originator::motif_rect r) {
-  if (r.w < 7 || r.h < 7) throw std::runtime_error("site shape: diagonal part needs at least 7x7");
-  const auto band = std::min({3, r.w / 3, r.h / 3});
-  return polygon_part(ref, {{r.x, r.y}, {r.x + band, r.y},
-    {r.x + r.w, r.y + r.h - band}, {r.x + r.w, r.y + r.h},
-    {r.x + r.w - band, r.y + r.h}, {r.x, r.y + band}});
-}
-
 struct east_rounding {
   int32_t shoulder = 0;
   int32_t centre_top = 0;
@@ -641,15 +650,6 @@ struct east_rounding {
 east_rounding rounding_of(const devils_engine::originator::motif_rect r) {
   if (r.w < 8 || r.h < 8) throw std::runtime_error("site shape: rounded side needs at least 8x8");
   return {std::clamp(r.w / 6, 2, 4), r.y + r.h / 2 - 1, r.y + (r.h + 1) / 2 + 1};
-}
-
-site_view_part rounded_east_part(const site_part_ref ref,
-                                 const devils_engine::originator::motif_rect r) {
-  const auto profile = rounding_of(r);
-  const auto right = r.x + r.w;
-  return polygon_part(ref, {{r.x, r.y}, {right - profile.shoulder, r.y},
-    {right, profile.centre_top}, {right, profile.centre_bottom},
-    {right - profile.shoulder, r.y + r.h}, {r.x, r.y + r.h}});
 }
 
 std::vector<site_view_part> wrap_east_parts(const site_part_ref first,
@@ -691,11 +691,17 @@ bool convex_outline(const site_view_part& part) noexcept {
   return winding > 0;
 }
 
-bool inside_part(const site_view_part& part, const int32_t x, const int32_t y) noexcept {
+// Окно задано в единицах плана, density — числом пикселей на единицу.
+// Дробные центры пикселей проверяются целочисленно, без округления координат портов.
+bool inside_part_sample(const site_view_part& part, const int32_t x, const int32_t y,
+                        const int32_t origin_x, const int32_t origin_y,
+                        const uint32_t density) noexcept {
   for (size_t i = 0; i < part.outline.size(); ++i) {
     const auto a = part.outline[i], b = part.outline[(i + 1) % part.outline.size()];
-    const auto turn = int64_t(b.x - a.x) * ((2 * y + 1) * site_precision - 2 * a.y) -
-                      int64_t(b.y - a.y) * ((2 * x + 1) * site_precision - 2 * a.x);
+    const auto sample_y = (int64_t(2) * origin_y * density + 2 * y + 1) * site_precision;
+    const auto sample_x = (int64_t(2) * origin_x * density + 2 * x + 1) * site_precision;
+    const auto turn = int64_t(b.x - a.x) * (sample_y - int64_t(2) * density * a.y) -
+                      int64_t(b.y - a.y) * (sample_x - int64_t(2) * density * a.x);
     if (turn < 0) return false;
     // Полуоткрытая кромка: центр на общем miter-сечении принадлежит ровно одной части.
     if (turn == 0 && (b.y > a.y || (b.y == a.y && b.x < a.x))) return false;
@@ -711,132 +717,91 @@ struct projection {
   std::vector<devils_engine::originator::motif_path_shape> paths; // исходные рецепты; после обрезки истина в parts
   std::vector<site_view_join> joins;
   std::vector<site_path_ending> endings;
+  struct route_crossing {
+    site_part_ref from;
+    site_part_ref to;
+    site_point a;
+    site_point b;
+    bool operator==(const route_crossing&) const = default;
+  };
+  std::vector<route_crossing> plan_route;
+  std::vector<site_route_span> route_spans;
+  site_projection_quality quality;
   std::vector<uint32_t> owner; // 0 wall, otherwise graph node id + 1
-  std::vector<uint32_t> reservation_owner; // owner of the original rectangle used by WFC
   std::vector<site_part_ref> part_owner;
   std::vector<uint8_t> exposed;
-  std::vector<size_t> floor_route;
   struct perceived {
     cue candidate;
-    size_t target_cell = 0;
-    size_t door_cell = 0;
+    site_point eye;
+    site_point target;
+    uint32_t door = UINT32_MAX;
     bool operator==(const perceived&) const = default;
   };
   std::vector<perceived> perceptions;
 };
 
+struct site_sample {
+  int32_t width = 0;
+  int32_t height = 0;
+  std::vector<uint32_t> owner;
+  std::vector<site_part_ref> part_owner;
+  size_t lost_parts = 0;
+};
+
+site_sample sample_site_plan(const projection& plan,
+                             const devils_engine::originator::motif_rect window,
+                             const uint32_t density) {
+  if (density == 0 || density > 16 || window.x < 0 || window.y < 0 ||
+      window.w <= 0 || window.h <= 0 ||
+      window.x + window.w > plan.layout.width || window.y + window.h > plan.layout.height)
+    throw std::runtime_error("site projection: invalid window or density");
+  site_sample sampled;
+  sampled.width = window.w * int32_t(density);
+  sampled.height = window.h * int32_t(density);
+  if (int64_t(sampled.width) * sampled.height > 16'000'000)
+    throw std::runtime_error("site projection: requested image exceeds 16 million samples");
+  sampled.owner.resize(size_t(sampled.width) * sampled.height, 0);
+  sampled.part_owner.resize(sampled.owner.size());
+  for (const auto& part : plan.parts) {
+    const auto left = std::max(window.x, part.bounds.x);
+    const auto top = std::max(window.y, part.bounds.y);
+    const auto right = std::min(window.x + window.w, part.bounds.x + part.bounds.w);
+    const auto bottom = std::min(window.y + window.h, part.bounds.y + part.bounds.h);
+    if (left >= right || top >= bottom) continue;
+    bool represented = false;
+    for (int32_t y = (top - window.y) * int32_t(density);
+         y < (bottom - window.y) * int32_t(density); ++y) {
+      for (int32_t x = (left - window.x) * int32_t(density);
+           x < (right - window.x) * int32_t(density); ++x) {
+        if (!inside_part_sample(part, x, y, window.x, window.y, density)) continue;
+        const auto cell = size_t(y) * sampled.width + x;
+        if (sampled.owner[cell] != 0)
+          throw std::runtime_error("site projection: samples from distinct parts overlap");
+        sampled.owner[cell] = part.ref.area + 1;
+        sampled.part_owner[cell] = part.ref;
+        represented = true;
+      }
+    }
+    sampled.lost_parts += !represented;
+  }
+  return sampled;
+}
+
 void check_site_plan(const graph& graph, const projection& image, const bool require_endings = true);
+std::vector<projection::route_crossing> trace_plan_route(const graph& graph, const projection& plan);
+std::vector<site_route_span> make_route_spans(const projection& plan, const graph& graph);
+void trace_plan_perceptions(const site_decl& site, const graph& graph, projection& plan);
+void check_plan_facts(const site_decl& site, const graph& graph, const projection& plan);
 
-std::vector<size_t> floor_path(const projection& image, const size_t from, const size_t to) {
-  const auto width = size_t(image.layout.width);
-  const auto height = size_t(image.layout.height);
-  std::vector<size_t> previous(image.owner.size(), SIZE_MAX);
-  std::queue<size_t> pending;
-  previous[from] = from;
-  pending.push(from);
-  while (!pending.empty() && previous[to] == SIZE_MAX) {
-    const auto at = pending.front();
-    pending.pop();
-    const auto x = at % width;
-    const auto y = at / width;
-    for (const auto& [nx, ny] : {std::pair<int64_t, int64_t>{int64_t(x) - 1, int64_t(y)},
-                                  {int64_t(x) + 1, int64_t(y)},
-                                  {int64_t(x), int64_t(y) - 1},
-                                  {int64_t(x), int64_t(y) + 1}}) {
-      if (nx < 0 || ny < 0 || nx >= int64_t(width) || ny >= int64_t(height)) continue;
-      const auto next = size_t(ny) * width + size_t(nx);
-      if (image.owner[next] == 0 || previous[next] != SIZE_MAX) continue;
-      previous[next] = at;
-      pending.push(next);
-    }
-  }
-  if (previous[to] == SIZE_MAX) return {};
-  std::vector<size_t> result;
-  for (auto at = to; at != from; at = previous[at]) result.push_back(at);
-  result.push_back(from);
-  std::reverse(result.begin(), result.end());
-  return result;
-}
-
-bool open_door_sight(const projection& image, const size_t eye, const size_t target,
-                     const uint32_t door_node, const size_t door_cell,
-                     const uint32_t witness, const uint32_t via) {
-  const auto width = int32_t(image.layout.width);
-  int32_t x = int32_t(eye % size_t(width));
-  int32_t y = int32_t(eye / size_t(width));
-  const auto tx = int32_t(target % size_t(width));
-  const auto ty = int32_t(target / size_t(width));
-  const auto dx = std::abs(tx - x);
-  const auto dy = -std::abs(ty - y);
-  const auto sx = x < tx ? 1 : -1;
-  const auto sy = y < ty ? 1 : -1;
-  int32_t error = dx + dy;
-  bool through_door = false;
-  for (;;) {
-    const auto cell = size_t(y) * width + x;
-    const auto owner = image.owner[cell];
-    if (owner != witness + 1 && owner != door_node + 1 && owner != via + 1) return false;
-    through_door |= cell == door_cell;
-    if (x == tx && y == ty) return through_door;
-    const auto doubled = 2 * error;
-    if (doubled >= dy) { error += dy; x += sx; }
-    if (doubled <= dx) { error += dx; y += sy; }
-  }
-}
-
-size_t centre_cell(const projection& image, const uint32_t node) {
-  const auto found = std::find(image.instance_nodes.begin(), image.instance_nodes.end(), node);
-  if (found == image.instance_nodes.end())
-    throw std::runtime_error("site layout: route endpoint has no rectangle");
-  const auto& rect = image.layout.instances[size_t(found - image.instance_nodes.begin())].rect;
-  return size_t(rect.y + rect.h / 2) * image.layout.width + size_t(rect.x + rect.w / 2);
-}
-
-void trace_perceptions(const site_decl& site, const graph& graph, projection& image) {
-  image.floor_route = floor_path(image, centre_cell(image, graph.route.front()),
-                                 centre_cell(image, graph.route.back()));
-  if (image.floor_route.empty())
-    throw std::runtime_error("site layout: route endpoints are not connected on the raster");
-  const auto width = size_t(image.layout.width);
-  for (const auto& candidate : graph.cues) {
-    const auto door = path(graph, candidate.witness, candidate.route_via)[1];
-    const auto found = std::find(image.owner.begin(), image.owner.end(), door + 1);
-    if (found == image.owner.end())
-      throw std::runtime_error("site layout: witness door is not on the raster");
-    const auto door_cell = size_t(found - image.owner.begin());
-    const auto x = door_cell % width;
-    const auto y = door_cell / width;
-    size_t eye = SIZE_MAX;
-    for (const auto& [nx, ny] : {std::pair<int64_t, int64_t>{int64_t(x) - 1, int64_t(y)},
-                                  {int64_t(x) + 1, int64_t(y)},
-                                  {int64_t(x), int64_t(y) - 1},
-                                  {int64_t(x), int64_t(y) + 1}}) {
-      if (nx < 0 || ny < 0 || nx >= image.layout.width || ny >= image.layout.height) continue;
-      const auto next = size_t(ny) * width + size_t(nx);
-      if (image.owner[next] == candidate.witness + 1) eye = next;
-    }
-    if (eye == SIZE_MAX)
-      throw std::runtime_error("site layout: witness cannot stand at its door");
-    for (const auto target : image.floor_route) {
-      if (image.owner[target] != candidate.route_via + 1) continue;
-      const auto distance = std::abs(int64_t(target % width) - int64_t(x)) +
-                            std::abs(int64_t(target / width) - int64_t(y));
-      if (distance > site.perception.max_distance ||
-          !open_door_sight(image, eye, target, door, door_cell, candidate.witness, candidate.route_via))
-        continue;
-      image.perceptions.push_back({candidate, target, door_cell});
-      break;
-    }
-  }
-}
-
-std::vector<uint8_t> example_surface(const uint32_t side, const bool cut) {
-  std::vector<uint8_t> surface(size_t(side) * side, 0);
+std::vector<uint8_t> example_surface(const site_bounds bounds, const bool cut) {
+  std::vector<uint8_t> surface(size_t(bounds.width) * bounds.height, 0);
   if (!cut) return surface;
   // Не мир и не чанковый генератор, а неизменяемый входной образец окружения.
-  for (uint32_t y = 1; y + 1 < side; ++y)
-    for (uint32_t x = side / 3; x < side / 3 + 2; ++x)
-      surface[size_t(y) * side + x] = 1;
+  for (uint32_t y = 1; y + 1 < bounds.height; ++y) {
+    for (uint32_t x = bounds.width / 3; x < bounds.width / 3 + 2; ++x) {
+      surface[size_t(y) * bounds.width + x] = 1;
+    }
+  }
   return surface;
 }
 
@@ -876,10 +841,20 @@ std::vector<site_view_part> local_parts(const kind_decl& kind, const uint32_t id
     for (uint32_t piece = 0; piece < path_shape.pieces.size(); ++piece) {
       result.push_back(polygon_part({id, piece}, path_shape.pieces[piece].outline));
     }
-  } else if (kind.shape == "round_east") {
-    result.push_back(rounded_east_part({id, 0}, {0, 0, w, h}));
   } else {
-    result.push_back(rectangular_part({id, 0}, {0, 0, w, h}));
+    const auto geometry = site_geometry_operations().build(kind.geometry_operation,
+      {uint32_t(w), uint32_t(h), seed, kind.geometry_parameters});
+    if (!geometry.valid()) { throw std::runtime_error(geometry.refusal); }
+    if ((geometry.pieces.size() != 1 && !kind.parts.empty()) ||
+        kind.placement.entrance_edge >= geometry.pieces.front().size() ||
+        std::any_of(kind.placement.wall_edges.begin(), kind.placement.wall_edges.end(),
+          [&](const auto edge) { return edge >= geometry.pieces.front().size(); })) {
+      throw std::runtime_error(std::format("site motif '{}': generated pieces do not match the port/extra-part contract",
+        kind.motif));
+    }
+    for (uint32_t piece = 0; piece < geometry.pieces.size(); ++piece) {
+      result.push_back(polygon_part({id, piece}, geometry.pieces[piece]));
+    }
   }
   std::vector<site_view_part> seams;
   for (uint32_t i = 0; i < kind.parts.size(); ++i) {
@@ -901,7 +876,15 @@ std::vector<site_view_part> local_parts(const kind_decl& kind, const uint32_t id
     if (side == "west") rect = {parent.x - width - gap, offset, width, height};
     if (side == "south") rect = {offset, parent.y + parent.h + gap, width, height};
     if (side == "north") rect = {offset, parent.y - height - gap, width, height};
-    result.push_back(declaration.shape == "diagonal" ? diagonal_part({id, i + 1}, rect) : rectangular_part({id, i + 1}, rect));
+    const auto geometry = site_geometry_operations().build(declaration.shape.empty() ? "rectangle" : declaration.shape,
+      {uint32_t(rect.w), uint32_t(rect.h), seed, {}});
+    if (!geometry.valid()) { throw std::runtime_error(geometry.refusal); }
+    auto outline = geometry.pieces.front();
+    for (auto& point : outline) {
+      point.x += rect.x;
+      point.y += rect.y;
+    }
+    result.push_back(polygon_part({id, i + 1}, std::move(outline)));
     if (gap == 0) continue;
     const auto common_start = std::max(start, offset);
     const auto common_length = std::min(start + extent, offset + frontage) - common_start;
@@ -916,13 +899,13 @@ std::vector<site_view_part> local_parts(const kind_decl& kind, const uint32_t id
   return result;
 }
 
-bool parts_fit(const std::vector<site_view_part>& trial, const projection& image,
-               const int32_t side) {
+bool parts_fit(const std::vector<site_view_part>& trial, const projection& image) {
   using devils_engine::originator::convex_interiors_overlap;
   for (size_t i = 0; i < trial.size(); ++i) {
     const auto& part = trial[i];
     if (!convex_outline(part) || part.bounds.x < 1 || part.bounds.y < 1 ||
-        part.bounds.x + part.bounds.w >= side || part.bounds.y + part.bounds.h >= side) return false;
+        part.bounds.x + part.bounds.w >= image.layout.width ||
+        part.bounds.y + part.bounds.h >= image.layout.height) return false;
     for (const auto& prior : image.parts) {
       if (convex_interiors_overlap(part.outline, prior.outline)) return false;
     }
@@ -945,7 +928,7 @@ void append_site_instance(projection& image, const graph& graph, const site_view
 // а не только центры дверей: при повороте открытый стык входит в боковину начала пути.
 void finish_paths(const site_decl& site, const graph& graph, projection& image,
                    const size_t scale, const uint64_t seed,
-                   const std::span<const authored_motif_binding> motifs) {
+                   const std::span<const site_motif_binding> motifs) {
   using namespace devils_engine::originator;
   for (uint32_t id = 0; id < graph.nodes.size(); ++id) {
     const auto& recipe = site.kinds[graph.nodes[id].kind].path;
@@ -983,13 +966,26 @@ void finish_paths(const site_decl& site, const graph& graph, projection& image,
         continue;
       }
 
+      // Даже авторский акцент не должен удерживать длинный незанятый хвост.
+      // Сначала сохраняем все использованные боковые стыки и минимальную длину
+      // последней части, затем завершаем уже новый свободный торец.
+      const auto trimmed = trim_motif_path_end(outline, edge, protected_points,
+        policy.clearance * site_precision, policy.minimum_length * site_precision);
+      if (!trimmed.valid()) throw std::runtime_error("site ending: " + trimmed.refusal);
+      image.parts[part_index] = precise_part(ref, trimmed.outline);
+      const auto instance = std::find(image.instance_parts.begin(), image.instance_parts.end(), ref);
+      image.layout.instances[size_t(instance - image.instance_parts.begin())].rect = image.parts[part_index].bounds;
+      ending.removed = trimmed.removed;
+      ending.a = trimmed.outline[edge];
+      ending.b = trimmed.outline[(edge + 1) % 4];
+
       const auto try_accent = policy.policy == "accent" || (policy.policy == "vary" &&
         roll(seed, id, uint32_t(start), 0xe0du) % 100 >= policy.trim_percent);
       if (try_accent) {
         const auto accent = std::find_if(site.endings.begin(), site.endings.end(),
           [&](const ending_decl& candidate) { return candidate.name == policy.accent; });
         const auto width = uint32_t(std::abs(ending.a.x - ending.b.x) + std::abs(ending.a.y - ending.b.y));
-        const auto port = make_motif_edge_port(outline, edge, width);
+        const auto port = make_motif_edge_port(trimmed.outline, edge, width);
         const auto body = attach_motif_rect(port, width + accent->frontage_extra * site_precision,
                                             accent->depth[scale] * site_precision, 0);
         const auto next_part = uint32_t(std::count_if(image.parts.begin(), image.parts.end(),
@@ -999,13 +995,12 @@ void finish_paths(const site_decl& site, const graph& graph, projection& image,
         site_view_part candidate;
         if (fits) {
           candidate = precise_part(accent_ref, body.body);
-          fits = parts_fit({candidate}, image, image.layout.width) &&
+          fits = parts_fit({candidate}, image) &&
             std::none_of(image.parts.begin(), image.parts.end(), [&](const site_view_part& prior) {
               return prior.ref != ref && share_motif_boundary(prior.outline, candidate.outline);
             });
         }
         if (fits) {
-          const auto instance = std::find(image.instance_parts.begin(), image.instance_parts.end(), ref);
           const auto motif_index = site.kinds.size() + size_t(accent - site.endings.begin());
           append_site_instance(image, graph, candidate, motifs[motif_index].id,
                                uint32_t(instance - image.instance_parts.begin()));
@@ -1024,33 +1019,23 @@ void finish_paths(const site_decl& site, const graph& graph, projection& image,
         }
       }
 
-      const auto trimmed = trim_motif_path_end(outline, edge, protected_points,
-        policy.clearance * site_precision, policy.minimum_length * site_precision);
-      if (!trimmed.valid()) throw std::runtime_error("site ending: " + trimmed.refusal);
-      image.parts[part_index] = precise_part(ref, trimmed.outline);
-      const auto instance = std::find(image.instance_parts.begin(), image.instance_parts.end(), ref);
-      image.layout.instances[size_t(instance - image.instance_parts.begin())].rect = image.parts[part_index].bounds;
       ending.outcome = "trim";
-      ending.removed = trimmed.removed;
-      ending.a = trimmed.outline[edge];
-      ending.b = trimmed.outline[(edge + 1) % 4];
       image.endings.push_back(std::move(ending));
     }
   }
 }
 
-// Решение живёт в полигонах. Резервы ниже нужны только локальным образцам WFC, а не
-// пристыковке. При столкновении перебираются порты, размеры и профили пути, не клетки.
+// Решение живёт в полигонах. Габариты экземпляров нужны старому контейнеру и сводкам,
+// но не пристыковке. При столкновении перебираются порты, размеры и профили пути, не клетки.
 projection place_once(const site_decl& site, const graph& graph, const size_t scale,
                       const int32_t entry_y, const uint64_t layout_seed,
-                      const std::vector<uint8_t>& surface,
-                      const std::span<const authored_motif_binding> motifs) {
+                      const std::span<const site_motif_binding> motifs) {
   using namespace devils_engine::originator;
   projection result;
-  const auto side = int32_t(site.footprints[scale]);
-  result.layout.width = result.layout.height = side;
+  result.layout.width = int32_t(site.bounds.width);
+  result.layout.height = int32_t(site.bounds.height);
   result.layout.entry_y = entry_y;
-  if (entry_y < 1 || entry_y >= side - 1) throw std::runtime_error("site: entrance outside plot");
+  if (entry_y < 1 || entry_y >= result.layout.height - 1) throw std::runtime_error("site: entrance outside plot");
   result.paths.resize(graph.nodes.size());
   std::vector<site_frame> frames(graph.nodes.size());
   std::vector<motif_rect> dimensions(graph.nodes.size());
@@ -1149,11 +1134,15 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
             choices.push_back({{parent.parent, port.piece}, port.edge, cap});
           }
         } else {
-          const auto rounded = parent_kind.shape == "round_east";
+
           uint32_t anchor_part = 0;
-          if (rule.anchor_part == "last")
-            anchor_part = uint32_t(parent_kind.parts.size());
-          else if (!rule.anchor_part.empty() && rule.anchor_part != "main") {
+          if (rule.anchor_part == "last") {
+            for (const auto& part : result.parts) {
+              if (part.ref.area == parent.parent && !part.seam) {
+                anchor_part = std::max(anchor_part, part.ref.part);
+              }
+            }
+          } else if (!rule.anchor_part.empty() && rule.anchor_part != "main") {
             const auto part = std::find_if(parent_kind.parts.begin(), parent_kind.parts.end(),
                                            [&](const part_decl& declaration) {
                                              return declaration.name == rule.anchor_part;
@@ -1161,9 +1150,9 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
             anchor_part = uint32_t(part - parent_kind.parts.begin()) + 1;
           }
           for (const auto& side_name : rule.sides) {
-            const auto edge = side_name == "north" ? 0u : side_name == "east"  ? (rounded ? 2u : 1u)
-                                                        : side_name == "south" ? (rounded ? 4u : 2u)
-                                                                               : (rounded ? 5u : 3u);
+            const auto side_index = side_name == "north" ? 0u : side_name == "east" ? 1u :
+              side_name == "south" ? 2u : 3u;
+            const auto edge = anchor_part == 0 ? parent_kind.placement.wall_edges[side_index] : side_index;
             choices.push_back({{parent.parent, anchor_part}, edge, false});
           }
         }
@@ -1197,7 +1186,7 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
           gap = paired_first->depth;
         }
         uint32_t position = random(10) % 1001;
-        if (choice.cap || rule.port == "centre" || kind.shape == "wrap_east" || rule.attachment == "bend") {
+        if (choice.cap || rule.port == "centre" || kind.placement.strategy == "parent_wrap" || rule.attachment == "bend") {
           position = 500;
         } else if (rule.port == "start" || rule.port == "end" || rule.attachment == "paired_wall") {
           // Для боковины центр маленького блока отстоит от конца примерно на половину его фасада.
@@ -1209,7 +1198,7 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
           position = (start != (choice.edge == 2)) ? inset : 1000 - inset;
         }
         auto port = make_motif_edge_port(anchor.outline, choice.edge, aperture, position,
-                                         choice.cap || kind.shape == "wrap_east" ? 0 : std::max(1u, rule.passage_inset) * site_precision);
+                                         choice.cap || kind.placement.strategy == "parent_wrap" ? 0 : std::max(1u, rule.passage_inset) * site_precision);
         if (paired_first && port.valid()) {
           const auto vertical = anchor.outline[0].x == anchor.outline[1].x;
           const auto centre_sum = vertical ? anchor.outline[0].x + anchor.outline[3].x : anchor.outline[0].y + anchor.outline[3].y;
@@ -1227,8 +1216,8 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
           last_refusal = port.refusal;
           continue;
         }
-        join = {choice.ref, {id, kind.shape == "wrap_east" ? 1u : 0u}, port.a, port.b, parent.connector, aperture, gap, choice.edge};
-        if (kind.shape == "oblique") {
+        join = {choice.ref, {id, kind.placement.strategy == "parent_wrap" ? 1u : 0u}, port.a, port.b, parent.connector, aperture, gap, choice.edge};
+        if (kind.placement.strategy == "edge_parallel") {
           const auto attached = attach_motif_rect(port, uint32_t(w) * site_precision,
                                                   uint32_t(h) * site_precision, gap);
           if (!attached.valid()) {
@@ -1237,7 +1226,7 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
           }
           trial.push_back(precise_part({id, 0}, attached.body));
           if (!attached.passage.empty()) trial.push_back(precise_part({parent.connector, 0}, attached.passage));
-        } else if (kind.shape == "wrap_east") {
+        } else if (kind.placement.strategy == "parent_wrap") {
           const auto parent_rect = dimensions[parent.parent];
           const auto wrapped = wrap_east_parts({id, 0}, parent_rect,
                                                {parent_rect.w + 1, 0, w, parent_rect.h});
@@ -1249,7 +1238,7 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
           trial.push_back(precise_part({parent.connector, 0}, attached.passage));
           frame = frames[parent.parent];
         } else {
-          uint32_t entrance_edge = kind.shape == "round_east" ? 5 : 3;
+          uint32_t entrance_edge = kind.placement.entrance_edge;
           uint32_t entrance_position = 500;
           if (!shape.pieces.empty() && !rule.turns.empty()) {
             const auto& turn = rule.turns[random(11) % rule.turns.size()];
@@ -1297,7 +1286,7 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
           if (gap != 0) trial.push_back(precise_part({parent.connector, 0}, attached.passage));
         }
       }
-      if (!parts_fit(trial, result, side)) {
+      if (!parts_fit(trial, result)) {
         last_refusal = "convex geometry collides or leaves the plot";
         continue;
       }
@@ -1326,34 +1315,26 @@ projection place_once(const site_decl& site, const graph& graph, const size_t sc
   check_site_plan(graph, result, false);
   finish_paths(site, graph, result, scale, layout_seed, motifs);
   check_site_plan(graph, result);
-  result.owner.resize(size_t(side) * side, 0);
-  result.reservation_owner.resize(result.owner.size(), 0);
-  result.part_owner.resize(result.owner.size());
+  result.plan_route = trace_plan_route(graph, result);
+  result.route_spans = make_route_spans(result, graph);
+  trace_plan_perceptions(site, graph, result);
+  check_plan_facts(site, graph, result);
+  return result;
+}
+
+// Проекция не участвует в выборе укладки: она лишь показывает уже принятую геометрию.
+void project_site(projection& result, const std::vector<uint8_t>& surface) {
+  if (!result.owner.empty() || !result.part_owner.empty() || !result.exposed.empty())
+    throw std::runtime_error("site projection: plan was already projected");
+  if (surface.size() != size_t(result.layout.width) * result.layout.height)
+    throw std::runtime_error("site projection: surface extent differs from plan bounds");
+  auto sampled = sample_site_plan(result, {0, 0, result.layout.width, result.layout.height}, 1);
+  result.owner = std::move(sampled.owner);
+  result.part_owner = std::move(sampled.part_owner);
   result.exposed.resize(result.owner.size(), 0);
-  for (const auto& part : result.parts) {
-    for (int32_t y = part.bounds.y; y < part.bounds.y + part.bounds.h; ++y) {
-      for (int32_t x = part.bounds.x; x < part.bounds.x + part.bounds.w; ++x) {
-        if (!inside_part(part, x, y)) continue;
-        const auto cell = size_t(y) * side + x;
-        if (result.owner[cell] != 0) throw std::runtime_error("site: projection overwrites another part");
-        result.owner[cell] = part.ref.area + 1;
-        result.part_owner[cell] = part.ref;
-      }
-    }
-  }
-  for (uint32_t i = 0; i < result.layout.instances.size(); ++i) {
-    const auto& rect = result.layout.instances[i].rect;
-    for (int32_t y = rect.y; y < rect.y + rect.h; ++y) {
-      for (int32_t x = rect.x; x < rect.x + rect.w; ++x) {
-        result.reservation_owner[size_t(y) * side + x] = result.instance_nodes[i] + 1;
-      }
-    }
-  }
   for (size_t cell = 0; cell < result.owner.size(); ++cell) {
     result.exposed[cell] = result.owner[cell] != 0 && surface[cell] != 0;
   }
-  trace_perceptions(site, graph, result);
-  return result;
 }
 
 std::pair<uint32_t, uint32_t> pair_key(const uint32_t a, const uint32_t b) {
@@ -1493,7 +1474,7 @@ void check_site_plan(const graph& graph, const projection& image, const bool req
       if (ending.outcome == "accent") {
         const auto& accent = part_at(ending.accent_part);
         if (ending.accent.empty() || ending.accent_part.area != ending.part.area ||
-            !share_motif_boundary(part.outline, accent.outline) || ending.removed != 0) {
+            !share_motif_boundary(part.outline, accent.outline)) {
           throw std::runtime_error("site plan: authored ending is not part of its functional area");
         }
       } else if (ending.outcome != "connected" && ending.outcome != "trim") {
@@ -1523,159 +1504,373 @@ void check_site_plan(const graph& graph, const projection& image, const bool req
   }
 }
 
-void check_projection(const site_decl& site, const graph& graph, const projection& image,
-                      const std::vector<uint8_t>& surface) {
-  using namespace devils_engine::originator;
-  const auto& layout = image.layout;
-  const auto width = size_t(layout.width);
-  check_site_plan(graph, image);
-  if (image.part_owner.size() != image.owner.size())
-    throw std::runtime_error("site layout verify: part_ref raster has the wrong extent");
-  std::vector<size_t> area_cells(graph.nodes.size(), 0);
-  std::map<site_part_ref, size_t> part_cells;
-  std::map<site_part_ref, site_view_part> part_shapes;
-  std::vector<std::vector<site_part_ref>> area_parts(graph.nodes.size());
-  for (const auto& part : image.parts) {
-    if (part.ref.area >= graph.nodes.size() || part.bounds.w <= 0 || part.bounds.h <= 0 ||
-        !convex_outline(part) || part_shapes.contains(part.ref))
-      throw std::runtime_error("site layout verify: invalid or duplicate part_ref");
-    part_shapes.emplace(part.ref, part);
-    part_cells.emplace(part.ref, 0);
-    area_parts[part.ref.area].push_back(part.ref);
+std::vector<projection::route_crossing> trace_plan_route(const graph& graph, const projection& plan) {
+  using devils_engine::originator::shared_motif_boundary;
+  if (graph.route.empty()) throw std::runtime_error("site route: graph has no route");
+  std::vector<uint32_t> route_index(graph.nodes.size(), UINT32_MAX);
+  for (uint32_t i = 0; i < graph.route.size(); ++i) route_index[graph.route[i]] = i;
+  const auto pair_of = [](site_part_ref a, site_part_ref b) {
+    if (b < a) std::swap(a, b);
+    return std::pair{a, b};
+  };
+  std::set<std::pair<site_part_ref, site_part_ref>> declared_crossings;
+  for (const auto& join : plan.joins) {
+    if (join.connector == UINT32_MAX) {
+      declared_crossings.insert(pair_of(join.parent, join.child));
+    } else {
+      const site_part_ref door{join.connector, 0};
+      declared_crossings.insert(pair_of(join.parent, door));
+      declared_crossings.insert(pair_of(door, join.child));
+    }
   }
-  for (uint32_t id = 0; id < graph.nodes.size(); ++id) {
-    auto& parts = area_parts[id];
-    std::sort(parts.begin(), parts.end());
-    if (parts.empty() || (graph.nodes[id].connector && parts.size() != 1))
-      throw std::runtime_error(std::format("site layout verify: area #{} has no valid parts", id));
-    for (uint32_t part = 0; part < parts.size(); ++part)
-      if (parts[part] != site_part_ref{id, part})
-        throw std::runtime_error(std::format("site layout verify: area #{} has a gap in part_ref", id));
-  }
-  std::vector<uint8_t> seen(image.owner.size(), 0);
+  const auto find_part = [&](const site_part_ref ref) {
+    const auto found = std::find_if(plan.parts.begin(), plan.parts.end(),
+      [&](const site_view_part& part) { return part.ref == ref; });
+    if (found == plan.parts.end()) throw std::runtime_error("site route: endpoint has no primary part");
+    return size_t(found - plan.parts.begin());
+  };
+  const auto start = find_part({graph.route.front(), 0});
+  const auto goal = find_part({graph.route.back(), 0});
+  std::vector<size_t> previous(plan.parts.size(), SIZE_MAX);
+  std::vector<devils_engine::originator::motif_boundary_segment> portals(plan.parts.size());
   std::queue<size_t> pending;
-  const auto start = size_t(layout.entry_y) * width;
+  previous[start] = start;
   pending.push(start);
-  seen[start] = 1;
-  std::set<std::pair<uint32_t, uint32_t>> actual, expected;
-  for (const auto& link : graph.edges) expected.insert(pair_key(link.a, link.b));
-  while (!pending.empty()) {
-    const auto index = pending.front();
+  while (!pending.empty() && previous[goal] == SIZE_MAX) {
+    const auto here = pending.front();
     pending.pop();
-    const auto x = index % width;
-    const auto y = index / width;
-    for (const auto& [nx, ny] : {std::pair<int64_t, int64_t>{int64_t(x) - 1, int64_t(y)},
-                                 {int64_t(x) + 1, int64_t(y)},
-                                 {int64_t(x), int64_t(y) - 1},
-                                 {int64_t(x), int64_t(y) + 1}}) {
-      if (nx < 0 || ny < 0 || nx >= layout.width || ny >= layout.height) continue;
-      const auto next = size_t(ny) * width + size_t(nx);
-      if (image.owner[next] == 0) continue;
-      if (image.owner[next] != image.owner[index])
-        actual.insert(pair_key(image.owner[next] - 1, image.owner[index] - 1));
-      if (seen[next] == 0) { seen[next] = 1; pending.push(next); }
+    const auto from_index = route_index[plan.parts[here].ref.area];
+    for (size_t next = 0; next < plan.parts.size(); ++next) {
+      if (previous[next] != SIZE_MAX || next == here) continue;
+      const auto to_index = route_index[plan.parts[next].ref.area];
+      if (from_index == UINT32_MAX || to_index == UINT32_MAX ||
+          (from_index != to_index && from_index + 1 != to_index)) continue;
+      if (from_index != to_index &&
+          !declared_crossings.contains(pair_of(plan.parts[here].ref, plan.parts[next].ref))) continue;
+      const auto shared = shared_motif_boundary(plan.parts[here].outline, plan.parts[next].outline);
+      if (shared.empty()) continue;
+      previous[next] = here;
+      portals[next] = shared.front();
+      pending.push(next);
     }
   }
-  if (actual != expected) {
-    for (const auto& pair : expected)
-      if (!actual.contains(pair))
-        throw std::runtime_error(std::format("site layout verify: required adjacency #{}({})--#{}({}) is absent",
-          pair.first, site.kinds[graph.nodes[pair.first].kind].name,
-          pair.second, site.kinds[graph.nodes[pair.second].kind].name));
-    for (const auto& pair : actual)
-      if (!expected.contains(pair))
-        throw std::runtime_error(std::format("site layout verify: unintended adjacency #{}--#{} appears",
-          pair.first, pair.second));
+  if (previous[goal] == SIZE_MAX)
+    throw std::runtime_error("site route: graph route has no continuous chain of convex parts");
+  std::vector<projection::route_crossing> result;
+  for (auto at = goal; at != start; at = previous[at]) {
+    const auto from = previous[at];
+    result.push_back({plan.parts[from].ref, plan.parts[at].ref, portals[at].a, portals[at].b});
   }
-  size_t exposure_count = 0;
-  for (size_t cell = 0; cell < image.owner.size(); ++cell) {
-    if (image.owner[cell] != 0) {
-      ++area_cells[image.owner[cell] - 1];
-      if (seen[cell] == 0)
-        throw std::runtime_error("site layout verify: floor cannot be reached from the entrance");
-      const auto ref = image.part_owner[cell];
-      const auto found = part_shapes.find(ref);
-      const auto x = int32_t(cell % width), y = int32_t(cell / width);
-      if (!ref.valid() || ref.area + 1 != image.owner[cell] || found == part_shapes.end() ||
-          !inside_part(found->second, x, y))
-        throw std::runtime_error("site layout verify: floor cell has no exact part_ref");
-      ++part_cells[ref];
-    } else if (image.part_owner[cell].valid()) {
-      throw std::runtime_error("site layout verify: wall cell names a part_ref");
+  std::reverse(result.begin(), result.end());
+  std::vector<uint32_t> traversed{graph.route.front()};
+  for (const auto& crossing : result) {
+    if (crossing.a == crossing.b)
+      throw std::runtime_error("site route: a portal collapsed to a point");
+    if (traversed.back() != crossing.to.area) traversed.push_back(crossing.to.area);
+  }
+  if (traversed != graph.route)
+    throw std::runtime_error("site route: convex chain takes a different route through the location");
+  return result;
+}
+
+bool inside_part_exact(const site_view_part& part, const site_point point) {
+  for (size_t i = 0; i < part.outline.size(); ++i)
+    if (cross(part.outline[i], part.outline[(i + 1) % part.outline.size()], point) < 0)
+      return false;
+  return true;
+}
+
+site_point part_centre(const site_view_part& part) {
+  int64_t x = 0, y = 0;
+  for (const auto vertex : part.outline) { x += vertex.x; y += vertex.y; }
+  const site_point centre{int32_t(x / int64_t(part.outline.size())),
+                          int32_t(y / int64_t(part.outline.size()))};
+  if (!inside_part_exact(part, centre))
+    throw std::runtime_error("site route: rounded convex centre left its part");
+  return centre;
+}
+
+site_point point_along(const site_point a, const site_point b, const uint32_t numerator,
+                       const uint32_t denominator) {
+  const auto dx = b.x - a.x, dy = b.y - a.y;
+  const auto steps = std::gcd(std::abs(dx), std::abs(dy));
+  if (steps == 0) return a;
+  const auto step = int64_t(steps) * numerator / denominator;
+  return {int32_t(a.x + int64_t(dx / steps) * step),
+          int32_t(a.y + int64_t(dy / steps) * step)};
+}
+
+std::vector<site_route_span> make_route_spans(const projection& plan, const graph& graph) {
+  const auto part_at = [&](const site_part_ref ref) -> const site_view_part& {
+    const auto found = std::find_if(plan.parts.begin(), plan.parts.end(),
+      [&](const site_view_part& part) { return part.ref == ref; });
+    if (found == plan.parts.end()) throw std::runtime_error("site route: a crossing lost its convex part");
+    return *found;
+  };
+  const auto first = plan.plan_route.empty() ? site_part_ref{graph.route.front(), 0} : plan.plan_route.front().from;
+  auto current = part_centre(part_at(first));
+  std::vector<site_route_span> spans;
+  for (const auto& crossing : plan.plan_route) {
+    const auto portal = point_along(crossing.a, crossing.b, 1, 2);
+    if (!inside_part_exact(part_at(crossing.from), portal) ||
+        !inside_part_exact(part_at(crossing.to), portal))
+      throw std::runtime_error("site route: midpoint left its shared portal");
+    if (current != portal) spans.push_back({crossing.from, current, portal});
+    const auto next = part_centre(part_at(crossing.to));
+    if (portal != next) spans.push_back({crossing.to, portal, next});
+    current = next;
+  }
+  if (spans.empty()) throw std::runtime_error("site route: no drawable path through its parts");
+  for (size_t i = 1; i < spans.size(); ++i)
+    if (spans[i - 1].b != spans[i].a)
+      throw std::runtime_error("site route: drawable segments do not meet");
+  return spans;
+}
+
+struct rational {
+  int64_t numerator = 0;
+  int64_t denominator = 1; // always positive
+};
+
+bool less_than(const rational a, const rational b) {
+  return __int128(a.numerator) * b.denominator < __int128(b.numerator) * a.denominator;
+}
+
+struct ray_interval { rational first, last; };
+
+std::optional<ray_interval> clip_ray(const site_view_part& part, const site_point eye,
+                                     const site_point target) {
+  ray_interval result{{0, 1}, {1, 1}};
+  for (size_t i = 0; i < part.outline.size(); ++i) {
+    const auto a = part.outline[i], b = part.outline[(i + 1) % part.outline.size()];
+    const auto at_eye = cross(a, b, eye);
+    const auto slope = int64_t(b.x - a.x) * (target.y - eye.y) -
+                       int64_t(b.y - a.y) * (target.x - eye.x);
+    if (slope == 0) {
+      if (at_eye < 0) return std::nullopt;
+      continue;
     }
-    if (image.exposed[cell] != 0) {
-      ++exposure_count;
-      if (image.owner[cell] == 0 || surface[cell] == 0)
-        throw std::runtime_error("site layout verify: exposure lies outside the surface/floor intersection");
+    if (slope > 0) {
+      const rational limit{-at_eye, slope};
+      if (less_than(result.first, limit)) result.first = limit;
+    } else {
+      const rational limit{at_eye, -slope};
+      if (less_than(limit, result.last)) result.last = limit;
     }
-    if (surface[cell] != 0 && image.owner[cell] != 0 && image.exposed[cell] == 0)
-      throw std::runtime_error("site layout verify: a surface/floor intersection was hidden");
+    if (less_than(result.last, result.first)) return std::nullopt;
   }
-  if (exposure_count != size_t(std::count(image.exposed.begin(), image.exposed.end(), uint8_t(1))))
-    throw std::runtime_error("site layout verify: projected exposure count is not conserved");
-  for (const auto& [ref, part] : part_shapes) {
-    size_t expected_cells = 0;
-    for (int32_t y = part.bounds.y; y < part.bounds.y + part.bounds.h; ++y)
-      for (int32_t x = part.bounds.x; x < part.bounds.x + part.bounds.w; ++x)
-        expected_cells += inside_part(part, x, y);
-    if (part_cells[ref] != expected_cells)
-      throw std::runtime_error("site layout verify: part_ref geometry is incomplete");
+  return result;
+}
+
+bool clear_geometric_sight(const projection& plan, const site_point eye, const site_point target,
+                           const uint32_t witness, const uint32_t door, const uint32_t via) {
+  std::vector<ray_interval> before, after;
+  std::optional<ray_interval> doorway;
+  for (const auto& part : plan.parts) {
+    if (part.ref.area != witness && part.ref.area != door && part.ref.area != via) continue;
+    const auto clipped = clip_ray(part, eye, target);
+    if (!clipped) continue;
+    if (part.ref.area == witness) before.push_back(*clipped);
+    else if (part.ref.area == via) after.push_back(*clipped);
+    else doorway = *clipped;
   }
-  for (uint32_t id = 0; id < graph.nodes.size(); ++id)
-    if (area_cells[id] == 0)
-      throw std::runtime_error(std::format("site layout verify: area #{} has the wrong number of cells", id));
-  std::vector<uint32_t> traversed_areas;
-  for (const auto cell : image.floor_route) {
-    const auto id = image.owner[cell] - 1;
-    if (traversed_areas.empty() || traversed_areas.back() != id) traversed_areas.push_back(id);
+  if (!doorway || !less_than(doorway->first, doorway->last) ||
+      !less_than({0, 1}, doorway->first)) return false;
+  const auto covers = [](std::vector<ray_interval>& intervals, const rational from, const rational to) {
+    std::sort(intervals.begin(), intervals.end(), [](const ray_interval& a, const ray_interval& b) {
+      return less_than(a.first, b.first);
+    });
+    auto reached = from;
+    for (const auto& interval : intervals) {
+      if (less_than(reached, interval.first)) return false;
+      if (less_than(reached, interval.last)) reached = interval.last;
+      if (!less_than(reached, to)) return true;
+    }
+    return !less_than(reached, to);
+  };
+  return covers(before, {0, 1}, doorway->first) &&
+         covers(after, doorway->last, {1, 1});
+}
+
+void trace_plan_perceptions(const site_decl& site, const graph& graph, projection& plan) {
+  for (const auto& candidate : graph.cues) {
+    const auto door = path(graph, candidate.witness, candidate.route_via)[1];
+    const auto door_part = std::find_if(plan.parts.begin(), plan.parts.end(),
+      [&](const site_view_part& part) { return part.ref == site_part_ref{door, 0}; });
+    if (door_part == plan.parts.end()) throw std::runtime_error("site perception: technical door has no part");
+    const auto door_centre = part_centre(*door_part);
+    bool seen = false;
+    for (const auto& witness_part : plan.parts) {
+      if (witness_part.ref.area != candidate.witness) continue;
+      for (const auto& portal : devils_engine::originator::shared_motif_boundary(
+             witness_part.outline, door_part->outline)) {
+        const auto aperture = point_along(portal.a, portal.b, 1, 2);
+        const auto eye = point_along(aperture, part_centre(witness_part), 1, 2);
+        for (const auto& span : plan.route_spans) {
+          if (span.part.area != candidate.route_via) continue;
+          for (const uint32_t step : {0u, 1u, 2u, 3u, 4u}) {
+            const auto target = point_along(span.a, span.b, step, 4);
+            const auto distance = std::abs(int64_t(target.x) - door_centre.x) +
+                                  std::abs(int64_t(target.y) - door_centre.y);
+            if (distance > int64_t(site.perception.max_distance) * site_precision ||
+                !clear_geometric_sight(plan, eye, target, candidate.witness, door, candidate.route_via))
+              continue;
+            plan.perceptions.push_back({candidate, eye, target, door});
+            seen = true;
+            break;
+          }
+          if (seen) break;
+        }
+        if (seen) break;
+      }
+      if (seen) break;
+    }
   }
-  if (traversed_areas != graph.route)
-    throw std::runtime_error("site layout verify: raster route visits different areas than the graph route");
-  for (const auto& perceived : image.perceptions) {
+}
+
+void check_plan_facts(const site_decl& site, const graph& graph, const projection& plan) {
+  if (plan.route_spans.empty()) throw std::runtime_error("site plan: route has no geometric segments");
+  std::vector<uint32_t> traversed;
+  for (size_t i = 0; i < plan.route_spans.size(); ++i) {
+    const auto& span = plan.route_spans[i];
+    const auto part = std::find_if(plan.parts.begin(), plan.parts.end(),
+      [&](const site_view_part& shape) { return shape.ref == span.part; });
+    if (part == plan.parts.end() || span.a == span.b ||
+        !inside_part_exact(*part, span.a) || !inside_part_exact(*part, span.b) ||
+        (i != 0 && plan.route_spans[i - 1].b != span.a))
+      throw std::runtime_error("site plan: route segment escapes its convex part or breaks continuity");
+    if (traversed.empty() || traversed.back() != span.part.area) traversed.push_back(span.part.area);
+  }
+  if (traversed != graph.route)
+    throw std::runtime_error("site plan: route segments visit different areas than the declared route");
+  for (const auto& perceived : plan.perceptions) {
     const auto& cue = perceived.candidate;
     if (std::find(graph.cues.begin(), graph.cues.end(), cue) == graph.cues.end() ||
-        std::find(image.floor_route.begin(), image.floor_route.end(), perceived.target_cell) == image.floor_route.end() ||
-        image.owner[perceived.target_cell] != cue.route_via + 1)
-      throw std::runtime_error("site layout verify: perception does not name its actual route");
-    const auto door = path(graph, cue.witness, cue.route_via)[1];
-    if (image.owner[perceived.door_cell] != door + 1)
-      throw std::runtime_error("site layout verify: perception does not name its own door");
-    const auto x = perceived.door_cell % width;
-    const auto y = perceived.door_cell / width;
-    const auto distance = std::abs(int64_t(perceived.target_cell % width) - int64_t(x)) +
-                          std::abs(int64_t(perceived.target_cell / width) - int64_t(y));
-    if (distance > site.perception.max_distance)
-      throw std::runtime_error("site layout verify: perception exceeds the declared distance");
-    bool visible = false;
-    for (const auto& [nx, ny] : {std::pair<int64_t, int64_t>{int64_t(x) - 1, int64_t(y)},
-                                  {int64_t(x) + 1, int64_t(y)},
-                                  {int64_t(x), int64_t(y) - 1},
-                                  {int64_t(x), int64_t(y) + 1}}) {
-      if (nx < 0 || ny < 0 || nx >= layout.width || ny >= layout.height) continue;
-      const auto eye = size_t(ny) * width + size_t(nx);
-      visible |= image.owner[eye] == cue.witness + 1 &&
-        open_door_sight(image, eye, perceived.target_cell, door, perceived.door_cell,
-                        cue.witness, cue.route_via);
-    }
-    if (!visible)
-      throw std::runtime_error("site layout verify: perception has no clear ray through the open door");
+        perceived.door != path(graph, cue.witness, cue.route_via)[1])
+      throw std::runtime_error("site plan: perception has no declared candidate or door");
+    const auto door = std::find_if(plan.parts.begin(), plan.parts.end(),
+      [&](const site_view_part& part) { return part.ref == site_part_ref{perceived.door, 0}; });
+    if (door == plan.parts.end()) throw std::runtime_error("site plan: perception door has no geometry");
+    const auto door_centre = part_centre(*door);
+    const auto distance = std::abs(int64_t(perceived.target.x) - door_centre.x) +
+                          std::abs(int64_t(perceived.target.y) - door_centre.y);
+    const auto on_route = std::any_of(plan.route_spans.begin(), plan.route_spans.end(),
+      [&](const site_route_span& span) {
+        return span.part.area == cue.route_via && cross(span.a, span.b, perceived.target) == 0 &&
+          perceived.target.x >= std::min(span.a.x, span.b.x) &&
+          perceived.target.x <= std::max(span.a.x, span.b.x) &&
+          perceived.target.y >= std::min(span.a.y, span.b.y) &&
+          perceived.target.y <= std::max(span.a.y, span.b.y);
+      });
+    const auto in_witness = std::any_of(plan.parts.begin(), plan.parts.end(),
+      [&](const site_view_part& part) {
+        return part.ref.area == cue.witness && inside_part_exact(part, perceived.eye);
+      });
+    if (!in_witness || !on_route || distance > int64_t(site.perception.max_distance) * site_precision ||
+        !clear_geometric_sight(plan, perceived.eye, perceived.target,
+                               cue.witness, perceived.door, cue.route_via))
+      throw std::runtime_error("site plan: perception lacks a clear geometric ray to the route");
   }
+}
+
+site_projection_quality check_projection(const site_decl& site, const graph& graph, const projection& image,
+                                         const std::vector<uint8_t>& surface) {
+  check_site_plan(graph, image);
+  check_plan_facts(site, graph, image);
+  const auto width = size_t(image.layout.width);
+  const auto extent = width * image.layout.height;
+  if (image.owner.size() != extent || image.part_owner.size() != extent ||
+      image.exposed.size() != extent || surface.size() != extent)
+    throw std::runtime_error("site projection: image arrays disagree about their extent");
+  const auto replay = sample_site_plan(image, {0, 0, image.layout.width, image.layout.height}, 1);
+  if (image.owner != replay.owner || image.part_owner != replay.part_owner)
+    throw std::runtime_error("site projection: sampled owners disagree with the exact parts");
+  site_projection_quality quality;
+  quality.lost_parts = replay.lost_parts;
+  std::set<std::pair<uint32_t, uint32_t>> actual, expected;
+  for (const auto& edge : graph.edges) expected.insert(pair_key(edge.a, edge.b));
+  for (size_t cell = 0; cell < extent; ++cell) {
+    const auto owner = image.owner[cell];
+    if (image.exposed[cell] != uint8_t(owner != 0 && surface[cell] != 0))
+      throw std::runtime_error("site projection: a surface contact was lost or invented");
+    if (owner == 0) continue;
+    const auto x = cell % width, y = cell / width;
+    for (const auto next : {x + 1 < width ? cell + 1 : extent,
+                            y + 1 < size_t(image.layout.height) ? cell + width : extent}) {
+      if (next == extent || image.owner[next] == 0 || image.owner[next] == owner) continue;
+      actual.insert(pair_key(owner - 1, image.owner[next] - 1));
+    }
+  }
+  for (const auto& link : actual) quality.false_links += !expected.contains(link);
+  for (const auto& link : expected) quality.missing_links += !actual.contains(link);
+  std::vector<uint8_t> reached(extent, 0);
+  std::queue<size_t> pending;
+  const auto entry = size_t(image.layout.entry_y) * width;
+  if (image.owner[entry] != 0) { reached[entry] = 1; pending.push(entry); }
+  while (!pending.empty()) {
+    const auto cell = pending.front(); pending.pop();
+    const auto x = cell % width, y = cell / width;
+    for (const auto next : {x > 0 ? cell - 1 : extent, x + 1 < width ? cell + 1 : extent,
+                            y > 0 ? cell - width : extent,
+                            y + 1 < size_t(image.layout.height) ? cell + width : extent}) {
+      if (next == extent || image.owner[next] == 0 || reached[next]) continue;
+      reached[next] = 1;
+      pending.push(next);
+    }
+  }
+  for (size_t cell = 0; cell < extent; ++cell)
+    quality.unreachable_cells += image.owner[cell] != 0 && !reached[cell];
+  return quality;
+}
+
+uint64_t site_layout_seed(const uint64_t seed, const uint32_t variant) {
+  return variant == 0 ? seed :
+    (uint64_t(roll(seed, 0x5a9eu, variant, 0)) << 32) | roll(seed, 0x5a9eu, variant, 1);
+}
+
+std::vector<uint8_t> projected_route_mask(const projection& image) {
+  std::vector<uint8_t> mask(image.owner.size(), 0);
+  const auto width = image.layout.width, height = image.layout.height;
+  for (const auto& span : image.route_spans) {
+    const auto left = std::max(0, std::min(span.a.x, span.b.x) / site_precision - 1);
+    const auto top = std::max(0, std::min(span.a.y, span.b.y) / site_precision - 1);
+    const auto right = std::min(width - 1, std::max(span.a.x, span.b.x) / site_precision + 1);
+    const auto bottom = std::min(height - 1, std::max(span.a.y, span.b.y) / site_precision + 1);
+    const int64_t dx = int64_t(span.b.x) - span.a.x, dy = int64_t(span.b.y) - span.a.y;
+    const auto length_squared = dx * dx + dy * dy;
+    for (int32_t y = top; y <= bottom; ++y)
+      for (int32_t x = left; x <= right; ++x) {
+        const auto cell = size_t(y) * width + x;
+        if (image.owner[cell] != span.part.area + 1) continue;
+        const int64_t px = int64_t(x) * site_precision + site_precision / 2 - span.a.x;
+        const int64_t py = int64_t(y) * site_precision + site_precision / 2 - span.a.y;
+        const auto dot = px * dx + py * dy;
+        bool near = false;
+        if (dot <= 0 || dot >= length_squared) {
+          const auto rx = dot <= 0 ? px : px - dx;
+          const auto ry = dot <= 0 ? py : py - dy;
+          near = rx * rx + ry * ry <= int64_t(site_precision / 2) * (site_precision / 2);
+        } else {
+          const auto area = px * dy - py * dx;
+          near = __int128(area) * area <=
+            __int128(site_precision / 2) * (site_precision / 2) * length_squared;
+        }
+        if (near) mask[cell] = 1;
+      }
+  }
+  return mask;
 }
 
 projection place(const site_decl& site, const graph& graph, const size_t scale,
                  const int32_t entry_y, const uint64_t seed,
-                 const std::vector<uint8_t>& surface,
-                 const std::span<const authored_motif_binding> motifs) {
+                 const std::span<const site_motif_binding> motifs) {
   std::string last_refusal;
   std::string first_refusal;
   constexpr uint32_t max_layout_variants = 256;
   for (uint32_t variant = 0; variant < max_layout_variants; ++variant) {
-    const auto layout_seed = variant == 0 ? seed :
-      (uint64_t(roll(seed, 0x5a9eu, variant, 0)) << 32) | roll(seed, 0x5a9eu, variant, 1);
+    const auto layout_seed = site_layout_seed(seed, variant);
     try {
-      auto image = place_once(site, graph, scale, entry_y, layout_seed, surface, motifs);
-      check_projection(site, graph, image, surface);
-      return image;
+      return place_once(site, graph, scale, entry_y, layout_seed, motifs);
     } catch (const std::exception& error) {
       if (first_refusal.empty()) first_refusal = error.what();
       last_refusal = error.what();
@@ -1686,12 +1881,22 @@ projection place(const site_decl& site, const graph& graph, const size_t scale,
     max_layout_variants, first_refusal, last_refusal));
 }
 
+// Отображение не выбирает новую укладку даже при потерях сэмплирования.
+projection make_site_projection(const site_decl& site, const graph& graph, const size_t scale,
+                                const int32_t entry_y, const uint64_t seed,
+                                const std::vector<uint8_t>& surface,
+                                const std::span<const site_motif_binding> motifs) {
+  auto image = place(site, graph, scale, entry_y, seed, motifs);
+  project_site(image, surface);
+  image.quality = check_projection(site, graph, image, surface);
+  return image;
+}
+
 void display(const site_decl& site, const graph& graph, const projection& image,
-             const authored_motif_detail& detail, const bool ascii,
+             const bool ascii,
              const std::string_view dump, const uint64_t seed) {
   const auto width = size_t(image.layout.width);
-  std::vector<uint8_t> route_cells(image.owner.size(), 0);
-  for (const auto cell : image.floor_route) route_cells[cell] = 1;
+  const auto route_cells = projected_route_mask(image);
   const auto glyph_at = [&](const size_t index) {
     if (image.exposed[index] != 0) return '^';
     if (image.owner[index] == 0) return '#';
@@ -1716,8 +1921,6 @@ void display(const site_decl& site, const graph& graph, const projection& image,
         const auto& colour = site.kinds[graph.nodes[id].kind].colour;
         rgb = graph.nodes[id].connector ? appearance_of_connector(site, graph, id, seed).colour :
           colour[0] << 16 | colour[1] << 8 | colour[2];
-        if (detail.colours[index] != 0 && image.reservation_owner[index] == image.owner[index])
-          rgb = detail.colours[index];
       }
       if (route_cells[index] != 0 && image.owner[index] != 0 &&
           !graph.nodes[image.owner[index] - 1].connector) rgb = 0x78c4b8u;
@@ -1732,12 +1935,17 @@ void display(const site_decl& site, const graph& graph, const projection& image,
 void report(const site_decl& site, const graph& graph, const projection& image,
             const uint64_t seed, const std::string_view scale) {
   std::cout << "site=" << site.name << " theme=" << site.theme << " rules_version=" << site.version
+            << " motifs_version=" << site.motifs.version
             << " scale=" << scale << " seed=" << seed << "\n";
   std::cout << "areas=" << graph.nodes.size() << " links=" << graph.edges.size()
             << " perception_candidates=" << graph.cues.size()
             << " perceptions=" << image.perceptions.size() << " footprint="
             << image.layout.width << 'x' << image.layout.height
             << " layout_attempts=" << image.layout.attempts
+            << " projection=lost_parts:" << image.quality.lost_parts
+            << ",false_links:" << image.quality.false_links
+            << ",missing_links:" << image.quality.missing_links
+            << ",unreachable_cells:" << image.quality.unreachable_cells
             << " exposures=" << std::count(image.exposed.begin(), image.exposed.end(), uint8_t(1)) << "\n";
   for (uint32_t id = 0; id < graph.nodes.size(); ++id) {
     std::cout << "  #" << id << " " << site.kinds[graph.nodes[id].kind].category << " "
@@ -1757,8 +1965,8 @@ void report(const site_decl& site, const graph& graph, const projection& image,
     std::cout << "perception: dialogue_template=" << perceived.candidate.token
               << " witness=#" << perceived.candidate.witness
               << " route_via=#" << perceived.candidate.route_via
-              << " seen_at=(" << perceived.target_cell % size_t(image.layout.width) << ','
-              << perceived.target_cell / size_t(image.layout.width) << ")\n";
+              << " seen_at=(" << double(perceived.target.x) / site_precision << ','
+              << double(perceived.target.y) / site_precision << ")\n";
   }
   for (const auto& ending : image.endings) {
     std::cout << "ending: area=#" << ending.part.area << ' ' << (ending.start ? "start" : "end")
@@ -1775,37 +1983,31 @@ void report(const site_decl& site, const graph& graph, const projection& image,
 site_view_scene make_site_view_scene(const uint64_t seed, const std::string_view scale,
                                      const int32_t requested_entry_y, const bool surface_cut,
                                      const std::string_view source,
-                                     const std::string_view motifs_source) {
-  const auto site = read_site(source);
+                                     const std::string_view motifs_source, const site_bounds bounds) {
+  auto site = read_site(source, motifs_source);
   const auto scale_it = std::find(site.scales.begin(), site.scales.end(), scale);
   if (scale_it == site.scales.end())
     throw std::runtime_error(std::format("site: unknown scale '{}'", scale));
   const auto scale_index = size_t(scale_it - site.scales.begin());
-  std::vector<std::string> names;
-  for (const auto& kind : site.kinds) names.push_back(kind.motif);
-  for (const auto& ending : site.endings) names.push_back(ending.motif);
-  const auto motifs = bind_authored_motifs(motifs_source, names);
+  const auto motifs = motif_bindings(site);
   const auto graph = assemble(site, scale_index, seed);
   check(site, graph);
-  const auto side = site.footprints[scale_index];
-  const auto entry_y = requested_entry_y == -1 ? int32_t(side / 2) : requested_entry_y;
-  const auto surface = example_surface(side, surface_cut);
-  auto image = place(site, graph, scale_index, entry_y, seed, surface, motifs);
-  check_projection(site, graph, image, surface);
-  auto detail = make_authored_motif_detail(image.layout, seed, motifs_source);
+  site.bounds = resolve_bounds(site, scale_index, bounds);
+  const auto entry_y = requested_entry_y == -1 ? int32_t(site.bounds.height / 2) : requested_entry_y;
+  const auto surface = example_surface(site.bounds, surface_cut);
+  auto image = make_site_projection(site, graph, scale_index, entry_y, seed, surface, motifs);
 
   site_view_scene scene;
   scene.scale = std::string(scale);
   scene.seed = seed;
   scene.catalogue_version = site.version;
+  scene.motif_catalogue_version = site.motifs.version;
   scene.perceptions = image.perceptions.size();
-  scene.detail_cells = detail.marked;
   scene.owner = std::move(image.owner);
   scene.part_owner = std::move(image.part_owner);
   scene.exposed = std::move(image.exposed);
-  scene.cell_colours = std::move(detail.colours);
-  scene.route.resize(scene.owner.size(), 0);
-  for (const auto cell : image.floor_route) scene.route[cell] = 1;
+  scene.route_spans = image.route_spans;
+  scene.projection_quality = image.quality;
   scene.zones.resize(graph.nodes.size());
   scene.joins = image.joins;
   scene.endings = image.endings;
@@ -1887,12 +2089,6 @@ site_view_scene make_site_view_scene(const uint64_t seed, const std::string_view
     zone.details.push_back(std::format("surface contacts {}  dialogue {}", contacts,
       witnessed != 0 ? site.perception.dialogue_template : "none"));
   }
-  for (size_t cell = 0; cell < scene.owner.size(); ++cell) {
-    if (scene.owner[cell] != 0 && (scene.cell_colours[cell] == 0 ||
-                                   image.reservation_owner[cell] != scene.owner[cell]))
-      scene.cell_colours[cell] = scene.zones[scene.owner[cell] - 1].colour;
-    if (scene.exposed[cell] != 0) scene.cell_colours[cell] = 0xb8c8d9u;
-  }
   scene.layout = std::move(image.layout);
   return scene;
 }
@@ -1900,30 +2096,94 @@ site_view_scene make_site_view_scene(const uint64_t seed, const std::string_view
 int run_site_graph(const uint64_t seed, const std::string_view scale, const int32_t requested_entry_y,
                    const bool surface_cut, const bool verify, const bool ascii,
                    const std::string_view dump, const std::string_view source,
-                   const std::string_view motifs_source) {
-  const auto site = read_site(source);
-  std::vector<std::string> motif_names;
-  motif_names.reserve(site.kinds.size());
-  for (const auto& kind : site.kinds) motif_names.push_back(kind.motif);
-  for (const auto& ending : site.endings) motif_names.push_back(ending.motif);
-  const auto motifs = bind_authored_motifs(motifs_source, motif_names);
+                   const std::string_view motifs_source, const site_bounds bounds) {
+  auto site = read_site(source, motifs_source);
+  const auto motifs = motif_bindings(site);
   const auto scale_it = std::find(site.scales.begin(), site.scales.end(), scale);
   if (scale_it == site.scales.end())
     throw std::runtime_error(std::format("site: unknown scale '{}'", scale));
   const auto scale_index = size_t(scale_it - site.scales.begin());
   const auto graph = assemble(site, scale_index, seed);
   check(site, graph);
-  const auto side = site.footprints[scale_index];
-  const auto entry_y = requested_entry_y == -1 ? int32_t(side / 2) : requested_entry_y;
-  const auto surface = example_surface(side, surface_cut);
-  const auto image = place(site, graph, scale_index, entry_y, seed, surface, motifs);
-  check_projection(site, graph, image, surface);
-  const auto detail = make_authored_motif_detail(image.layout, seed, motifs_source);
+  site.bounds = resolve_bounds(site, scale_index, bounds);
+  const auto entry_y = requested_entry_y == -1 ? int32_t(site.bounds.height / 2) : requested_entry_y;
+  const auto surface = example_surface(site.bounds, surface_cut);
+  auto image = make_site_projection(site, graph, scale_index, entry_y, seed, surface, motifs);
   if (verify) {
+    projection sight_probe;
+    sight_probe.parts = {
+      rectangular_part({0, 0}, {0, 0, 2, 2}),
+      precise_part({1, 0}, {{512, 192}, {768, 192}, {768, 320}, {512, 320}}),
+      rectangular_part({2, 0}, {3, 0, 2, 2})
+    };
+    if (!clear_geometric_sight(sight_probe, {256, 256}, {1024, 256}, 0, 1, 2) ||
+        clear_geometric_sight(sight_probe, {256, 256}, {1024, 512}, 0, 1, 2))
+      throw std::runtime_error("site verify: geometric sight ignores a narrow door aperture");
+    sight_probe.parts[1] = precise_part({1, 0}, {{513, 192}, {767, 192}, {767, 320}, {513, 320}});
+    if (clear_geometric_sight(sight_probe, {256, 256}, {1024, 256}, 0, 1, 2))
+      throw std::runtime_error("site verify: a 1/256-unit gap through the door was mistaken for sight");
+    const auto plan = place(site, graph, scale_index, entry_y, seed, motifs);
+    check_site_plan(graph, plan);
+    if (!plan.owner.empty() || !plan.part_owner.empty() || !plan.exposed.empty())
+      throw std::runtime_error("site verify: plan selection unexpectedly depends on projection");
+    if (plan.parts != image.parts || plan.joins != image.joins ||
+        plan.plan_route != image.plan_route || plan.route_spans != image.route_spans ||
+        plan.perceptions != image.perceptions)
+      throw std::runtime_error("site verify: projecting the plan changed its geometry or facts");
+    const auto plan_replay = place(site, graph, scale_index, entry_y, seed, motifs);
+    if (plan.parts != plan_replay.parts || plan.joins != plan_replay.joins ||
+        plan.endings != plan_replay.endings || plan.plan_route != plan_replay.plan_route ||
+        plan.route_spans != plan_replay.route_spans || plan.perceptions != plan_replay.perceptions ||
+        plan.layout.instances != plan_replay.layout.instances)
+      throw std::runtime_error("site verify: geometric plan did not replay from the seed");
+    const auto full_sample = sample_site_plan(plan, {0, 0, plan.layout.width, plan.layout.height}, 1);
+    std::set<std::pair<uint32_t, uint32_t>> sampled_links, declared_links;
+    for (const auto& link : graph.edges) declared_links.insert(pair_key(link.a, link.b));
+    for (int32_t y = 0; y < full_sample.height; ++y)
+      for (int32_t x = 0; x < full_sample.width; ++x) {
+        const auto owner = full_sample.owner[size_t(y) * full_sample.width + x];
+        if (owner == 0) continue;
+        for (const auto& [nx, ny] : {std::pair{x + 1, y}, std::pair{x, y + 1}}) {
+          if (nx >= full_sample.width || ny >= full_sample.height) continue;
+          const auto other = full_sample.owner[size_t(ny) * full_sample.width + nx];
+          if (other != 0 && other != owner) sampled_links.insert(pair_key(owner - 1, other - 1));
+        }
+      }
+    size_t merged_links = 0, missing_links = 0;
+    for (const auto& link : sampled_links) merged_links += !declared_links.contains(link);
+    for (const auto& link : declared_links) missing_links += !sampled_links.contains(link);
+    const devils_engine::originator::motif_rect window{
+      plan.layout.width / 4, plan.layout.height / 4,
+      plan.layout.width / 2, plan.layout.height / 2};
+    const auto window_sample = sample_site_plan(plan, window, 1);
+    const auto detailed_sample = sample_site_plan(plan, window, 2);
+    if (detailed_sample.width != window.w * 2 || detailed_sample.height != window.h * 2 ||
+        plan.parts != plan_replay.parts || !plan.owner.empty())
+      throw std::runtime_error("site verify: changing view resolution changed the plan");
+    for (int32_t y = 0; y < window.h; ++y)
+      for (int32_t x = 0; x < window.w; ++x) {
+        const auto local = size_t(y) * window_sample.width + x;
+        const auto global = size_t(y + window.y) * full_sample.width + x + window.x;
+        if (window_sample.owner[local] != full_sample.owner[global] ||
+            window_sample.part_owner[local] != full_sample.part_owner[global])
+          throw std::runtime_error("site verify: a window differs from the whole plan projection");
+      }
+    auto other_bounds = site;
+    other_bounds.bounds = {4096, 4096};
+    if (assemble(other_bounds, scale_index, seed) != graph) {
+      throw std::runtime_error("site verify: hard bounds changed the selected content profile");
+    }
+    auto outside = image;
+    auto moved = outside.parts.back().outline;
+    for (auto& point : moved) { point.x += int32_t(site.bounds.width) * site_precision; }
+    outside.parts.back() = precise_part(outside.parts.back().ref, std::move(moved), outside.parts.back().seam);
+    bool bounds_refused = false;
+    try { check_site_plan(graph, outside); }
+    catch (const std::exception&) { bounds_refused = true; }
+    if (!bounds_refused) { throw std::runtime_error("site verify: geometry outside hard bounds was accepted"); }
     auto plan_only = image;
     plan_only.owner.clear();
     plan_only.part_owner.clear();
-    plan_only.reservation_owner.clear();
     check_site_plan(graph, plan_only);
     auto unfinished = plan_only;
     unfinished.endings.clear();
@@ -1976,11 +2236,12 @@ int run_site_graph(const uint64_t seed, const std::string_view scale, const int3
       high_bit_variants += candidate != assemble(site, scale_index, other ^ (uint64_t(1) << 40));
       projection candidate_image;
       try {
-        candidate_image = place(site, candidate, scale_index, entry_y, other, surface, motifs);
+        candidate_image = make_site_projection(site, candidate, scale_index, entry_y, other, surface, motifs);
       } catch (const std::exception& error) {
         throw std::runtime_error(std::format("site verify seed {}: {}", other, error.what()));
       }
-      check_projection(site, candidate, candidate_image, surface);
+      if (candidate_image.quality != check_projection(site, candidate, candidate_image, surface))
+        throw std::runtime_error("site verify: projection quality is not reproducible");
       for (const auto& ending : candidate_image.endings) {
         trimmed_caps += ending.outcome == "trim";
         accent_caps += ending.outcome == "accent";
@@ -2025,8 +2286,8 @@ int run_site_graph(const uint64_t seed, const std::string_view scale, const int3
       }
       perceptions += candidate_image.perceptions.size();
       std::set<site_part_ref> route_gallery_parts;
-      for (const auto cell : candidate_image.floor_route) {
-        const auto ref = candidate_image.part_owner[cell];
+      for (const auto& span : candidate_image.route_spans) {
+        const auto ref = span.part;
         if (site.kinds[candidate.nodes[ref.area].kind].name == "gallery")
           route_gallery_parts.insert(ref);
       }
@@ -2160,7 +2421,7 @@ int run_site_graph(const uint64_t seed, const std::string_view scale, const int3
         const auto paired_graph = assemble(paired, scale_index, pair_seed);
         projection paired_image;
         try {
-          paired_image = place(paired, paired_graph, scale_index, entry_y, pair_seed, surface, motifs);
+          paired_image = make_site_projection(paired, paired_graph, scale_index, entry_y, pair_seed, surface, motifs);
         } catch (const std::exception& error) {
           throw std::runtime_error(std::format("site paired halls seed {}: {}", pair_seed, error.what()));
         }
@@ -2194,25 +2455,23 @@ int run_site_graph(const uint64_t seed, const std::string_view scale, const int3
       }
       if (paired_checks != 32) throw std::runtime_error("site verify: expected 32 mirrored hall pairs");
     }
-    const auto replay = place(site, graph, scale_index, entry_y, seed, surface, motifs);
+    auto replay = make_site_projection(site, graph, scale_index, entry_y, seed, surface, motifs);
     if (replay.layout.instances != image.layout.instances || replay.layout.passages != image.layout.passages ||
         replay.joins != image.joins || replay.endings != image.endings ||
+        replay.plan_route != image.plan_route ||
         replay.owner != image.owner || replay.exposed != image.exposed ||
-        replay.reservation_owner != image.reservation_owner ||
         replay.part_owner != image.part_owner || replay.parts != image.parts ||
-        replay.floor_route != image.floor_route || replay.perceptions != image.perceptions)
+        replay.route_spans != image.route_spans || replay.perceptions != image.perceptions ||
+        replay.quality != image.quality)
       throw std::runtime_error("site layout verify: same inputs did not reproduce the picture");
-    const auto replay_detail = make_authored_motif_detail(image.layout, seed, motifs_source);
-    if (detail.marked == 0 || detail.colours != replay_detail.colours ||
-        detail.marked != replay_detail.marked)
-      throw std::runtime_error("site layout verify: WFC detail is empty or not reproducible");
     const auto view = make_site_view_scene(seed, scale, requested_entry_y, surface_cut,
-                                           source, motifs_source);
+                                           source, motifs_source, bounds);
     verify_site_viewer_details(view);
     if (view.owner != image.owner || view.part_owner != image.part_owner || view.joins != image.joins ||
         view.endings != image.endings ||
         view.zones.size() != graph.nodes.size() ||
-        view.detail_cells != detail.marked || view.perceptions != image.perceptions.size())
+        view.route_spans != image.route_spans || view.perceptions != image.perceptions.size() ||
+        view.projection_quality != image.quality)
       throw std::runtime_error("site viewer verify: selectable zones disagree with the generated plan");
     for (uint32_t id = 0; id < graph.nodes.size(); ++id) {
       const auto& zone = view.zones[id];
@@ -2232,22 +2491,11 @@ int run_site_graph(const uint64_t seed, const std::string_view scale, const int3
           throw std::runtime_error("site viewer verify: a door lost its own geometry or inherited appearance");
       }
     }
-    for (size_t cell = 0; cell < view.owner.size(); ++cell) {
-      if (view.owner[cell] == 0) continue;
-      if (view.cell_colours[cell] == 0)
-        throw std::runtime_error("site viewer verify: a floor cell has no authored detail or semantic colour");
-      const auto id = view.owner[cell] - 1;
-      if (site.kinds[graph.nodes[id].kind].shape == "wrap_east" &&
-          image.reservation_owner[cell] != view.owner[cell]) {
-        if (view.exposed[cell] == 0 && view.cell_colours[cell] != view.zones[id].colour)
-          throw std::runtime_error("site viewer verify: curved walk inherited a neighbour's WFC palette");
-      }
-    }
     std::cout << "site verify: 128 seeds connected, doors two-sided, routes and cues valid; "
               << variants << " variants, laboratory anchors gallery=" << labs_at_gallery
               << " junction=" << labs_at_junction << "; 2D " << image.layout.width << 'x'
-              << image.layout.height << " exact adjacency and walkability checked; "
-              << perceptions << " geometric perceptions; junction height " << shortest_junction
+              << image.layout.height << " exact plan adjacency and route checked; "
+              << perceptions << " geometrically confirmed perceptions; junction height " << shortest_junction
               << ".." << longest_junction << "; cell-door appearance parent=" << doors_from_parent
               << " child=" << doors_from_child << "; routes through gallery parts=" << bent_routes
               << "; torture sizes=" << torture_sizes.size()
@@ -2256,12 +2504,18 @@ int run_site_graph(const uint64_t seed, const std::string_view scale, const int3
               << " mirrored pairs=" << paired_checks
               << "; endings connected/trim/accent=" << connected_caps << '/' << trimmed_caps << '/' << accent_caps
               << " removed=" << double(removed_length) / site_precision << " fallback=" << accent_fallbacks
-              << "; WFC marked " << detail.marked << " cells\n";
+              << "\n";
+    if (image.quality.lost_parts != full_sample.lost_parts ||
+        image.quality.false_links != merged_links || image.quality.missing_links != missing_links)
+      throw std::runtime_error("site verify: projection diagnostics disagree with direct sampling");
+    std::cout << "first geometric plan at 1:1: lost_parts=" << image.quality.lost_parts
+              << " false_links=" << image.quality.false_links
+              << " missing_links=" << image.quality.missing_links
+              << " unreachable_cells=" << image.quality.unreachable_cells << '\n';
   } else {
     report(site, graph, image, seed, scale);
-    std::cout << "WFC detail marked=" << detail.marked << " cells\n";
   }
-  display(site, graph, image, detail, ascii, dump, seed);
+  display(site, graph, image, ascii, dump, seed);
   return 0;
 }
 
