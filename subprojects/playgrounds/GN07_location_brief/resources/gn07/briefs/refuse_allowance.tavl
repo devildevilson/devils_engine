@@ -1,0 +1,8 @@
+// Невыполнимо: обязательный бюджет квеста больше, чем весь допуск локации.
+name = refuse_allowance
+location = mine_1
+content = [8, 11]
+
+placements = [
+  { name = quest_n_item, what = item, place = deep_hideout, budget = [12, 18] }
+]

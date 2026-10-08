@@ -1,0 +1,46 @@
+// Подделка графа А (ландшафт и окружение): что где стоит и какие физические связи уже решены
+// верхним уровнем. Какая связь тайная — тоже его решение; решатель локации её не выбирает.
+// Координаты мировые: x на восток, y на север. У локации `at` — центр её участка.
+// Сторона порта нигде не пишется: она выводится из того, где стоит сосед.
+
+nodes = [
+  { name = region, facts = [ { name = economy, value = mining }, { name = ore, value = iron } ] }
+  { name = mountains, parent = region, facts = [ { name = terrain, value = mountains }, { name = ore, value = silver } ] }
+
+  // Глубокая шахта под замком: дорога к ней с запада, тайный ход из замка — с севера.
+  { name = mine_1, parent = mountains, archetype = deep_mine, at = [0, 0], bounds = [240, 180],
+    facts = [ { name = state, value = working } ] }
+  { name = road_ya_yu, parent = region, at = [-600, -60] }
+  { name = castle_tunnel, parent = mountains, at = [120, 600] }
+  { name = castle, parent = region, at = [200, 1100] }
+
+  // Большая глубокая шахта: дорога с юга, тайный ход с востока.
+  { name = mine_5, parent = mountains, archetype = deep_mine, at = [0, 3000], bounds = [300, 204] }
+  { name = road_5, parent = region, at = [80, 2300] }
+  { name = tunnel_5, parent = mountains, at = [700, 3040] }
+
+  // Штольня на маленьком участке: дорога с востока, тайных ходов нет.
+  { name = mine_2, parent = mountains, archetype = mine, at = [3000, 0], bounds = [180, 132] }
+  { name = road_2, parent = region, at = [3600, 100] }
+
+  // Невыполнимые случаи для проверок отказа.
+  // Штольне верхний уровень назначил тайный ход, а такого порта у этого вида нет.
+  { name = mine_3, parent = mountains, archetype = mine, at = [0, -3000], bounds = [240, 180] }
+  { name = road_3, parent = region, at = [-600, -3000] }
+  { name = tunnel_3, parent = mountains, at = [0, -2400] }
+  // У шахты нет обычной связи: входу не на что смотреть.
+  { name = mine_4, parent = mountains, archetype = deep_mine, at = [-3000, 0], bounds = [240, 180] }
+  { name = tunnel_4, parent = mountains, at = [-3000, 600] }
+]
+
+links = [
+  { between = [mine_1, road_ya_yu], kind = ordinary }
+  { between = [mine_1, castle_tunnel], kind = secret }
+  { between = [castle_tunnel, castle], kind = secret }
+  { between = [mine_5, road_5], kind = ordinary }
+  { between = [mine_5, tunnel_5], kind = secret }
+  { between = [mine_2, road_2], kind = ordinary }
+  { between = [mine_3, road_3], kind = ordinary }
+  { between = [mine_3, tunnel_3], kind = secret }
+  { between = [mine_4, tunnel_4], kind = secret }
+]

@@ -1,0 +1,60 @@
+// Вариант «шахта»: штольня в склоне, неглубокая, без тайных ходов. Это знание о таком виде
+// шахт; задание на конкретную шахту ссылается на его места, но предикатов не пишет.
+// Варианты пока описаны каждый целиком, без наследования: так видно, чем они отличаются.
+//
+// Ёмкость контента — сколько интересного обычно даёт узел такого вида. Из неё считаются
+// бюджеты размещений, глубины и общий допуск. Протяжённость (шаг `cell`) ничем не ограничена.
+name = mine
+family = mine
+cell = 12
+tags = [shallow, working]
+
+kinds = [
+  { name = entrance, function = access, content = 0, tags = [entrance], glyph = "E",
+    body = { shape = corridor, width = [2.8, 3.4] } }
+  { name = camp, function = living, content = 1, tags = [safe, lived_in], glyph = "C",
+    body = { shape = chamber, size = [6, 9], width = [2.6, 3.2], lobes = [1, 2] } }
+  { name = drift, function = transport, content = 1, glyph = "=",
+    body = { shape = corridor, width = [2.4, 3.2] } }
+  { name = abandoned_drift, function = transport, content = 2, tags = [abandoned], glyph = "~",
+    body = { shape = corridor, width = [1.9, 2.6] } }
+  { name = face, function = extraction, content = 2, tags = [ore], glyph = "F",
+    body = { shape = chamber, size = [3.5, 6], width = [2.2, 2.8], lobes = [1, 2] } }
+  { name = passage, function = natural, content = 0, tags = [natural], glyph = ":",
+    body = { shape = corridor, width = [1.5, 2.2] } }
+  { name = secret_entrance, function = access, content = 0, tags = [entrance, secret], glyph = "S",
+    body = { shape = corridor, width = [1.6, 2.2] } }
+]
+
+// Воплощение в каркас. Размеры — в метрах. Тело вида: коридор — сечение `width`; камера —
+// сторона `size`, устье `width` и наросты `lobes`. Стена — наименьшая толща породы между
+// несвязанными выработками; проход — самый узкий проём для игрока; скрытый проход обязан быть
+// уже любого открытого, иначе в плане его не отличить. `wander` — насколько выработка уходит
+// вбок на шаге решётки (штольня ведётся ровнее).
+frame = {
+  wall = 2.0
+  passage = 0.8
+  hidden = [0.9, 1.3]
+  wander = 0.6
+}
+
+growth = {
+  turn_percent = 35
+  branches = [3, 6]
+  branch_length = [2, 5]
+  abandoned_percent = 25
+  face_percent = 60
+}
+
+// Места, в которых может происходить действие. Блок условий ds означает «и».
+places = [
+  { name = camp_spot, where = { has_tag = safe, depth_share <= 0.25 } }
+  { name = deep_hideout, where = { depth_share >= 0.6, dead_end, NOR = { on_secret_way } } }
+  { name = forgotten_working, where = { has_tag = abandoned, dead_end } }
+]
+
+// Порты, которые вариант умеет. Обычный вход — корень графа, ему место не нужно.
+// Тайного порта у штольни нет: связь такого рода с ней — отказ до генерации.
+ports = [
+  { kind = ordinary }
+]

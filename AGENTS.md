@@ -4,6 +4,66 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN07 SLICE 3: THE GRAPH BECOMES A PLAN (2026-10-01). `7/7` GN07 ctest in Release and Debug, 3 briefs x 128
+  seeds with double solve + frame checks + 7 frame corruptions, Release==Debug report AND SVG bytes on 96 runs,
+  `--verify` 0.18 s. New `src/frame.*`: a node becomes a ZONE (axis-aligned rectangles in CENTIMETRES, integers)
+  inside its own lattice cell with a half-wall margin; only MOUTHS (half-ways toward a graph neighbour) reach the
+  cell side, where two mouths meet as an OPENING; entrances get a PORTAL to the plot edge. Because the family only
+  lets cells touch their graph neighbours, plan joins equal graph edges BY CONSTRUCTION and unrelated zones are
+  >= sqrt(5)*wall/2 apart — yet `analyse_frame` re-derives joins/openings/walls/connectivity from rectangles
+  alone (no graph, no part roles) and `verify_frame` compares them with graph edges and port requests. Kind BODIES
+  (`corridor` width / `chamber` size+mouth+lobes) and `frame = { wall, passage, hidden, wander }` are ARCHETYPE
+  data, metres read as fixed point (`tavl_reader::read_fixed`, no double). Hiddenness is expressed by WIDTH: a
+  hidden passage is narrower than any open one, enforced in data, construction and check. Per-node random
+  streams `(seed, node, call)`. Frame is built after bindings; it never refused an attempt (attempts per seed
+  unchanged 1.33/2.38/1.73). FINDINGS: the independent check immediately caught construction promising only
+  ">= player passage" while the hidden rule needs "> hidden max" (narrow natural ways with wander looked hidden);
+  the thin-wall corruption exposed a check that named only the THINNEST wall and stayed silent about the one
+  deliberately broken — every violation is now listed. Observations: the 12 m lattice makes the plan sparse
+  (thinnest walls 3-5.5 m vs declared 2 m, ~4% of the plot), the shortest-path secret way reads as a staircase.
+  `--svg=PATH` writes the view. Next: a viewer to walk the plan; denser/irregular bodies spanning cells.
+
+- GN07 SLICE 2: PORTS FROM LINKS, ALLOWANCE, FACTS (2026-10-01). `7/7` GN07 ctest in Release and Debug,
+  3 briefs x 128 seeds, Release==Debug report bytes on 96 runs. The author moved the INPUT: `entrance`/`side`/
+  `demands` are gone from data. Upper level = several graphs (A landscape, B politics, C quests = fact graph +
+  tasks); the upper generator decides links and which is SECRET (it would pick the nearest place whose archetype
+  VARIANT carries tag `deep` and link it through an intermediate tunnel node) — the local solver knows none of it
+  and gets frame + inherited facts + obligations (placements, lore links, total-content allowance). GN07 fakes
+  graph A with `resources/gn07/world/fragment.tavl` (nodes with `at`/bounds/facts, links with kind
+  ordinary/secret; links are hand-written, no selection pass). A PORT's kind comes from the link, its DIRECTION
+  from where the neighbour stands (integer ray from the plot centre: side + cell), and where it leaves inside from
+  the ARCHETYPE (`ports = [{kind=secret, place=deep_working}]`) — "deep" is a property of the place TYPE, not a
+  brief predicate. Archetype variants are separate files WITHOUT `base` (author: explicit for the lab). Lore links
+  are metadata only. Allowance = total content `[min,max]`, same unit as budgets. Facts inherit region->location,
+  child overrides, visible as `has_fact = { name, value }`. TWO REAL FINDINGS: `on_secret_way` defined by SHAPE
+  ("until the first junction") swallowed mine nodes when the way hung off an unbranched drift (56/256 false
+  "not hidden" rejections) — now "everything behind the hidden passage", defined by the passage mark; and the
+  port place was checked on an INTERMEDIATE shape (branches later raised max depth, ~100/256 rejections) — the
+  secret way now grows LAST (zero-content leaf, changes no depth). Attempts per seed 3.2->1.33 / 4.4->2.4. Seen in
+  output: the way now leaves the deepest working, yet the quest item is closer from the ORDINARY entrance (18 vs
+  22): "deep" != "advantage", which must come from the quest graph. Obvious infeasibility (budget > whole
+  allowance) refuses before generation. Next: frame/geometry, or a second family (cave).
+
+- GN07 LOCATION FROM A BRIEF, SLICE 1 CLOSED (2026-09-30). New `subprojects/playgrounds/GN07_location_brief`
+  (headless, links utils/devils_script/tavl only). The fixed role vocabulary (hub/path/branch/climax) was
+  REJECTED by the author: a role = computed graph properties + a BINDING of a brief requirement to a node +
+  named PLACES (ds predicates) written by the ARCHETYPE author; the brief only names places. Pipeline:
+  abstract graph (before geometry) -> bindings -> frame (slice 2) -> minimal edits (ageing/inhabitation).
+  Measure is CONTENT (declared per node kind), not time and not length: length is a side effect, reported,
+  never constrained; `depth` is content too. Entrances have two kinds: ORDINARY (always exists) and SPECIAL
+  /secret (only by a structural demand); there is NO generic `through`, because a secret way would forbid
+  placing anything on itself. Budgets are external info, set by hand in the brief for now.
+  `where = { ... }` blocks are parsed by devils_script straight from the same tavl parser, so the archetype
+  is read by EVENTS (`tavl_reader`), not reflection; negation is `NOR = { }` (`not f = x` does not parse).
+  Family `mine` grows on a coarse lattice (ring = entrances only, no side-touching so it stays a tree); the
+  solver hands it only a TARGET DEPTH (the most demanding budget), which makes 1.3-2 attempts per seed enough.
+  `--verify`: double solve byte-equal, properties recomputed on a copy, depth recomputed by parents,
+  plus SELF-CHECKS: 8-11 vocabulary probes vs independent C++ on every node, typo tag must throw, every place
+  must accept and reject something, five deliberate corruptions must be caught. Self-checks must depend on
+  the brief as the checks do (two first failures were probes that cannot discriminate without a secret way).
+  3 briefs x 128 seeds pass, 2 refusals carry causes (grouped with numbers stripped), Release==Debug bytes.
+  5/5 ctest. Next: slice 2 frame/geometry, or a second family.
+
 - GN06 COMPLETES BOTH PATH CAPS (2026-09-29). Site catalogue v9; `218/218` originator+GN06+viewer
   tests in Release, `18/18` motif tests, 768 site+WFC runs (0..255 at all sizes). Each path declares
   separate start/end `trim / accent / vary` policies; occupied caps remain connected and unchanged.

@@ -1,0 +1,7 @@
+// Невыполнимо: верхний уровень назначил штольне тайный ход, а такого порта у варианта нет.
+name = refuse_capability
+location = mine_3
+
+placements = [
+  { name = miners, what = npc_group, count = 2, place = camp_spot, budget = [0, 4] }
+]

@@ -1,0 +1,8 @@
+// Штольня без тайного хода и без допуска: число веток берётся из параметров роста.
+name = plain_mine
+location = mine_2
+
+placements = [
+  { name = miners, what = npc_group, count = 2, place = camp_spot, budget = [0, 4] }
+  { name = quest_n_item, what = item, place = deep_hideout, budget = [6, 10] }
+]

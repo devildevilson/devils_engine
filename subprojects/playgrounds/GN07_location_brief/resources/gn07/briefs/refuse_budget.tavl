@@ -1,0 +1,7 @@
+// Невыполнимо: бюджет больше, чем помещается в участок. Отказ с причиной, а не частичный граф.
+name = refuse_budget
+location = mine_2
+
+placements = [
+  { name = quest_n_item, what = item, place = deep_hideout, budget = [90, 120] }
+]

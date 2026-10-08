@@ -1,0 +1,7 @@
+// Невыполнимо: у локации нет обычной связи, входу не на что смотреть.
+name = refuse_no_entrance
+location = mine_4
+
+placements = [
+  { name = miners, what = npc_group, count = 2, place = camp_spot, budget = [0, 4] }
+]

@@ -1,0 +1,15 @@
+// Большая глубокая шахта: квест подальше, отшельник в забытой выработке, высокий допуск.
+name = big_mine
+location = mine_5
+content = [45, 80]
+
+placements = [
+  { name = miners, what = npc_group, count = 3, place = camp_spot, budget = [0, 4] }
+  { name = quest_n_item, what = item, place = deep_hideout, budget = [16, 24] }
+  { name = hermit, what = npc, count = 1, place = forgotten_working, budget = [4, 20] }
+]
+
+lore = [
+  { from = miners, to = quest_n_item, kind = knows_where }
+  { from = hermit, to = quest_n_item, kind = guards }
+]
