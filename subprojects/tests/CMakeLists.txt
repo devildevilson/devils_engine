@@ -97,6 +97,8 @@ target_link_libraries(network_session_wire_test PRIVATE devils_engine::network)
 
 devils_add_doctest(network_intent_wire_test network_intent_wire_test.cpp)
 target_link_libraries(network_intent_wire_test PRIVATE devils_engine::network)
+devils_add_doctest(network_canonical_tick_wire_test network_canonical_tick_wire_test.cpp)
+target_link_libraries(network_canonical_tick_wire_test PRIVATE devils_engine::network)
 
 devils_add_doctest(network_transform_wire_test network_transform_wire_test.cpp)
 target_link_libraries(network_transform_wire_test PRIVATE devils_engine::network)

@@ -9,12 +9,19 @@
 | Требование | Сейчас | Следующий контракт |
 | --- | --- | --- |
 | Рукопожатие и совместимость | `libs/network` сравнивает protocol, content root, checkpoint/intent/component schema и numeric profile; `frontier_online` проверяет мир и полный join | Связать проверенные схемы с непрерывной сессией |
-| Доставка и валидация | Есть GNS reliable/unreliable, лимиты сообщений, парсеры, journal и replay | Собрать authoritative bundle с origin sequence, root и оконный rollback в project runtime |
+| Доставка и валидация | Есть GNS reliable/unreliable, лимиты сообщений, парсеры, journal, replay и bounded wire оболочка canonical tick | Связать этот wire с GNS session и project intent validation |
 | ECS и проекты | Полный checkpoint использует 17 зарегистрированных компонентов; `component_wire<T>` объявляет два формата значений | Клиент исполняет каждый причинный тик из canonical bundle; регистрация компонента сама по себе не включает поток |
 | Учёт байтов | Известны размеры полных checkpoint; transform/intent имеют расчёт раскладки | Собирать по классам сообщения полезные байты, заголовки, повторные интенты, компрессию и фактические GNS bytes |
 
 `libs/network` уже содержит много проверенных механизмов, но ещё не составляет из них готовый
 минимальный session runtime для нового проекта. Это и есть основной незакрытый результат ревизии.
+
+После выбора клиентской симуляции появился `canonical_tick_wire`: сообщение до 1024 байт с
+полным tick, необязательным root после шага и не более 32 принятых внешних действий. Каждое
+действие содержит логического origin peer, полный input sequence и ограниченный project payload;
+пустой bundle занимает 11 байт без root или 19 с root. Декодер не публикует частичный результат,
+отвергает неверные длины и повтор `(origin peer, sequence)` внутри тика. Семантику payload
+проверяет проект до выполнения шага.
 
 ## Два независимых объявления
 
@@ -96,15 +103,18 @@ inputs отличаются от canonical bundle, клиент берёт уд�
 интенты ещё открытых тиков. Повторный root обязан совпасть; иначе причина глубже
 (численная недетерминированность, несовместимые правила или повреждённая история) и нужен
 новый authoritative checkpoint. Каждый canonical bundle закрывает свой тик: предложения клиента
-с указанными `(origin session, sequence)` приняты, остальные предложения этого тика отклонены
+с указанными `(logical peer, sequence)` приняты, остальные предложения этого тика отклонены
 или потерялись. Поздние предложения к закрытому тику authority отвергает. Так bundle сам служит
 application ACK; отдельное поле input ACK для этой схемы не требуется.
 
-`intent_batch` теперь несёт tick, kind и младшие 16 бит монотонного per-session input sequence.
-`(session, sequence)` станет ключом дедупликации. Runtime ещё должен восстановить полный номер
+`intent_batch` теперь несёт tick, kind и младшие 16 бит монотонного input sequence каждого
+логического участника. `(session, logical peer, sequence)` станет ключом дедупликации: один
+`session` у нескольких участников общий. Runtime ещё должен восстановить полный номер
 относительно удержанного окна и ограничить незакрытые inputs половиной диапазона. Окно batch равно
 восьми тикам: при более долгой потере предложение может не попасть к authority, что проявится
 в canonical bundle и приведёт к пересчёту prediction.
+Origin peer должен обозначать логическое членство, переживающее смену transport connection;
+нынешний `frontier_online` выдаёт peer ID при присоединении и ещё не реализует reconnect.
 
 Если нужный checkpoint или непрерывная история выпали из ограниченного окна, клиент делает
 recovery/full join. Root и решение о закрытом тике относятся к причинной истории; transform
@@ -130,6 +140,15 @@ recovery/full join. Root и решение о закрытом тике отно
 
 ## Масштаб и первые проверки
 
+Новый headless `frontier_tick_smoke` берёт настоящий actor checkpoint и проводит проектный
+`spawn_food` через 12-байтовый `intent_batch`, проверку authenticated peer/тика/sequence,
+`tick_journal`, затем через шесть wire bundles и `replay_to`. Повтор packet не добавляет действие;
+чужой peer не управляет игроком. Один предсказанный клиентом spawn отсутствует у authority,
+другой принят с `(peer=1, sequence=2)`. Предсказанный root отличается; replay до тика 6 совпадает
+с авторитетом. Шесть bundles занимают 157 байт (пять пустых с root и один с действием). Пропуск
+пустого bundle отказывается до восстановления checkpoint; испорченный root отказывается на
+соответствующем тике. Это лаборатория полного причинного пути без живого GNS соединения.
+
 Release `frontier_online_server --ticks=1 --workers=4 --dump=...` на текущей сборке:
 
 | Запрошено акторов | Сущностей в ECS | Канонический checkpoint |
@@ -147,10 +166,10 @@ Join-тест теперь проходит и на 1024 заданных акт
 
 ## Следующий срез
 
-1. Связать минимальный project intent с `intent_batch`, session sequence/dedup, validation и `tick_journal`;
-   сделать production wire для canonical bundle, включая пустой тик.
-2. Провести bundle через fixed-step клиента, добавить root и origin sequence принятых интентов,
-   затем bounded prediction history и rollback с проверкой совпадения корня.
+1. Провести `intent_batch` и `canonical_tick_wire` через живой GNS session после join, оставить
+   соединение открытым и привязать logical peer к конкретному player controller.
+2. Добавить ограниченную историю предсказанных тиков в main loop и безопасную публикацию
+   результата rollback.
 3. Измерить время кодирования/загрузки, transfer и очереди GNS на 1024 акторах; проверить
    потерю intent/transform и recovery при дыре в истории. Нынешние размеры checkpoint не
    оценивают эти величины.

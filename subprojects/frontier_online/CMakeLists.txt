@@ -83,6 +83,7 @@ target_include_directories(frontier_causal PUBLIC
 if (TARGET devils_engine::network_gns)
   set(NET_HDR_LIST
     include/net/actor_component_wire.h
+    include/net/player_intent_wire.h
     include/net/link.h
     include/net/protocol.h
     include/net/authority.h
@@ -222,11 +223,20 @@ target_compile_definitions(frontier_time_smoke PRIVATE
   FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
 set_target_properties(frontier_time_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
+add_executable(frontier_tick_smoke tick_smoke.cpp)
+target_link_libraries(frontier_tick_smoke frontier_causal)
+target_compile_definitions(frontier_tick_smoke PRIVATE
+  FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
+set_target_properties(frontier_tick_smoke PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_test(NAME frontier_resume_smoke COMMAND frontier_resume_smoke)
   set_tests_properties(frontier_resume_smoke PROPERTIES LABELS devils_engine)
   add_test(NAME frontier_time_smoke COMMAND frontier_time_smoke)
   set_tests_properties(frontier_time_smoke PROPERTIES LABELS devils_engine)
+  add_test(NAME frontier_tick_smoke COMMAND frontier_tick_smoke)
+  set_tests_properties(frontier_tick_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
   # Авторитет обязан дойти до объявленного тика и напечатать корень. Он же — проверка раскола:
   # цель линкуется без графических библиотек, поэтому её падение здесь означает, что причинное
   # ядро снова чего-то от презентации захотело.

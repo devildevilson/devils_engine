@@ -32,8 +32,9 @@
 // length field. A batch carries no count either: intents are self-describing,
 // the reader consumes until the buffer ends, and a remainder which cannot form
 // a whole intent is a refusal rather than a partially accepted batch.
-// Each proposal also carries the low 16 bits of a per-session monotonic input
-// sequence. The authority widens it against its retained sequence horizon;
+// Each proposal also carries the low 16 bits of a monotonic input sequence for
+// one logical peer within the session. The same session can have many peers.
+// The authority widens it against that peer's retained sequence horizon;
 // the session runtime must bound outstanding inputs to less than half the range.
 
 namespace devils_engine::network {
@@ -48,6 +49,7 @@ enum class hot_message_type : uint8_t {
   relevant_set_update = 64,
   transform_frame = 65,
   relevant_set_full = 66,
+  canonical_tick = 67,
 };
 
 inline constexpr size_t intent_batch_header_bytes = 3;
@@ -110,7 +112,7 @@ struct intent {
   uint16_t turn = 0;
   std::array<int8_t, intent_max_axes> cell_delta{};
   uint8_t kind = 0;
-  uint16_t sequence_low = 0; // per-session input identity, not a simulation tick
+  uint16_t sequence_low = 0; // per-logical-peer input identity, not a simulation tick
   // Ticks back from the batch's base tick. Resending recent ticks is how this
   // class survives loss without a retransmit protocol, so the window is part
   // of the encoding rather than a policy above it.

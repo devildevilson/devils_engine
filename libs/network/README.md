@@ -357,11 +357,11 @@ Intent batch адресует base tick один раз и кодирует не
 нескольких тиков — часть delivery strategy: потерянный packet заменяется следующим batch без
 отдельного retransmit protocol.
 
-Каждый intent теперь несёт младшие 16 бит per-session input sequence. Два одинаковых kind в одном
+Каждый intent теперь несёт младшие 16 бит input sequence логического участника session. Два одинаковых kind в одном
 тике могут быть двумя действиями; повтор того же sequence в следующем batch остаётся тем же
 предложением. Runtime должен восстановить полный номер относительно последнего полного sequence
-этой session, удержанного при join/reconnect, ограничить число незакрытых inputs половиной
-диапазона и дедуплицировать `(session, sequence)`. Bundle сообщает, какие предложения вошли в
+этого участника, удержанного при join/reconnect, ограничить число незакрытых inputs половиной
+диапазона и дедуплицировать `(session, logical peer, sequence)`. Bundle сообщает, какие предложения вошли в
 закрытый тик;
 один wire кодек пока не делает этих session-решений. Новый batch имеет message type `2`;
 старый type `1` отвергается, чтобы прежние байты не прочитались по новой схеме.
@@ -435,6 +435,12 @@ sequence.
 transform frame не записывает причинный ECS. Для rollback authoritative root сравнивается с
 сохранённым root того же тика, а надёжный bundle закрывает решения по inputs этого тика. Это
 подтверждение нельзя вывести из GNS delivery или из transform frame.
+
+`canonical_tick_wire` задаёт эту оболочку: полный номер тика, необязательный root состояния
+после шага и bounded список принятых внешних действий с `(logical peer, full input sequence)` и
+opaque project payload. Пустой bundle тоже полноценное сообщение. Библиотека проверяет границы,
+повторы origin/sequence и целостность сообщения; проект проверяет payload и применяет действия
+перед simulation step. Оболочка не создаёт live session сама по себе.
 
 ### In-memory link
 
@@ -518,7 +524,8 @@ view — до следующей мутации; in-memory consume value — д�
 
 - общего project-facing `network_session_system`, компонующего transport, handshake, tick integration
   и recovery в main loop;
-- production wire formats для canonical bundle, state frame, recovery plan и checkpoint transfer;
+- project payload codec и live session route для bounded `canonical_tick_wire`, production wire
+  formats для state frame и recovery plan;
 - полного client prediction reconciliation по закрытым canonical bundles и retained checkpoints;
 - project identity provider, authority key storage/rotation и ticket revocation до expiry;
 - authority election/migration protocol;
