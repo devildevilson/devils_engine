@@ -6,6 +6,7 @@
 #include <optional>
 #include <random>
 
+#include <devils_engine/network/canonical_tick_wire.h>
 #include <devils_engine/utils/core.h>
 
 #include "net/link.h"
@@ -53,6 +54,8 @@ struct peer_state {
   checkpoint_begin header;
   std::vector<std::byte> document;
   bool reported = false;
+  bool joined = false;
+  bool confirmation_sent = false;
   bool failed = false;
 };
 
@@ -71,6 +74,8 @@ struct authority::state {
   std::vector<authority_join> joins;
   uint32_t refused = 0;
   uint64_t bytes_sent = 0;
+  std::vector<live_intent_packet> live_intents;
+  uint64_t dropped_live_intents = 0;
   std::vector<std::byte> scratch;
   std::vector<std::byte> reply;
 
@@ -181,6 +186,27 @@ uint64_t authority::checkpoint_bytes_sent() const noexcept {
   return state_->bytes_sent;
 }
 
+std::vector<live_intent_packet> authority::take_live_intents() {
+  std::vector<live_intent_packet> result;
+  result.swap(state_->live_intents);
+  return result;
+}
+
+send_result authority::send_canonical(const uint64_t logical_peer,
+                                      const std::span<const std::byte> bytes) {
+  if (bytes.empty() || bytes.size() > network::canonical_tick_max_bytes)
+    return send_result::refused;
+  for (const auto& peer : state_->peers) {
+    if (peer.peer_id == logical_peer && peer.joined && peer.confirmation_sent && peer.connected)
+      return state_->link.send(peer.peer, lane_control, bytes);
+  }
+  return send_result::no_peer;
+}
+
+uint64_t authority::dropped_live_intents() const noexcept {
+  return state_->dropped_live_intents;
+}
+
 void authority::step(checkpoint_source& source) {
   auto& self = *state_;
 
@@ -226,6 +252,17 @@ void authority::step(checkpoint_source& source) {
                         const std::span<const std::byte> payload) {
     auto* peer = self.find(from);
     if (peer == nullptr || !peer->handshake.has_value()) return;
+    if (peer->joined && peer->connected && lane == lane_intent) {
+      // Unreliable input may be dropped under application pressure. A bounded,
+      // owned copy crosses the transport -> simulation phase boundary.
+      if (payload.empty() || payload.size() > network::intent_batch_max_bytes ||
+          self.live_intents.size() >= 32) {
+        ++self.dropped_live_intents;
+        return;
+      }
+      self.live_intents.push_back({peer->peer_id, {payload.begin(), payload.end()}});
+      return;
+    }
     if (lane != lane_control) return; // клиент не имеет права слать сюда по другим полосам
 
     if (!peer->handshake->established() &&
@@ -252,7 +289,7 @@ void authority::step(checkpoint_source& source) {
       return;
     }
 
-    if (!peer->handshake->established()) return;
+    if (!peer->handshake->established() || peer->reported) return;
 
     if (peek_message_type(payload) != uint8_t(message::join_report)) {
       if (self.loud()) std::printf("authority: peer %llu sent an unexpected control message\n",
@@ -275,12 +312,15 @@ void authority::step(checkpoint_source& source) {
     // посчитанный в другом процессе, а не просто успешно принятые байты.
     join.agreed = report.status == join_status::loaded && report.root == peer->header.root &&
                   report.tick == peer->header.tick;
+    peer->joined = join.agreed;
     if (!join.agreed) ++self.refused;
     self.joins.push_back(join);
-    // Отчёт получен — обслуживать больше нечего, и соединение закрывается ЗДЕСЬ. Это же и есть
-    // сигнал присоединившемуся, что его слышали: он ждёт терминального события, а не таймера.
-    (void)self.link.close(from);
-    peer->connected = false;
+    // The old join-only consumer observes close as its completion signal.
+    // A live session keeps this exact authenticated route after agreement.
+    if (!join.agreed || !self.config.keep_joined_connection) {
+      (void)self.link.close(from);
+      peer->connected = false;
+    }
     if (self.loud()) std::printf("authority: peer %llu join %s (%s), tick %llu root %llu vs local %llu\n",
              static_cast<unsigned long long>(peer->peer_id), join.agreed ? "ok" : "FAILED",
              describe(report.status), static_cast<unsigned long long>(report.tick),
@@ -321,6 +361,15 @@ void authority::step(checkpoint_source& source) {
       if (self.link.send(peer.peer, lane_bulk, self.scratch) != send_result::sent) break;
       peer.sent_bytes += uint32_t(take);
       self.bytes_sent += take;
+    }
+
+    if (peer.joined && self.config.keep_joined_connection && !peer.confirmation_sent) {
+      const join_confirmation confirmation{self.session_id, peer.peer_id,
+                                            peer.header.tick, peer.header.root};
+      if (!encode(confirmation, self.scratch))
+        utils::error{}("frontier_online authority: join confirmation does not encode");
+      if (self.link.send(peer.peer, lane_control, self.scratch) == send_result::sent)
+        peer.confirmation_sent = true;
     }
   }
 

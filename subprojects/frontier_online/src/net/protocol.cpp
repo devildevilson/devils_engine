@@ -9,6 +9,7 @@
 #include "core/actor_checkpoint.h"
 #include "net/actor_component_wire.h"
 #include "net/link.h"
+#include "net/player_intent_wire.h"
 
 namespace frontier_online {
 namespace net {
@@ -24,7 +25,7 @@ network::session_compatibility local_compatibility(const core::causal_content& c
   value.handshake_format = 1;
   value.protocol_version = protocol_version;
   value.state_schema_fingerprint = core::actor_checkpoint_schema_fingerprint();
-  value.intent_schema_fingerprint = intent_schema_fingerprint;
+  value.intent_schema_fingerprint = player_intent_schema_fingerprint;
   value.component_schema_fingerprint = components.fingerprint();
   value.numeric_profile = numeric_profile;
   value.content_root = content.manifest().root;
@@ -187,6 +188,32 @@ bool decode(const std::span<const std::byte> bytes, join_report& out) {
   if (!r.good() || r.position() != r.size()) return false;
   if (status > uint8_t(join_status::handshake_refused)) return false;
   value.status = join_status(status);
+  out = value;
+  return true;
+}
+
+bool encode(const join_confirmation& value, std::vector<std::byte>& out) {
+  out.clear();
+  if (value.session == 0 || value.logical_peer == 0) return false;
+  const size_t required = 1 + 8 * 4;
+  auto w = begin(out, required, message::join_confirmed);
+  w.u64(value.session);
+  w.u64(value.logical_peer);
+  w.u64(value.tick);
+  w.u64(value.root);
+  return finish(w, out, required);
+}
+
+bool decode(const std::span<const std::byte> bytes, join_confirmation& out) {
+  serial::state_reader r(bytes);
+  if (r.u8() != uint8_t(message::join_confirmed)) return false;
+  join_confirmation value;
+  value.session = r.u64();
+  value.logical_peer = r.u64();
+  value.tick = r.u64();
+  value.root = r.u64();
+  if (!r.good() || r.position() != r.size() || value.session == 0 ||
+      value.logical_peer == 0) return false;
   out = value;
   return true;
 }

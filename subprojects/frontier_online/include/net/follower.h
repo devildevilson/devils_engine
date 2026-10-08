@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include "net/link.h"
 #include "net/protocol.h"
@@ -47,6 +48,7 @@ struct follower_config {
   // ПРИЧИНОЙ: «другая сборка» не должна значить «молча не работает».
   uint32_t protocol_version_override = 0;
   bool corrupt_content_root = false;
+  bool corrupt_intent_schema = false;
   bool corrupt_component_schema = false;
 };
 
@@ -74,6 +76,14 @@ public:
   [[nodiscard]] uint64_t peer_id() const noexcept;
   [[nodiscard]] uint32_t received_bytes() const noexcept;
   [[nodiscard]] uint32_t expected_bytes() const noexcept;
+
+  // After join, the same GNS connection carries unreliable proposals upstream and
+  // reliable canonical ticks downstream. Returned bytes own their receive storage.
+  [[nodiscard]] send_result send_intent(std::span<const std::byte> bytes);
+  [[nodiscard]] std::vector<std::vector<std::byte>> take_canonical_ticks();
+  [[nodiscard]] bool live_ready() const noexcept;
+  [[nodiscard]] bool live_terminal() const noexcept;
+  [[nodiscard]] bool live_fault() const noexcept;
 
 private:
   struct state;

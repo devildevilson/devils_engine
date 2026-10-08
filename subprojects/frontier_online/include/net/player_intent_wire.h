@@ -22,6 +22,20 @@ namespace network = devils_engine::network;
 inline constexpr uint8_t spawn_food_kind = 1;
 inline constexpr network::fixed_axis<uint16_t> player_intent_axis{6, 10};
 static_assert(player_intent_axis.valid());
+inline constexpr uint8_t player_intent_revision = 1;
+
+// The handshake advertises the project meaning of the compact proposal. The
+// revision covers the spawn_food verb and its canonical payload semantics;
+// the remaining fields come from the actual lattice and layout declaration.
+inline constexpr uint32_t player_intent_schema_fingerprint = [] {
+  uint32_t hash = 2166136261u;
+  for (const uint8_t field : std::array<uint8_t, 5>{
+         player_intent_revision, spawn_food_kind, 2,
+         player_intent_axis.cell_shift, player_intent_axis.fraction_bits}) {
+    hash = (hash ^ field) * 16777619u;
+  }
+  return hash;
+}();
 
 [[nodiscard]] inline network::intent_layout_table player_intent_layouts() {
   network::intent_layout_table table;

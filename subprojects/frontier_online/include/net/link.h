@@ -26,7 +26,7 @@ namespace network = devils_engine::network;
 
 // Полосы. Разделение не косметическое: передача чек-пойнта не имеет права заткнуть собой
 // канонические сообщения, а интенты не имеют права ждать повторной отправки.
-inline constexpr uint16_t lane_control = 0; // рукопожатие, объявление мира, отчёты — надёжно
+inline constexpr uint16_t lane_control = 0; // handshake, join confirmation, canonical ticks — reliable
 inline constexpr uint16_t lane_bulk = 1;    // чек-пойнт: надёжно, но ЯВНО ниже приоритетом
 inline constexpr uint16_t lane_intent = 2;  // интенты: ненадёжно-последовательно
 

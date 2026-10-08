@@ -441,6 +441,11 @@ transform frame не записывает причинный ECS. Для rollbac
 opaque project payload. Пустой bundle тоже полноценное сообщение. Библиотека проверяет границы,
 повторы origin/sequence и целостность сообщения; проект проверяет payload и применяет действия
 перед simulation step. Оболочка не создаёт live session сама по себе.
+`frontier_live_tick_smoke` собирает её в проекте поверх GNS: join сохраняет соединение,
+authority подтверждает `join_report` до первого intent (полосы не имеют общего порядка),
+unreliable intent проходит с logical peer из membership, а шесть reliable bundles доходят до
+клиента и используются для replay. Мир на время join фиксируется на checkpoint tick; историю
+догоняющего клиента при продолжающейся симуляции ещё предстоит подключить.
 
 ### In-memory link
 

@@ -10,9 +10,10 @@
 
 // АВТОРИТЕТ СЛУШАЕТ.
 //
-// Обслуживание присоединения и симуляция — разные вещи, и здесь только первая: `step()` зовётся
-// раз в тик, но сам тик ей не принадлежит. Авторитет не останавливает мир ради присоединяющегося
-// и не ждёт его: он снимает чек-пойнт на границе тика и отдаёт этот СНИМОК, продолжая считать.
+// Обслуживание присоединения и симуляция — разные вещи: `step()` принимает байты, но сам тик ему
+// не принадлежит. Обычный join снимает checkpoint при продолжающемся мире; live consumer сам
+// хранит нужные bundles для догоняющего клиента. После join этот объект маршрутизирует bounded
+// intent packets и canonical ticks, не исполняя project gameplay.
 //
 // Что происходит с присоединяющимся, по порядку:
 //   1. рукопожатие (`network::session_wire`) — совместимость проверяется ДО единого байта состояния;
@@ -40,12 +41,19 @@ struct authority_config {
   uint16_t port = 0;    // 0 — спросить порт у операционной системы
   uint32_t max_peers = 8;
   bool verbose = true;
+  bool keep_joined_connection = false; // the join-only harness still closes after its report
 };
 
 struct authority_join {
   uint64_t peer_id = 0;
   join_report report;
   bool agreed = false; // корень клиента совпал с объявленным
+};
+
+// Owned bytes: the GNS receive lease ends before the simulation admits the proposal.
+struct live_intent_packet {
+  uint64_t logical_peer = 0;
+  std::vector<std::byte> bytes;
 };
 
 class authority {
@@ -69,6 +77,13 @@ public:
   // Байт состояния, отправленных по объёмной полосе. Цена присоединения, измеренная, а не
   // предположенная.
   [[nodiscard]] uint64_t checkpoint_bytes_sent() const noexcept;
+
+  // The established connection is only a route. Its logical peer is assigned by the
+  // handshake and never read from an intent packet. Both calls are owner-thread only.
+  [[nodiscard]] std::vector<live_intent_packet> take_live_intents();
+  [[nodiscard]] send_result send_canonical(uint64_t logical_peer,
+                                           std::span<const std::byte> bytes);
+  [[nodiscard]] uint64_t dropped_live_intents() const noexcept;
 
   void close_all();
 

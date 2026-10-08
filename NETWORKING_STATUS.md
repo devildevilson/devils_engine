@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-12.
+Last updated: 2026-10-08.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -47,10 +47,35 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Compatible/incompatible build exchange | NET-LAB-02 complete locally: current v2 and compatible v1 run to one root; six compatibility-field mismatches and breaking v3 produce exact pre-tick refusals; 125/125 harness checks in GCC Debug and Release |
 | SERVER-01 headless authority process | complete; causal/presentation split builds and ships as a separate executable, 593/593 project suite |
 | TF-NET-01 join (authority listens, client joins) | first slice complete; real GNS handshake, world declaration, chunked checkpoint and a cross-process causal root match, plus two exact refusals; `frontier_join_smoke` in ctest |
+| TF-NET-01 live ticks after join | loopback UDP: report confirmation, 12-byte unreliable intent, six reliable canonical bundles, replay from received checkpoint; 128 and 1024 actors, 4/4 focused tests in Debug and Release |
 | Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## TF-NET-01 live tick continuation — 2026-10-08
+
+`frontier_live_tick_smoke` keeps the project's real GNS loopback connection after a verified
+checkpoint. Authority confirms the join report on the control lane before follower may send an
+intent: control and unreliable intent lanes have no common ordering, so the follower's local
+`joined` state alone cannot establish that authority has accepted its report. The confirmation
+names the session, logical peer, checkpoint tick and root; the client checks all four. Project
+protocol version is 2 and its intent schema fingerprint now derives from the declared
+`spawn_food` lattice/layout and a project revision. The join smoke also refuses a deliberately
+different intent schema before receiving checkpoint bytes, with its exact refusal reason.
+
+The 12-byte proposal arrives tagged with the logical peer assigned by the handshake, passes the
+project decoder and sequence gate, enters `tick_journal`, and produces one accepted record in six
+reliable canonical bundles. The client replays exactly the bytes received over GNS from the
+checkpoint it received during join. A local extra prediction gives a different root; the replayed
+root equals authority. At 1024 actors the checkpoint document is 161,962 bytes; the six bundles
+are 157 bytes total, excluding GNS/UDP overhead. Debug and Release both reach root
+`4048238875850088549`; the four focused frontier tick/join tests pass in each.
+
+The smoke freezes the authority at checkpoint tick 1 while join completes. It proves the live
+post-join route and bounded packet staging, not catch-up K+1..N during an ongoing join,
+steady-state bandwidth, cross-machine numeric determinism, or publication into the graphical
+client loop.
 
 ## TF-NET-01 slice 1 — join in the real project, 2026-09-12
 

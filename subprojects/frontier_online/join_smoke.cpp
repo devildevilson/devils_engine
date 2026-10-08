@@ -9,7 +9,7 @@
 //   1. Присоединение доходит до конца, и корень причинного состояния у присоединившегося
 //      СОВПАДАЕТ с авторитетским. Это и есть «тот же мир», а не «байты доехали».
 //   2. Несовместимость даёт ИМЕННО СВОЮ причину до единого байта состояния. «Другая сборка» не
-//      должна значить «молча не работает» — версия протокола и содержимое отвергаются порознь.
+//      должна значить «молча не работает» — версия, содержимое и схемы отвергаются порознь.
 //
 // Прогон двух настоящих процессов (и тем более двух машин) этим НЕ заменяется: он проверяет
 // развёртывание, а это — механизм.
@@ -202,6 +202,32 @@ void check_checkpoint_transfer_contract() {
   CHECK(document[3] == std::byte{4});
 }
 
+void check_join_confirmation_contract() {
+  const fnet::join_confirmation expected{17, 3, 12, 99};
+  std::vector<std::byte> bytes;
+  CHECK(fnet::encode(expected, bytes));
+  CHECK(bytes.size() == 33);
+  fnet::join_confirmation decoded;
+  CHECK(fnet::decode(bytes, decoded));
+  CHECK(decoded.session == expected.session && decoded.logical_peer == expected.logical_peer &&
+        decoded.tick == expected.tick && decoded.root == expected.root);
+  for (size_t length = 0; length < bytes.size(); ++length) {
+    CHECK(!fnet::decode(std::span(bytes).first(length), decoded));
+  }
+  auto forged = bytes;
+  forged.push_back(std::byte{0});
+  CHECK(!fnet::decode(forged, decoded));
+  forged = bytes;
+  forged[0] = std::byte{uint8_t(fnet::message::join_report)};
+  CHECK(!fnet::decode(forged, decoded));
+  forged = bytes;
+  forged[9] = std::byte{0}; // logical peer begins at byte 9
+  CHECK(!fnet::decode(forged, decoded));
+  CHECK(decoded.session == expected.session && decoded.logical_peer == expected.logical_peer);
+  CHECK(!fnet::encode(fnet::join_confirmation{17, 0, 12, 99}, bytes));
+  CHECK(bytes.empty());
+}
+
 // Один прогон присоединения. Мир авторитета тикает всё это время: присоединяющийся получает
 // СНИМОК и не останавливает симуляцию.
 case_result run_case(fnet::net_runtime& runtime, const fo::causal_content& authority_content,
@@ -274,6 +300,7 @@ int main() {
   spdlog::set_level(spdlog::level::err); // ресурсные предупреждения здесь только мешают
   check_actor_component_wire_contract();
   check_checkpoint_transfer_contract();
+  check_join_confirmation_contract();
 
   // ДВА НЕЗАВИСИМЫХ ЭКЗЕМПЛЯРА содержимого — как две установки. Общий объект скрыл бы ровно ту
   // беду, ради которой считается отпечаток.
@@ -310,8 +337,7 @@ int main() {
     CHECK(result.state_bytes < fnet::max_checkpoint_bytes);
   }
 
-  // Несовместимость обязана назваться. Проверяются два РАЗНЫХ поля, потому что «версия протокола»
-  // и «другие правила мира» — это две разные беды с разными ответами для игрока.
+  // Несовместимость обязана назвать конкретное поле до первого байта состояния.
   {
     fnet::follower_config broken;
     broken.protocol_version_override = fnet::protocol_version + 1;
@@ -329,6 +355,16 @@ int main() {
     std::printf("content mismatch: refusal = %s\n", fnet::describe(result.refusal));
     CHECK(!result.joined);
     CHECK(result.refusal == network::session_refusal_reason::content_mismatch);
+    CHECK(result.state_bytes == 0);
+  }
+
+  {
+    fnet::follower_config broken;
+    broken.corrupt_intent_schema = true;
+    const auto result = run_case(runtime, authority_content, follower_content, 20260911, broken);
+    std::printf("intent schema mismatch: refusal = %s\n", fnet::describe(result.refusal));
+    CHECK(!result.joined);
+    CHECK(result.refusal == network::session_refusal_reason::intent_schema_mismatch);
     CHECK(result.state_bytes == 0);
   }
 

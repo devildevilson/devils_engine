@@ -6,6 +6,7 @@
 #include <random>
 #include <stdexcept>
 
+#include <devils_engine/network/canonical_tick_wire.h>
 #include <devils_engine/utils/core.h>
 
 #include "net/link.h"
@@ -51,6 +52,10 @@ struct follower::state {
 
   join_report report;
   bool reported = false;
+  bool live_ready = false;
+  bool live_terminal = false;
+  bool live_fault = false;
+  std::vector<std::vector<std::byte>> canonical_ticks;
 
   std::vector<std::byte> scratch;
   std::vector<std::byte> reply;
@@ -72,6 +77,9 @@ struct follower::state {
     }
     if (config.corrupt_content_root) {
       compatibility.content_root[0] = uint8_t(compatibility.content_root[0] ^ 0xffu);
+    }
+    if (config.corrupt_intent_schema) {
+      compatibility.intent_schema_fingerprint ^= 1u;
     }
     if (config.corrupt_component_schema) {
       compatibility.component_schema_fingerprint ^= 1u;
@@ -174,6 +182,25 @@ uint32_t follower::expected_bytes() const noexcept {
   return state_->header_seen ? state_->header.total_bytes : 0;
 }
 
+send_result follower::send_intent(const std::span<const std::byte> bytes) {
+  auto& self = *state_;
+  if (self.phase != follower_phase::joined || !self.live_ready || self.live_terminal)
+    return send_result::no_peer;
+  if (bytes.empty() || bytes.size() > network::intent_batch_max_bytes)
+    return send_result::refused;
+  return self.link.send(self.peer, lane_intent, bytes);
+}
+
+std::vector<std::vector<std::byte>> follower::take_canonical_ticks() {
+  std::vector<std::vector<std::byte>> result;
+  result.swap(state_->canonical_ticks);
+  return result;
+}
+
+bool follower::live_terminal() const noexcept { return state_->live_terminal; }
+bool follower::live_ready() const noexcept { return state_->live_ready; }
+bool follower::live_fault() const noexcept { return state_->live_fault; }
+
 bool follower::start() {
   auto& self = *state_;
   if (!self.link.connect_to(self.config.host, self.config.port)) {
@@ -200,13 +227,17 @@ bool follower::drain() {
 
 void follower::step(checkpoint_sink& sink) {
   auto& self = *state_;
-  if (self.phase == follower_phase::failed || self.phase == follower_phase::joined) return;
+  if (self.phase == follower_phase::failed) return;
 
   std::array<net_link::observation, 4> events;
   const size_t count = self.link.poll(events);
   for (size_t i = 0; i < count; ++i) {
     if (!(events[i].peer == self.peer)) continue;
     if (events[i].terminal) {
+      if (self.phase == follower_phase::joined) {
+        self.live_terminal = true;
+        return;
+      }
       // Обрыв — это исход, а не пауза. Если мы ещё не знаем причины, ею останется та, что была.
       if (self.phase != follower_phase::joined) {
         if (self.loud()) std::printf("follower: connection closed by the authority\n");
@@ -232,6 +263,34 @@ void follower::step(checkpoint_sink& sink) {
   self.link.receive([&](const network::gns_peer from, const uint16_t lane,
                         const std::span<const std::byte> payload) {
     if (!(from == self.peer) || !self.handshake.has_value()) return;
+
+    if (self.phase == follower_phase::joined) {
+      if (!self.live_ready && lane == lane_control &&
+          peek_message_type(payload) == uint8_t(message::join_confirmed)) {
+        join_confirmation confirmation;
+        if (!decode(payload, confirmation) ||
+            confirmation.session != self.handshake->accepted().session ||
+            confirmation.logical_peer != self.handshake->accepted().local_peer ||
+            confirmation.tick != self.report.tick || confirmation.root != self.report.root) {
+          self.live_fault = true;
+          return;
+        }
+        self.live_ready = true;
+        return;
+      }
+      if (!self.live_ready) {
+        self.live_fault = true;
+        return;
+      }
+      if (lane != lane_control || payload.empty() ||
+          payload.size() > network::canonical_tick_max_bytes ||
+          self.canonical_ticks.size() >= 32) {
+        self.live_fault = true;
+        return;
+      }
+      self.canonical_ticks.emplace_back(payload.begin(), payload.end());
+      return;
+    }
 
     if (!self.handshake->established()) {
       if (lane != lane_control) return;

@@ -25,18 +25,13 @@ namespace frontier_online::net {
 namespace network = devils_engine::network;
 
 // Версия протокола стенда. Растёт при ЛЮБОМ изменении байтов ниже.
-inline constexpr uint32_t protocol_version = 1;
+inline constexpr uint32_t protocol_version = 2;
 
 // Числовой профиль. Пока это «родной float, профиль не зафиксирован»: NUM-01..04 ещё не пройдены,
 // поэтому совпадение поля означает только, что обе стороны ЗАЯВИЛИ одно и то же, и не является
 // обещанием побитового совпадения арифметики на разных машинах. Когда появится строгий профиль,
 // изменится это число, и старые сборки будут отвергнуты полем, которое уже проверяется.
 inline constexpr uint32_t numeric_profile = 1;
-
-// Интентов на проводе ещё нет — их слой следующий срез. Ноль здесь не заглушка, а объявление
-// пустого набора: поле уже сравнивается, и в тот день, когда интенты появятся, несовпадение
-// схемы станет отказом само, без правки рукопожатия.
-inline constexpr uint32_t intent_schema_fingerprint = 0;
 
 [[nodiscard]] network::session_compatibility local_compatibility(const core::causal_content& content);
 
@@ -49,6 +44,7 @@ enum class message : uint8_t {
   checkpoint_begin = 2,  // авторитет -> клиент, объёмная полоса
   checkpoint_chunk = 3,  // авторитет -> клиент, объёмная полоса
   join_report = 4,       // клиент -> авторитет, управляющая полоса
+  join_confirmed = 5,    // авторитет -> клиент, live mode: отчёт принят
 };
 
 // Budget for the complete causal document, not for one GNS message. The
@@ -143,6 +139,18 @@ struct join_report {
 
 [[nodiscard]] bool encode(const join_report& value, std::vector<std::byte>& out);
 [[nodiscard]] bool decode(std::span<const std::byte> bytes, join_report& out);
+
+// Only after this control-lane message may the joined client emit hot intents.
+// It binds the authority's agreement to the same membership and checkpoint.
+struct join_confirmation {
+  uint64_t session = 0;
+  uint64_t logical_peer = 0;
+  uint64_t tick = 0;
+  uint64_t root = 0;
+};
+
+[[nodiscard]] bool encode(const join_confirmation& value, std::vector<std::byte>& out);
+[[nodiscard]] bool decode(std::span<const std::byte> bytes, join_confirmation& out);
 
 [[nodiscard]] const char* describe(join_status status) noexcept;
 [[nodiscard]] const char* describe(network::session_refusal_reason reason) noexcept;

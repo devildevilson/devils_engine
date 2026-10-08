@@ -205,6 +205,13 @@ if (TARGET frontier_net)
     FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
   set_target_properties(frontier_join_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
+  add_executable(frontier_live_tick_smoke live_tick_smoke.cpp)
+  target_link_libraries(frontier_live_tick_smoke frontier_net)
+  target_compile_definitions(frontier_live_tick_smoke PRIVATE
+    FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
+  set_target_properties(frontier_live_tick_smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 endif()
 
 add_executable(frontier_time_smoke time_smoke.cpp src/core/actor_batch.cpp ${FRONTIER_BRAIN_TEST_SOURCES})
@@ -255,6 +262,10 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   if (TARGET frontier_join_smoke)
     add_test(NAME frontier_join_smoke COMMAND frontier_join_smoke)
     set_tests_properties(frontier_join_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
+    add_test(NAME frontier_live_tick_smoke COMMAND frontier_live_tick_smoke)
+    set_tests_properties(frontier_live_tick_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
+    add_test(NAME frontier_live_tick_1024_smoke COMMAND frontier_live_tick_smoke --actors=1024)
+    set_tests_properties(frontier_live_tick_1024_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
   endif()
   add_test(NAME frontier_server_reproducible
     COMMAND ${CMAKE_COMMAND}
