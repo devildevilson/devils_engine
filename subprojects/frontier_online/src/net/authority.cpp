@@ -114,6 +114,9 @@ struct authority::state {
       peer.document.clear();
       if (!source.capture(peer.header, peer.document))
         return network::session_refusal_reason::no_capacity;
+      if (peer.document.empty() || peer.document.size() > max_checkpoint_bytes ||
+          peer.header.total_bytes != peer.document.size())
+        return network::session_refusal_reason::no_capacity;
 
       accepted.session = owner.session_id;
       accepted.local_peer = peer.peer_id;

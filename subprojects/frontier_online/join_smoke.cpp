@@ -14,8 +14,10 @@
 // Прогон двух настоящих процессов (и тем более двух машин) этим НЕ заменяется: он проверяет
 // развёртывание, а это — механизм.
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <span>
 #include <thread>
 #include <vector>
@@ -29,6 +31,7 @@
 #include "core/actor_checkpoint.h"
 #include "core/actor_simulation.h"
 #include "core/causal_content.h"
+#include "net/actor_component_wire.h"
 #include "net/authority.h"
 #include "net/follower.h"
 
@@ -105,11 +108,106 @@ struct case_result {
   fnet::join_status status = fnet::join_status::checkpoint_refused;
 };
 
+void check_actor_component_wire_contract() {
+  namespace net = devils_engine::network;
+  net::component_wire_table table;
+  CHECK(fnet::declare_actor_components(table) == net::component_wire_status::ok);
+  CHECK(table.entries().size() == 2);
+  const auto position_decl = net::component_descriptor<fo::actor_position>();
+  const auto state_decl = net::component_descriptor<fo::actor_state>();
+  CHECK(table.find(position_decl.id) != nullptr);
+  CHECK(table.find(state_decl.id) != nullptr);
+  CHECK(position_decl.id != state_decl.id);
+  CHECK(position_decl.layout_hash == utils::serial::detail::layout_hash<fo::actor_position>());
+  CHECK(position_decl.max_value_bytes == 8);
+  CHECK(state_decl.max_value_bytes == 8);
+
+  auto reversed = std::array{state_decl, position_decl};
+  net::component_wire_table other;
+  CHECK(other.assign(reversed) == net::component_wire_status::ok);
+  CHECK(other.fingerprint() == table.fingerprint());
+  reversed[0].revision++;
+  CHECK(other.assign(reversed) == net::component_wire_status::ok);
+  CHECK(other.fingerprint() != table.fingerprint());
+  CHECK(other.assign(std::array{reversed[0], reversed[0]}) ==
+        net::component_wire_status::duplicate_id);
+  CHECK(other.fingerprint() != table.fingerprint()); // failed assignment kept prior table
+  reversed[0].max_value_bytes = net::component_value_absolute_max_bytes + 1;
+  CHECK(other.assign(reversed) == net::component_wire_status::invalid_descriptor);
+  table.freeze();
+  CHECK(table.frozen());
+  CHECK(table.assign(reversed) == net::component_wire_status::frozen);
+
+  std::vector<std::byte> bytes;
+  const fo::actor_position position{{12.25f, -3.5f}};
+  fo::actor_position decoded_position;
+  CHECK(net::encode_component_value(table, position, bytes));
+  CHECK(bytes.size() == 8);
+  CHECK(net::decode_component_value(table, bytes, decoded_position));
+  CHECK(decoded_position.value.x == position.value.x);
+  CHECK(decoded_position.value.y == position.value.y);
+  auto nonfinite = bytes;
+  nonfinite[0] = std::byte{0};
+  nonfinite[1] = std::byte{0};
+  nonfinite[2] = std::byte{0xc0};
+  nonfinite[3] = std::byte{0x7f}; // canonical f32 quiet NaN
+  CHECK(!net::decode_component_value(table, nonfinite, decoded_position));
+  CHECK(decoded_position.value.x == position.value.x); // no partial publication
+  CHECK(!net::decode_component_value(std::span<const std::byte>(bytes).first(7),
+                                     decoded_position));
+  CHECK(decoded_position.value.x == position.value.x);
+  CHECK(!net::encode_component_value(position, bytes, 7));
+  CHECK(bytes.empty()); // no partial value may be sent
+  fo::actor_position invalid{{std::numeric_limits<float>::quiet_NaN(), 0.0f}};
+  CHECK(!net::encode_component_value(invalid, bytes));
+
+  const fo::actor_state state{UINT64_C(0x123456789abcdef0)};
+  fo::actor_state decoded_state;
+  CHECK(net::encode_component_value(table, state, bytes));
+  CHECK(net::decode_component_value(table, bytes, decoded_state));
+  CHECK(decoded_state.state == state.state);
+  CHECK(!net::encode_component_value(table, fo::actor_velocity{{1.0f, 2.0f}}, bytes));
+}
+
+void check_checkpoint_transfer_contract() {
+  fnet::checkpoint_begin header{1, 2, fnet::max_checkpoint_bytes, 3};
+  std::vector<std::byte> bytes;
+  CHECK(fnet::encode(header, bytes));
+  fnet::checkpoint_begin decoded;
+  CHECK(fnet::decode(bytes, decoded));
+  CHECK(decoded.total_bytes == fnet::max_checkpoint_bytes);
+
+  // A remote length larger than the document budget must fail before follower
+  // allocates. The total_bytes field starts after type, tick and root.
+  bytes[17] = std::byte{1};
+  bytes[18] = std::byte{0};
+  bytes[19] = std::byte{0};
+  bytes[20] = std::byte{1};
+  CHECK(!fnet::decode(bytes, decoded));
+  CHECK(decoded.total_bytes == fnet::max_checkpoint_bytes);
+
+  std::array<std::byte, 4> document{};
+  const std::array<std::byte, 2> first{std::byte{1}, std::byte{2}};
+  const std::array<std::byte, 2> last{std::byte{3}, std::byte{4}};
+  uint32_t received = 0;
+  CHECK(fnet::append_checkpoint_chunk(document, received, {0, first}));
+  CHECK(received == 2);
+  CHECK(!fnet::append_checkpoint_chunk(document, received, {0, first})); // duplicate
+  CHECK(!fnet::append_checkpoint_chunk(document, received, {1, last})); // overlap
+  CHECK(!fnet::append_checkpoint_chunk(document, received, {3, last})); // hole
+  CHECK(received == 2);
+  CHECK(document[2] == std::byte{0});
+  CHECK(fnet::append_checkpoint_chunk(document, received, {2, last}));
+  CHECK(received == document.size());
+  CHECK(document[3] == std::byte{4});
+}
+
 // Один прогон присоединения. Мир авторитета тикает всё это время: присоединяющийся получает
 // СНИМОК и не останавливает симуляцию.
 case_result run_case(fnet::net_runtime& runtime, const fo::causal_content& authority_content,
                      const fo::causal_content& follower_content, const uint64_t world_seed,
-                     const fnet::follower_config& follower_overrides) {
+                     const fnet::follower_config& follower_overrides,
+                     const size_t actor_count = 128) {
   case_result result;
 
   const auto terrain = authority_content.make_terrain("generator/world", 16, world_seed);
@@ -125,7 +223,7 @@ case_result run_case(fnet::net_runtime& runtime, const fo::causal_content& autho
   utils::timelines clocks(utils::simulation_rate(60));
   thread::atomic_pool pool(2);
   fo::actor_world_slice actors;
-  actors.init(128, {0.5f, 0.5f}, {64.0f, 64.0f}, 1, authority_content.config(),
+  actors.init(actor_count, {0.5f, 0.5f}, {64.0f, 64.0f}, 1, authority_content.config(),
               {"prey", "prey", "prey", "actor"});
   uint64_t tick_counter = 0;
   live_checkpoint source(actors, clocks, tick_counter);
@@ -174,6 +272,8 @@ case_result run_case(fnet::net_runtime& runtime, const fo::causal_content& autho
 
 int main() {
   spdlog::set_level(spdlog::level::err); // ресурсные предупреждения здесь только мешают
+  check_actor_component_wire_contract();
+  check_checkpoint_transfer_contract();
 
   // ДВА НЕЗАВИСИМЫХ ЭКЗЕМПЛЯРА содержимого — как две установки. Общий объект скрыл бы ровно ту
   // беду, ради которой считается отпечаток.
@@ -199,6 +299,17 @@ int main() {
     CHECK(result.tick > 0);
   }
 
+  {
+    const auto result = run_case(runtime, authority_content, follower_content, 20260911, {},
+                                 1024);
+    std::printf("large join: %s, tick %llu, %u bytes\n", result.joined ? "ok" : "FAILED",
+                static_cast<unsigned long long>(result.tick), result.state_bytes);
+    CHECK(result.joined);
+    CHECK(result.status == fnet::join_status::loaded);
+    CHECK(result.state_bytes > 100000);
+    CHECK(result.state_bytes < fnet::max_checkpoint_bytes);
+  }
+
   // Несовместимость обязана назваться. Проверяются два РАЗНЫХ поля, потому что «версия протокола»
   // и «другие правила мира» — это две разные беды с разными ответами для игрока.
   {
@@ -218,6 +329,16 @@ int main() {
     std::printf("content mismatch: refusal = %s\n", fnet::describe(result.refusal));
     CHECK(!result.joined);
     CHECK(result.refusal == network::session_refusal_reason::content_mismatch);
+    CHECK(result.state_bytes == 0);
+  }
+
+  {
+    fnet::follower_config broken;
+    broken.corrupt_component_schema = true;
+    const auto result = run_case(runtime, authority_content, follower_content, 20260911, broken);
+    std::printf("component schema mismatch: refusal = %s\n", fnet::describe(result.refusal));
+    CHECK(!result.joined);
+    CHECK(result.refusal == network::session_refusal_reason::component_schema_mismatch);
     CHECK(result.state_bytes == 0);
   }
 

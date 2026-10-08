@@ -246,6 +246,7 @@ TEST_CASE("network handshake refuses compatibility before authenticating identit
   local.protocol_version = 9;
   local.state_schema_fingerprint = 10;
   local.intent_schema_fingerprint = 11;
+  local.component_schema_fingerprint = 14;
   local.numeric_profile = 12;
   local.content_root[0] = 13;
 
@@ -265,6 +266,10 @@ TEST_CASE("network handshake refuses compatibility before authenticating identit
   ++incompatible.intent_schema_fingerprint;
   CHECK(net::compare_session_compatibility(local, incompatible) ==
         net::session_compatibility_status::intent_schema_mismatch);
+  incompatible = local;
+  ++incompatible.component_schema_fingerprint;
+  CHECK(net::compare_session_compatibility(local, incompatible) ==
+        net::session_compatibility_status::component_schema_mismatch);
   incompatible = local;
   ++incompatible.numeric_profile;
   CHECK(net::compare_session_compatibility(local, incompatible) ==

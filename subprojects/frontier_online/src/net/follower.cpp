@@ -73,6 +73,9 @@ struct follower::state {
     if (config.corrupt_content_root) {
       compatibility.content_root[0] = uint8_t(compatibility.content_root[0] ^ 0xffu);
     }
+    if (config.corrupt_component_schema) {
+      compatibility.component_schema_fingerprint ^= 1u;
+    }
     scratch.reserve(max_message_bytes);
     reply.reserve(max_message_bytes);
   }
@@ -299,12 +302,10 @@ void follower::step(checkpoint_sink& sink) {
       self.fail(join_status::checkpoint_refused);
       return;
     }
-    if (size_t(chunk.offset) + chunk.payload.size() > self.document.size()) {
+    if (!append_checkpoint_chunk(self.document, self.received, chunk)) {
       self.fail(join_status::checkpoint_refused);
       return;
     }
-    std::copy(chunk.payload.begin(), chunk.payload.end(), self.document.begin() + chunk.offset);
-    self.received += uint32_t(chunk.payload.size());
   });
 
   if (self.phase == follower_phase::failed) {

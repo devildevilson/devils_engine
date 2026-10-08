@@ -29,6 +29,7 @@ set(CAUSAL_HDR_LIST
   include/core/actor_simulation.h
   include/core/actor_checkpoint.h
   include/core/actor_snapshot.h
+  include/core/glm_serial.h
   include/core/brain_config_loader.h
   include/core/entity_scope.h
   include/core/spawn_scope.h
@@ -81,6 +82,7 @@ target_include_directories(frontier_causal PUBLIC
 
 if (TARGET devils_engine::network_gns)
   set(NET_HDR_LIST
+    include/net/actor_component_wire.h
     include/net/link.h
     include/net/protocol.h
     include/net/authority.h

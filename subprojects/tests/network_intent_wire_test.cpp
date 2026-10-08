@@ -211,10 +211,10 @@ TEST_CASE("network intent layout declarations are resolved once and refused when
   }
   SUBCASE("declared shapes give the sizes the budget was computed from") {
     const auto layouts = make_layouts();
-    CHECK(layouts.fields(kind_move).wire_bytes() == 7);  // kind + two axes
-    CHECK(layouts.fields(kind_turn).wire_bytes() == 3);  // kind + direction
-    CHECK(layouts.fields(kind_call).wire_bytes() == 7);  // kind + index + target
-    CHECK(layouts.fields(kind_event).wire_bytes() == 3); // kind + index
+    CHECK(layouts.fields(kind_move).wire_bytes() == 9);  // kind + sequence + two axes
+    CHECK(layouts.fields(kind_turn).wire_bytes() == 5);  // kind + sequence + direction
+    CHECK(layouts.fields(kind_call).wire_bytes() == 9);  // kind + sequence + index + target
+    CHECK(layouts.fields(kind_event).wire_bytes() == 5); // kind + sequence + index
   }
 }
 
@@ -226,6 +226,7 @@ TEST_CASE("network intent batch round-trips mixed kinds and ticks") {
 
   net::intent move;
   move.kind = kind_move;
+  move.sequence_low = 0xfffe;
   move.tick_delta = 0;
   const auto x = net::split_axis(axis, 12.5), y = net::split_axis(axis, -3.75);
   const auto dx = net::relative_cell(0, x.key), dy = net::relative_cell(0, y.key);
@@ -236,11 +237,13 @@ TEST_CASE("network intent batch round-trips mixed kinds and ticks") {
 
   net::intent turn;
   turn.kind = kind_turn;
+  turn.sequence_low = 0xffff;
   turn.tick_delta = 1;
   turn.turn = uint16_t(net::split_turn<uint16_t>(0.125).code);
 
   net::intent call;
   call.kind = kind_call;
+  call.sequence_low = 0;
   call.tick_delta = 7;
   call.reference = *registry.index_of(42);
   call.target = 0x0012'3456;
@@ -265,6 +268,47 @@ TEST_CASE("network intent batch round-trips mixed kinds and ticks") {
                        decoded[0].code[0]) == 12.5);
   CHECK(net::join_axis(axis, net::absolute_cell(0, decoded[0].cell_delta[1]),
                        decoded[0].code[1]) == -3.75);
+}
+
+TEST_CASE("network input sequence distinguishes another action from a redundant resend") {
+  const auto layouts = make_layouts();
+  const auto registry = make_registry();
+  auto wire = prepared();
+  auto decoded = prepared_intents(2);
+  net::intent_batch_view view;
+
+  net::intent first;
+  first.kind = kind_event;
+  first.reference = *registry.index_of(42);
+  first.sequence_low = 0x1234;
+  net::intent second = first;
+  second.sequence_low = 0x1235;
+  const std::array same_tick{first, second};
+  REQUIRE(net::try_encode_intent_batch(100, same_tick, layouts, registry, wire) ==
+          net::intent_wire_status::ok);
+  REQUIRE(wire.size() == net::intent_batch_header_bytes + 2 * 5);
+  CHECK(wire[net::intent_batch_header_bytes + 1] == std::byte{0x34});
+  CHECK(wire[net::intent_batch_header_bytes + 2] == std::byte{0x12});
+  REQUIRE(net::try_decode_intent_batch(wire, layouts, registry, view, decoded) ==
+          net::intent_wire_status::ok);
+  REQUIRE(decoded.size() == 2);
+  CHECK(decoded[0].sequence_low == 0x1234);
+  CHECK(decoded[1].sequence_low == 0x1235);
+  CHECK(net::intent_absolute_tick(100, view.base_tick_low, decoded[0].tick_delta) == 100);
+  net::sequence_window<uint16_t, 32> observed;
+  CHECK(observed.observe(decoded[0].sequence_low) == net::sequence_classification::new_value);
+  CHECK(observed.observe(decoded[1].sequence_low) == net::sequence_classification::new_value);
+
+  first.tick_delta = 1; // the same proposal rides in the following tick's batch
+  const std::array resent{first};
+  REQUIRE(net::try_encode_intent_batch(101, resent, layouts, registry, wire) ==
+          net::intent_wire_status::ok);
+  REQUIRE(net::try_decode_intent_batch(wire, layouts, registry, view, decoded) ==
+          net::intent_wire_status::ok);
+  REQUIRE(decoded.size() == 1);
+  CHECK(decoded[0].sequence_low == 0x1234);
+  CHECK(net::intent_absolute_tick(101, view.base_tick_low, decoded[0].tick_delta) == 100);
+  CHECK(observed.observe(decoded[0].sequence_low) == net::sequence_classification::duplicate);
 }
 
 TEST_CASE("network cell delta refuses a target too far from its base cell") {
@@ -298,8 +342,8 @@ TEST_CASE("network intent batch byte budget is measured, not assumed") {
     const std::array<net::intent, 1> sent{move};
     REQUIRE(net::try_encode_intent_batch(1, sent, layouts, registry, wire) ==
             net::intent_wire_status::ok);
-    // 3 header + 1 packed kind/tick + 2 axes of (cell delta + code)
-    CHECK(wire.size() == 10);
+    // 3 header + 1 packed kind/tick + 2-byte sequence + 2 axes
+    CHECK(wire.size() == 12);
   }
 
   SUBCASE("three ticks of movement resent for redundancy") {
@@ -310,9 +354,9 @@ TEST_CASE("network intent batch byte budget is measured, not assumed") {
     }
     REQUIRE(net::try_encode_intent_batch(90, sent, layouts, registry, wire) ==
             net::intent_wire_status::ok);
-    CHECK(wire.size() == 3 + 3 * 7);
+    CHECK(wire.size() == 3 + 3 * 9);
     // Against the 51 bytes of transport overhead per packet, resending two more
-    // ticks costs 14 bytes and removes the need for any retransmit protocol.
+    // ticks costs 18 bytes and removes the need for any retransmit protocol.
     CHECK(wire.size() < 51);
   }
 
@@ -324,7 +368,7 @@ TEST_CASE("network intent batch byte budget is measured, not assumed") {
     }
     REQUIRE(net::try_encode_intent_batch(1000, sent, layouts, registry, wire) ==
             net::intent_wire_status::ok);
-    CHECK(wire.size() == 59);
+    CHECK(wire.size() == 75);
   }
 }
 
@@ -375,8 +419,8 @@ TEST_CASE("network intent batch refuses malformed and hostile input") {
     REQUIRE(net::try_encode_intent_batch(1, legal, layouts, registry, wire) ==
             net::intent_wire_status::ok);
     auto forged = wire;
-    forged[net::intent_batch_header_bytes + 1] = std::byte(0xff);
-    forged[net::intent_batch_header_bytes + 2] = std::byte(0xff);
+    forged[net::intent_batch_header_bytes + 3] = std::byte(0xff);
+    forged[net::intent_batch_header_bytes + 4] = std::byte(0xff);
     CHECK(net::try_decode_intent_batch(forged, layouts, registry, view, decoded) ==
           net::intent_wire_status::reference_out_of_range);
   }
@@ -402,6 +446,14 @@ TEST_CASE("network intent batch refuses malformed and hostile input") {
   SUBCASE("a zero-filled buffer is not a message") {
     const std::vector<std::byte> zeros(16, std::byte(0));
     CHECK(net::try_decode_intent_batch(zeros, layouts, registry, view, decoded) ==
+          net::intent_wire_status::wrong_message_type);
+  }
+
+  SUBCASE("the draft batch type cannot be reinterpreted with the sequence grammar") {
+    REQUIRE(net::try_encode_intent_batch(1, one_move, layouts, registry, wire) ==
+            net::intent_wire_status::ok);
+    wire[0] = std::byte{1};
+    CHECK(net::try_decode_intent_batch(wire, layouts, registry, view, decoded) ==
           net::intent_wire_status::wrong_message_type);
   }
 
@@ -458,4 +510,10 @@ TEST_CASE("network intent tick reconstruction survives the sixteen-bit wrap") {
   SUBCASE("a delta reaching before the first tick has no answer") {
     CHECK_FALSE(net::intent_absolute_tick(2, 2, 5).has_value());
   }
+}
+
+TEST_CASE("network input sequence reconstructs across the sixteen-bit wrap") {
+  CHECK(net::widen_input_sequence_low16(0x1'0005, 0xffff) == 0xffff);
+  CHECK(net::widen_input_sequence_low16(0xffff, 0) == 0x1'0000);
+  CHECK(net::widen_input_sequence_low16(0x1'fff0, 3) == 0x2'0003);
 }

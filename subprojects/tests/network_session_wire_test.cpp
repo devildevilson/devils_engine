@@ -209,12 +209,48 @@ TEST_CASE("network session wire translates the previous envelope to the same can
   CHECK(current_envelope.envelope_version == net::session_wire_envelope_version);
 
   net::client_hello previous_decoded, current_decoded;
-  REQUIRE(net::try_decode(previous_envelope.payload, previous_decoded) ==
+  REQUIRE(net::try_decode(previous_envelope.payload, previous_decoded,
+                          previous_envelope.envelope_version) ==
           net::session_wire_status::ok);
   REQUIRE(net::try_decode(current_envelope.payload, current_decoded) ==
           net::session_wire_status::ok);
   CHECK(previous_decoded.compatibility == current_decoded.compatibility);
   CHECK(previous_decoded.client_nonce == current_decoded.client_nonce);
+}
+
+TEST_CASE("network session wire carries component schema only in envelope three") {
+  auto local = compatibility();
+  local.component_schema_fingerprint = 0x12345678;
+  const net::client_hello sent{local, nonce_of(2)};
+  auto old_bytes = prepared(), new_bytes = prepared();
+  REQUIRE(net::try_encode(sent, old_bytes, 2) == net::session_wire_status::ok);
+  REQUIRE(net::try_encode(sent, new_bytes, 3) == net::session_wire_status::ok);
+  net::session_wire_message old_envelope, new_envelope;
+  REQUIRE(net::try_peek_session_message(old_bytes, old_envelope) == net::session_wire_status::ok);
+  REQUIRE(net::try_peek_session_message(new_bytes, new_envelope) == net::session_wire_status::ok);
+  net::client_hello old_decoded, new_decoded;
+  REQUIRE(net::try_decode(old_envelope.payload, old_decoded, 2) == net::session_wire_status::ok);
+  REQUIRE(net::try_decode(new_envelope.payload, new_decoded, 3) == net::session_wire_status::ok);
+  CHECK(old_decoded.compatibility.component_schema_fingerprint == 0);
+  CHECK(new_decoded.compatibility.component_schema_fingerprint ==
+        local.component_schema_fingerprint);
+}
+
+TEST_CASE("network old envelope gets an old refusal when component schema is required") {
+  auto local = compatibility();
+  local.component_schema_fingerprint = 0x12345678;
+  net::authority_handshake authority(local, nonce_of(1));
+  net::client_handshake client(local, nonce_of(2), std::nullopt, std::nullopt, 2);
+  authority_policy authority_side;
+  client_policy client_side;
+  auto hello = prepared(), refusal = prepared(), reply = prepared();
+  REQUIRE(client.start(hello) == net::session_wire_status::ok);
+  REQUIRE(authority.consume(hello, refusal, authority_side) == net::session_wire_status::ok);
+  CHECK(authority.phase() == net::handshake_phase::refused);
+  CHECK(authority.refusal() == net::session_refusal_reason::unsupported_wire_version);
+  CHECK(authority_side.challenges == 0);
+  CHECK(client.consume(refusal, reply, client_side) == net::session_wire_status::ok);
+  CHECK(client.refusal() == net::session_refusal_reason::unsupported_wire_version);
 }
 
 TEST_CASE("network session wire refuses every malformed envelope") {
@@ -500,7 +536,7 @@ TEST_CASE("network session handshake refuses each incompatibility before any cre
     apply(copy);
     return copy;
   };
-  const std::array<field, 6> cases{
+  const std::array<field, 7> cases{
     field{"handshake format",
           altered([](net::session_compatibility& c) { c.handshake_format = 2; }),
           net::session_refusal_reason::handshake_format_mismatch},
@@ -515,6 +551,9 @@ TEST_CASE("network session handshake refuses each incompatibility before any cre
     field{"intent schema",
           altered([](net::session_compatibility& c) { c.intent_schema_fingerprint = 1; }),
           net::session_refusal_reason::intent_schema_mismatch},
+    field{"component schema",
+          altered([](net::session_compatibility& c) { c.component_schema_fingerprint = 1; }),
+          net::session_refusal_reason::component_schema_mismatch},
     field{"numeric profile",
           altered([](net::session_compatibility& c) { c.numeric_profile = 1; }),
           net::session_refusal_reason::numeric_profile_mismatch}};

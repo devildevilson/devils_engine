@@ -32,13 +32,18 @@
 // length field. A batch carries no count either: intents are self-describing,
 // the reader consumes until the buffer ends, and a remainder which cannot form
 // a whole intent is a refusal rather than a partially accepted batch.
+// Each proposal also carries the low 16 bits of a per-session monotonic input
+// sequence. The authority widens it against its retained sequence horizon;
+// the session runtime must bound outstanding inputs to less than half the range.
 
 namespace devils_engine::network {
 
 enum class hot_message_type : uint8_t {
   // 0 is not a message: a zero-filled buffer must not decode as anything.
-  intent_batch = 1,
-  // 2..63 remain for further upstream classes, 64..191 for authority classes,
+  // 1 was the draft batch without input sequence. Refuse it rather than
+  // interpreting its payload under a changed record grammar.
+  intent_batch = 2,
+  // 3..63 remain for further upstream classes, 64..191 for authority classes,
   // 192..255 for bulk transfer.
   relevant_set_update = 64,
   transform_frame = 65,
@@ -86,7 +91,7 @@ struct intent_field_layout {
   }
 
   [[nodiscard]] constexpr size_t wire_bytes() const noexcept {
-    return 1 + size_t(axes) * 3 + (reference ? 2 : 0) + (target ? 4 : 0) + (turn ? 2 : 0);
+    return 3 + size_t(axes) * 3 + (reference ? 2 : 0) + (target ? 4 : 0) + (turn ? 2 : 0);
   }
 };
 
@@ -105,6 +110,7 @@ struct intent {
   uint16_t turn = 0;
   std::array<int8_t, intent_max_axes> cell_delta{};
   uint8_t kind = 0;
+  uint16_t sequence_low = 0; // per-session input identity, not a simulation tick
   // Ticks back from the batch's base tick. Resending recent ticks is how this
   // class survives loss without a retransmit protocol, so the window is part
   // of the encoding rather than a policy above it.
@@ -247,6 +253,7 @@ namespace detail {
   for (const auto& value : intents) {
     const auto fields = layouts.fields(value.kind);
     w.u8(uint8_t(value.kind | (value.tick_delta << intent_kind_bits)));
+    w.u16(value.sequence_low);
     for (uint8_t axis = 0; axis < fields.axes; ++axis) {
       w.u8(uint8_t(value.cell_delta[axis]));
       w.u16(value.code[axis]);
@@ -310,6 +317,7 @@ namespace detail {
     // The remaining bytes must hold this whole intent. Checking before reading
     // keeps a truncated tail from being reported as a decoded intent of zeros.
     if (r.size() - r.position() < fields.wire_bytes() - 1) return intent_wire_status::truncated;
+    value.sequence_low = r.u16();
 
     for (uint8_t axis = 0; axis < fields.axes; ++axis) {
       value.cell_delta[axis] = int8_t(r.u8());
@@ -360,6 +368,14 @@ namespace detail {
   if (base + half < receiver_tick) base += window;
   else if (base >= window && base > receiver_tick + half) base -= window;
   return base;
+}
+
+// Sequence identity belongs to the authenticated logical session. Callers
+// compare the widened result with a bounded retained horizon before recording
+// it; a 16-bit wire field alone does not authorize an arbitrarily old input.
+[[nodiscard]] inline constexpr uint64_t widen_input_sequence_low16(
+  const uint64_t reference_sequence, const uint16_t sequence_low) noexcept {
+  return widen_tick_low16(reference_sequence, sequence_low);
 }
 
 // The absolute tick of one intent, reconstructed from what the receiver already

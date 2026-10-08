@@ -11,6 +11,7 @@
 #include "sequence_window.h"
 #include "session.h"
 #include "state_schema.h"
+#include "component_wire.h"
 #include "fixed_point.h"
 #include "intent_wire.h"
 #include "session_wire.h"

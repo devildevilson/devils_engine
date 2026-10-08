@@ -2,67 +2,14 @@
 #define FRONTIER_ONLINE_CORE_ACTOR_SNAPSHOT_H
 
 // Включение снапшотов для боевых компонентов frontier_online:
-//  - адаптеры для НЕ-агрегатных glm-типов (aesthetics не зависит от glm),
 //  - регистрация всех ECS-компонентов в реестр сериализации.
 // rgba8_color/entityid_t сериализуются сами (плоский агрегат / uint32).
 
 #include <devils_engine/aesthetics/serialization.h>
 #include <devils_engine/aesthetics/sink.h>
-#include <glm/glm.hpp>
 
 #include "core/actor_simulation.h" // определения компонентов
-
-// --- адаптеры glm (ЛИСТ: canon = name, сериализация = write/read; reflect их не трогает) ---
-namespace devils_engine {
-namespace utils {
-namespace serial {
-
-template <>
-struct adapter<glm::vec2> {
-  static constexpr std::string_view name = "glm.vec2f";
-  static void write(writer& w, const glm::vec2& v) {
-    w.f32(v.x);
-    w.f32(v.y);
-  }
-  static void read(reader& r, glm::vec2& v) {
-    v.x = r.f32();
-    v.y = r.f32();
-  }
-};
-template <>
-struct adapter<glm::vec3> {
-  static constexpr std::string_view name = "glm.vec3f";
-  static void write(writer& w, const glm::vec3& v) {
-    w.f32(v.x);
-    w.f32(v.y);
-    w.f32(v.z);
-  }
-  static void read(reader& r, glm::vec3& v) {
-    v.x = r.f32();
-    v.y = r.f32();
-    v.z = r.f32();
-  }
-};
-template <>
-struct adapter<glm::vec4> {
-  static constexpr std::string_view name = "glm.vec4f";
-  static void write(writer& w, const glm::vec4& v) {
-    w.f32(v.x);
-    w.f32(v.y);
-    w.f32(v.z);
-    w.f32(v.w);
-  }
-  static void read(reader& r, glm::vec4& v) {
-    v.x = r.f32();
-    v.y = r.f32();
-    v.z = r.f32();
-    v.w = r.f32();
-  }
-};
-
-} // namespace serial
-} // namespace utils
-} // namespace devils_engine
+#include "core/glm_serial.h"
 
 // --- регистрация компонентов (позиционно, без имён на проводе; схему стережёт fingerprint) ---
 using namespace frontier_online::core;

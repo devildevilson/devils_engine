@@ -27,12 +27,13 @@
 namespace devils_engine::network {
 
 inline constexpr uint32_t session_wire_magic = UINT32_C(0x4853574e); // "NWSH"
-// Versions 1 and 2 have the same canonical payload grammar. The envelope range
+// Versions 1 and 2 have the same canonical payload grammar. Version 3 appends
+// the component wire-schema fingerprint to compatibility payloads. The range
 // is explicit so a new build may retain an old decoder without treating every
 // lower number as compatible. A handshake selects one version in its hello and
 // uses it for the whole exchange; an unknown version gets a current-version
 // refusal because emitting bytes in an unknown grammar would only guess.
-inline constexpr uint16_t session_wire_envelope_version = 2;
+inline constexpr uint16_t session_wire_envelope_version = 3;
 inline constexpr uint16_t session_wire_oldest_compatible_envelope_version = 1;
 inline constexpr size_t session_wire_header_bytes = 12;
 inline constexpr size_t session_wire_max_payload_bytes = 512;
@@ -83,11 +84,12 @@ enum class session_refusal_reason : uint8_t {
   unexpected_message = 9,
   unknown_session = 10,
   no_capacity = 11,
-  unsupported_wire_version = 12
+  unsupported_wire_version = 12,
+  component_schema_mismatch = 13
 };
 
 inline constexpr uint8_t session_refusal_reason_max =
-  uint8_t(session_refusal_reason::unsupported_wire_version);
+  uint8_t(session_refusal_reason::component_schema_mismatch);
 
 // Decoded opaque spans point into the caller's received buffer. They are valid
 // only while that buffer is unchanged; a consumer which keeps a credential must
@@ -159,7 +161,8 @@ inline void wire_begin(state_writer& w, const uint16_t version,
   return w.good() ? session_wire_status::ok : session_wire_status::buffer_too_small;
 }
 
-inline void write_compatibility(state_writer& w, const session_compatibility& value) {
+inline void write_compatibility(state_writer& w, const session_compatibility& value,
+                                const uint16_t version) {
   // handshake_format leads every message which carries compatibility, so a peer
   // reaches a precise refusal before any field whose meaning that format fixes.
   w.u32(value.handshake_format);
@@ -168,15 +171,18 @@ inline void write_compatibility(state_writer& w, const session_compatibility& va
   w.u32(value.intent_schema_fingerprint);
   w.u32(value.numeric_profile);
   for (const auto byte : value.content_root) w.u8(byte);
+  if (version >= 3) w.u32(value.component_schema_fingerprint);
 }
 
-inline void read_compatibility(state_reader& r, session_compatibility& value) noexcept {
+inline void read_compatibility(state_reader& r, session_compatibility& value,
+                               const uint16_t version) noexcept {
   value.handshake_format = r.u32();
   value.protocol_version = r.u32();
   value.state_schema_fingerprint = r.u32();
   value.intent_schema_fingerprint = r.u32();
   value.numeric_profile = r.u32();
   for (auto& byte : value.content_root) byte = r.u8();
+  value.component_schema_fingerprint = version >= 3 ? r.u32() : 0;
 }
 
 inline void write_digest(state_writer& w, const utils::digest& value) {
@@ -215,7 +221,7 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   state_writer w(out, false);
   size_t length_at = 0;
   detail::wire_begin(w, version, session_message_type::client_hello, length_at);
-  detail::write_compatibility(w, message.compatibility);
+  detail::write_compatibility(w, message.compatibility, version);
   w.bytes(message.client_nonce);
   return detail::wire_end(w, length_at);
 }
@@ -231,7 +237,7 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   state_writer w(out, false);
   size_t length_at = 0;
   detail::wire_begin(w, version, session_message_type::authority_challenge, length_at);
-  detail::write_compatibility(w, message.compatibility);
+  detail::write_compatibility(w, message.compatibility, version);
   w.bytes(message.authority_nonce);
   w.u32(uint32_t(message.challenge.size()));
   w.bytes(message.challenge);
@@ -326,9 +332,11 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 }
 
 [[nodiscard]] inline session_wire_status try_decode(const std::span<const std::byte> payload,
-                                                    client_hello& out) noexcept {
+                                                    client_hello& out,
+                                                    const uint16_t version =
+                                                      session_wire_envelope_version) noexcept {
   state_reader r(payload);
-  detail::read_compatibility(r, out.compatibility);
+  detail::read_compatibility(r, out.compatibility, version);
   const auto nonce = r.take(session_nonce_bytes);
   if (!r.good()) return session_wire_status::truncated;
   std::copy(nonce.begin(), nonce.end(), out.client_nonce.begin());
@@ -336,9 +344,11 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 }
 
 [[nodiscard]] inline session_wire_status try_decode(const std::span<const std::byte> payload,
-                                                    authority_challenge& out) noexcept {
+                                                    authority_challenge& out,
+                                                    const uint16_t version =
+                                                      session_wire_envelope_version) noexcept {
   state_reader r(payload);
-  detail::read_compatibility(r, out.compatibility);
+  detail::read_compatibility(r, out.compatibility, version);
   const auto nonce = r.take(session_nonce_bytes);
   const auto size = r.u32();
   if (!r.good()) return session_wire_status::truncated;
@@ -488,6 +498,8 @@ namespace detail {
       return session_refusal_reason::state_schema_mismatch;
     case session_compatibility_status::intent_schema_mismatch:
       return session_refusal_reason::intent_schema_mismatch;
+    case session_compatibility_status::component_schema_mismatch:
+      return session_refusal_reason::component_schema_mismatch;
     case session_compatibility_status::numeric_profile_mismatch:
       return session_refusal_reason::numeric_profile_mismatch;
   }
@@ -576,8 +588,16 @@ private:
                                std::vector<std::byte>& reply, Policy& policy) {
     envelope_version_ = envelope.envelope_version;
     client_hello hello;
-    if (const auto status = try_decode(envelope.payload, hello); status != session_wire_status::ok)
+    if (const auto status = try_decode(envelope.payload, hello, envelope.envelope_version);
+        status != session_wire_status::ok)
       return refuse(reply, session_refusal_reason::malformed_message, status);
+
+    // Old envelopes cannot name a component schema. Refuse with a reason those
+    // peers already understand instead of emitting the new refusal code in an
+    // old envelope that an old decoder would itself reject as malformed.
+    if (envelope_version_ < 3 && local_.component_schema_fingerprint != 0)
+      return refuse(reply, session_refusal_reason::unsupported_wire_version,
+                    session_wire_status::ok);
 
     // Compatibility is answered before the policy sees anything: an installation
     // mismatch must not consume a challenge or reach a credential check.
@@ -731,7 +751,8 @@ private:
                                    const std::span<const std::byte> payload,
                                    std::vector<std::byte>& reply, Policy& policy) {
     authority_challenge challenge;
-    if (const auto status = try_decode(payload, challenge); status != session_wire_status::ok) {
+    if (const auto status = try_decode(payload, challenge, envelope_version_);
+        status != session_wire_status::ok) {
       stop(session_refusal_reason::malformed_message);
       return status;
     }

@@ -170,6 +170,7 @@ struct session_compatibility {
   uint32_t intent_schema_fingerprint = 0;
   uint32_t numeric_profile = 0;
   utils::digest content_root{};
+  uint32_t component_schema_fingerprint = 0;
 
   bool operator==(const session_compatibility&) const = default;
 };
@@ -181,6 +182,7 @@ enum class session_compatibility_status : uint8_t {
   content_mismatch,
   state_schema_mismatch,
   intent_schema_mismatch,
+  component_schema_mismatch,
   numeric_profile_mismatch
 };
 
@@ -197,6 +199,8 @@ enum class session_compatibility_status : uint8_t {
     return session_compatibility_status::state_schema_mismatch;
   if (local.intent_schema_fingerprint != remote.intent_schema_fingerprint)
     return session_compatibility_status::intent_schema_mismatch;
+  if (local.component_schema_fingerprint != remote.component_schema_fingerprint)
+    return session_compatibility_status::component_schema_mismatch;
   if (local.numeric_profile != remote.numeric_profile)
     return session_compatibility_status::numeric_profile_mismatch;
   return session_compatibility_status::compatible;
@@ -209,6 +213,7 @@ enum class session_handshake_status : uint8_t {
   content_mismatch,
   state_schema_mismatch,
   intent_schema_mismatch,
+  component_schema_mismatch,
   numeric_profile_mismatch,
   identity_rejected
 };
@@ -240,6 +245,8 @@ constexpr session_handshake_status handshake_status(
       return session_handshake_status::state_schema_mismatch;
     case session_compatibility_status::intent_schema_mismatch:
       return session_handshake_status::intent_schema_mismatch;
+    case session_compatibility_status::component_schema_mismatch:
+      return session_handshake_status::component_schema_mismatch;
     case session_compatibility_status::numeric_profile_mismatch:
       return session_handshake_status::numeric_profile_mismatch;
   }

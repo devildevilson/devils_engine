@@ -51,6 +51,10 @@ enum class message : uint8_t {
   join_report = 4,       // клиент -> авторитет, управляющая полоса
 };
 
+// Budget for the complete causal document, not for one GNS message. The
+// receiver checks it before allocating from an untrusted total_bytes field.
+inline constexpr uint32_t max_checkpoint_bytes = 16 * 1024 * 1024;
+
 // Тип первого байта, или 0 для пустого/непонятного сообщения.
 [[nodiscard]] uint8_t peek_message_type(std::span<const std::byte> bytes) noexcept;
 
@@ -107,6 +111,11 @@ struct chunk_view {
 };
 
 [[nodiscard]] bool decode_chunk(std::span<const std::byte> bytes, chunk_view& out);
+
+// Chunks travel on one reliable ordered lane and must cover the document once,
+// in order. A duplicate, overlap or hole refuses without modifying the output.
+[[nodiscard]] bool append_checkpoint_chunk(std::span<std::byte> document, uint32_t& received,
+                                           const chunk_view& chunk) noexcept;
 
 // ОТЧЁТ О ПРИСОЕДИНЕНИИ. Клиент говорит, чем кончилось: каким корнем обернулась загрузка и совпал
 // ли мир. Нужен затем, чтобы сравнение двух процессов делал АВТОРИТЕТ, а не человек, который

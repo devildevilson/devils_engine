@@ -307,7 +307,7 @@ authority: peer 2 join ok (loaded), tick 221 root 13552259054345674819 vs local 
 
 ### Что именно едет на рукопожатии вместо земли
 
-`session_compatibility` сравнивает пять полей, и заполнены они так:
+`session_compatibility` сравнивает шесть полей, и заполнены они так:
 
 | поле | чем | что ловит |
 |---|---|---|
@@ -315,6 +315,7 @@ authority: peer 2 join ok (loaded), tick 221 root 13552259054345674819 vs local 
 | `state_schema_fingerprint` | `actor_checkpoint_schema_fingerprint()` | другая форма документа состояния |
 | `content_root` | SHA-256 по **файлам** причинного поддерева | другие правила мира |
 | `intent_schema_fingerprint` | ноль | пока нечего ловить — интентов на проводе нет |
+| `component_schema_fingerprint` | отпечаток двух объявлений `actor_position`/`actor_state` | другая форма компонентных образов; доставка выбирается для класса сообщения |
 | `numeric_profile` | константа «родной float» | заявление, а не гарантия: NUM-01..04 не пройдены |
 
 `content_root` — единственное нетривиальное. Совпадение версий сборки ничего не значит: правка

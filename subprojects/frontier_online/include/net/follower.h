@@ -47,6 +47,7 @@ struct follower_config {
   // ПРИЧИНОЙ: «другая сборка» не должна значить «молча не работает».
   uint32_t protocol_version_override = 0;
   bool corrupt_content_root = false;
+  bool corrupt_component_schema = false;
 };
 
 class follower {

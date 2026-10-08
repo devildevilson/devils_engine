@@ -1,9 +1,13 @@
 #include "net/protocol.h"
 
+#include <algorithm>
+#include <stdexcept>
+
 #include <devils_engine/utils/serialization.h>
 #include <devils_engine/utils/type_traits.h> // murmur_hash64A
 
 #include "core/actor_checkpoint.h"
+#include "net/actor_component_wire.h"
 #include "net/link.h"
 
 namespace frontier_online {
@@ -12,11 +16,16 @@ namespace net {
 namespace serial = devils_engine::utils::serial;
 
 network::session_compatibility local_compatibility(const core::causal_content& content) {
+  network::component_wire_table components;
+  if (declare_actor_components(components) != network::component_wire_status::ok)
+    throw std::logic_error("frontier_online component wire declarations are invalid");
+  components.freeze();
   network::session_compatibility value;
   value.handshake_format = 1;
   value.protocol_version = protocol_version;
   value.state_schema_fingerprint = core::actor_checkpoint_schema_fingerprint();
   value.intent_schema_fingerprint = intent_schema_fingerprint;
+  value.component_schema_fingerprint = components.fingerprint();
   value.numeric_profile = numeric_profile;
   value.content_root = content.manifest().root;
   return value;
@@ -98,6 +107,7 @@ bool decode(const std::span<const std::byte> bytes, world_declaration& out) {
 }
 
 bool encode(const checkpoint_begin& value, std::vector<std::byte>& out) {
+  if (value.total_bytes == 0 || value.total_bytes > max_checkpoint_bytes) return false;
   const size_t required = 1 + 8 + 8 + 4 + 4;
   auto w = begin(out, required, message::checkpoint_begin);
   w.u64(value.tick);
@@ -116,7 +126,7 @@ bool decode(const std::span<const std::byte> bytes, checkpoint_begin& out) {
   value.total_bytes = r.u32();
   value.schema_fingerprint = r.u32();
   if (!r.good() || r.position() != r.size()) return false;
-  if (value.total_bytes == 0) return false;
+  if (value.total_bytes == 0 || value.total_bytes > max_checkpoint_bytes) return false;
   out = value;
   return true;
 }
@@ -142,6 +152,15 @@ bool decode_chunk(const std::span<const std::byte> bytes, chunk_view& out) {
   if (!r.good() || r.position() != r.size()) return false;
   out.offset = offset;
   out.payload = payload;
+  return true;
+}
+
+bool append_checkpoint_chunk(const std::span<std::byte> document, uint32_t& received,
+                             const chunk_view& chunk) noexcept {
+  if (received > document.size() || chunk.offset != received || chunk.payload.empty() ||
+      chunk.payload.size() > document.size() - received) return false;
+  std::copy(chunk.payload.begin(), chunk.payload.end(), document.begin() + received);
+  received += uint32_t(chunk.payload.size());
   return true;
 }
 
@@ -194,6 +213,7 @@ const char* describe(const network::session_refusal_reason reason) noexcept {
     case reason_t::content_mismatch: return "causal content mismatch";
     case reason_t::state_schema_mismatch: return "state schema mismatch";
     case reason_t::intent_schema_mismatch: return "intent schema mismatch";
+    case reason_t::component_schema_mismatch: return "component schema mismatch";
     case reason_t::numeric_profile_mismatch: return "numeric profile mismatch";
     case reason_t::identity_rejected: return "identity rejected";
     case reason_t::malformed_message: return "malformed message";

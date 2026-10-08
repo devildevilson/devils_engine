@@ -88,9 +88,11 @@ control.
  presentation state ── relevant set ── transform frames ──> client presentation
 ```
 
-Canonical bundle и checkpoint относятся к причинной timeline. Transform frames идут рядом: они
-могут уточнить представление или prediction, но потеря отдельного frame не должна делать следующий
-simulation tick неопределённым.
+Canonical bundle и checkpoint относятся к причинной timeline. Клиент исполняет тики сам:
+bundle определяет принятый ввод до шага тика, а сохранённые локальные inputs позволяют предсказать
+будущее и переиграть его после расхождения. Transform frames идут рядом: они могут уточнить
+представление или дать сигнал проверить prediction, но потеря отдельного frame не должна делать
+следующий simulation tick неопределённым.
 
 Session может назначить один peer authority, однако сами transport endpoints остаются peers. Смена
 authority — отдельный протокол election/epoch, а не свойство connection.
@@ -316,14 +318,21 @@ authoritative state N + unacknowledged local intents N+1..current
   -> новое predicted future
 ```
 
+Если клиент переиграл canonical bundles от сохранённого checkpoint, а root всё ещё не совпал
+с authority, повторять те же inputs бесполезно: нужен новый authoritative checkpoint и
+диагностика детерминизма.
+
 Неподтверждённые локальные intents — ещё не история. После authoritative correction они выполняются
 заново и могут перестать быть legal: цель исчезла, ресурс потрачен, действие больше недоступно. Такой
 отказ изменяет только предсказанное будущее клиента.
 
-Для reconciliation нужен acknowledged input horizon: клиент обязан знать, какие свои input sequence
-authority уже обработала. Без него невозможно отделить подтверждённые inputs от тех, которые следует
-переиграть. `state_frame_header` содержит это понятие; полноценный correction wire contract должен
-донести его вместе с authoritative anchor.
+При непрерывной истории каждый надёжный canonical bundle закрывает свой тик. Он несёт sequence
+принятых предложений; предложение клиента для закрытого тика, которого в bundle нет, отклонено
+или потерялось по пути. Клиент оставляет для prediction только inputs более поздних тиков. Поэтому
+в этой схеме bundle служит application acknowledgement и отдельное поле input ACK не требуется.
+Позднее предложение для уже закрытого тика authority обязана отвергнуть. Если вместо непрерывных
+bundles correction основан на отдельном state frame, тогда нужен явный acknowledged input
+horizon вместе с authoritative anchor; `state_frame_header` содержит это понятие.
 
 ---
 
@@ -347,6 +356,15 @@ Delta применяется только к названному retained base.
 Intent batch адресует base tick один раз и кодирует недавнее окно через маленькие offsets. Повторение
 нескольких тиков — часть delivery strategy: потерянный packet заменяется следующим batch без
 отдельного retransmit protocol.
+
+Каждый intent теперь несёт младшие 16 бит per-session input sequence. Два одинаковых kind в одном
+тике могут быть двумя действиями; повтор того же sequence в следующем batch остаётся тем же
+предложением. Runtime должен восстановить полный номер относительно последнего полного sequence
+этой session, удержанного при join/reconnect, ограничить число незакрытых inputs половиной
+диапазона и дедуплицировать `(session, sequence)`. Bundle сообщает, какие предложения вошли в
+закрытый тик;
+один wire кодек пока не делает этих session-решений. Новый batch имеет message type `2`;
+старый type `1` отвергается, чтобы прежние байты не прочитались по новой схеме.
 
 Каждый intent kind заранее объявляет форму payload. Registered IDs превращаются в индекс
 отсортированного registry; fingerprint этого списка входит в compatibility, поэтому сдвиг индексов
@@ -398,7 +416,7 @@ Correction threshold выводится из fixed-point quantum и сравни
 Библиотечный message — opaque bytes плюс delivery metadata. Транспорт не добавляет session ID, tick,
 component schema или snapshot semantics: форматом владеет соответствующий wire codec.
 
-Типичная раскладка:
+Базовая политика session runtime:
 
 | Класс | Доставка | Причина |
 |---|---|---|
@@ -410,6 +428,13 @@ component schema или snapshot semantics: форматом владеет со
 Delivery lane и application acceptance — разные уровни. Native unreliable-sequenced filter не
 заменяет transform/state frame gate; GNS message number не является simulation tick или application
 sequence.
+
+Между lanes нет общего порядка, поэтому причинная симуляция зависит только от непрерывной
+последовательности canonical bundles на reliable ordered lane. Пустой bundle подтверждает отсутствие
+принятых действий в тике. Intent batch лишь предлагает действия и повторяет недавние тики;
+transform frame не записывает причинный ECS. Для rollback authoritative root сравнивается с
+сохранённым root того же тика, а надёжный bundle закрывает решения по inputs этого тика. Это
+подтверждение нельзя вывести из GNS delivery или из transform frame.
 
 ### In-memory link
 
@@ -494,7 +519,7 @@ view — до следующей мутации; in-memory consume value — д�
 - общего project-facing `network_session_system`, компонующего transport, handshake, tick integration
   и recovery в main loop;
 - production wire formats для canonical bundle, state frame, recovery plan и checkpoint transfer;
-- полного client prediction reconciliation с acknowledged input horizon;
+- полного client prediction reconciliation по закрытым canonical bundles и retained checkpoints;
 - project identity provider, authority key storage/rotation и ticket revocation до expiry;
 - authority election/migration protocol;
 - mid-session fresh join с initial authoritative state transfer;
