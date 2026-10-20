@@ -458,14 +458,14 @@ FetchContent_Declare(
 FetchContent_Declare(
   tavl
   GIT_REPOSITORY https://github.com/devildevilson/tavl.git
-  GIT_TAG        v1.0.3
+  GIT_TAG        v1.1.2
   OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
   devils_script
   GIT_REPOSITORY https://github.com/devildevilson/devils_script.git
-  GIT_TAG        v1.3.1
+  GIT_TAG        v1.4.0
   OVERRIDE_FIND_PACKAGE
 )
 

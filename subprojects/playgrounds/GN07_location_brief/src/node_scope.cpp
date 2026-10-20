@@ -129,14 +129,24 @@ script_env::script_env() : sys_(make_options()) {
   sys_.register_function<&node_has_fact>("has_fact");
 }
 
+// devils_script (с 1.4.0) ставит ВСЕ блоки парсера, корень включительно, в data-режим: для него
+// `{}` — список выражений, а не объект с именованными строками. Но документ архетипа читает свой
+// потоковый ридер, которому нужны именованные строки, поэтому режимы возвращаются к обычным для
+// tavl, а data-режим включается только на блок, отданный ds (compile_predicate).
 void script_env::configure_parser(tavl::parser& parser) const {
   sys_.configure_parser(parser);
+  parser.set_default_block_modes(tavl::parse_mode::object_like, tavl::parse_mode::tuple_like,
+    tavl::parse_mode::data_driven);
 }
 
 ds::container script_env::compile_predicate(const std::string_view name, tavl::parser& parser) const {
   ds::container program;
   ds::system::parse_context ctx;
+  constexpr auto data = tavl::parse_mode::data_driven;
+  parser.override_next_block_modes(data, data, data);
   const auto [event, error] = sys_.parse<bool, node_ref>(name, parser, ctx, program);
+  // Предикат без скобок блока не открывает: переопределение не должно достаться следующему объекту.
+  parser.clear_pending_block_modes();
   if (error.is_critical()) {
     throw std::runtime_error(std::format("predicate '{}': devils_script parse failed ({}) at {}:{}",
       name, tavl::to_string(error.type), error.span.line, error.span.column));
