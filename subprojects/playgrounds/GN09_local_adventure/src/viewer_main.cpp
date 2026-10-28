@@ -29,6 +29,8 @@ struct options {
   std::string dump;
   std::optional<uint32_t> start_edge;
   std::optional<uint32_t> start_site;
+  std::optional<uint32_t> start_cave;
+  std::optional<uint32_t> start_exit;
   int sector_x = 0, sector_z = 0;
 };
 
@@ -43,7 +45,8 @@ bool parse(const int argc, char** argv, options& result) {
     const std::string_view arg = argv[i];
     if (arg == "--help") {
       std::cout << "GN09_local_adventure_viewer [--seed=N] [--radius=R] [--frames=N] "
-                   "[--view=0..3] [--start-edge=N|--start-site=N] [--site-exterior] "
+                   "[--view=0..3] [--start-edge=N|--start-site=N|--start-cave=N] "
+                   "[--site-exterior|--start-exit=0..1] "
                    "[--start-sector=X,Z] [--dump=PATH] "
                    "[--grid] [--validation]\n";
       return false;
@@ -69,6 +72,14 @@ bool parse(const int argc, char** argv, options& result) {
     }
     if (arg.starts_with("--start-site=") && parse_number(arg.substr(13), edge)) {
       result.start_site = edge;
+      continue;
+    }
+    if (arg.starts_with("--start-cave=") && parse_number(arg.substr(13), edge)) {
+      result.start_cave = edge;
+      continue;
+    }
+    if (arg.starts_with("--start-exit=") && parse_number(arg.substr(13), edge)) {
+      result.start_exit = edge;
       continue;
     }
     if (arg.starts_with("--radius=") && parse_number(arg.substr(9), result.radius) &&
@@ -136,11 +147,11 @@ devils_engine::gn03::factory_builder make_builder(const double radius) {
               std::abs(at.centre.y - origin_y) > 40.0 ||
               std::abs(at.centre.z - origin_z) > 40.0) continue;
           const gn09::local_structure structure = gn09::materialize_local_structure(*cached, at.id);
-          for (uint32_t i = 0; i < structure.deposits.size(); ++i) {
-            const gn09::resource_deposit& deposit = structure.deposits[i];
-            const double x = deposit.centre.x - origin_x;
-            const double y = deposit.centre.y - origin_y;
-            const double z = deposit.centre.z - origin_z;
+          for (uint32_t i = 0; i < structure.features.size(); ++i) {
+            const gn09::local_feature& feature = structure.features[i];
+            const double x = feature.centre.x - origin_x;
+            const double y = feature.centre.y - origin_y;
+            const double z = feature.centre.z - origin_z;
             if (x < 0.0 || x >= gn09::chunk::cells || y < 0.0 || y >= gn09::chunk::cells ||
                 z < 0.0 || z >= gn09::chunk::cells) continue;
             devils_engine::gn03::chunk_prop prop;
@@ -149,7 +160,8 @@ devils_engine::gn03::factory_builder make_builder(const double radius) {
             prop.position[2] = z;
             prop.normal[1] = 1.0;
             prop.size = 1.8;
-            prop.kind = deposit.kind == "thermal_crystal" ? 2u : 1u;
+            prop.kind = feature.kind == "egg_cluster" ? 3u :
+                        feature.kind == "thermal_crystal" ? 2u : 1u;
             prop.origin = uint32_t(devils_engine::utils::mix(seed, at.key, i, 0x524553ull));
             mesh.props.push_back(prop);
           }
@@ -182,8 +194,19 @@ int main(const int argc, char** argv) {
     std::cerr << "choose either start site or start edge\n";
     return 2;
   }
+  if (cli.start_cave && (*cli.start_cave >= start_world.route.nodes.size() ||
+      start_world.route.nodes[*cli.start_cave].kind == gn09::theme::empty ||
+      gn09::is_base(start_world.route.nodes[*cli.start_cave].kind) ||
+      cli.start_site || cli.start_edge || cli.site_exterior || cli.start_exit)) {
+    std::cerr << "start cave must name a natural site and use no other start view\n";
+    return 2;
+  }
   if (cli.site_exterior && !cli.start_site) {
     std::cerr << "site exterior view requires --start-site\n";
+    return 2;
+  }
+  if (cli.start_exit && (!cli.start_site || *cli.start_exit >= 2 || cli.site_exterior)) {
+    std::cerr << "emergency exit view requires --start-site and --start-exit=0 or 1\n";
     return 2;
   }
   gn09::point start = start_world.route.nodes[start_world.route.entry].centre;
@@ -192,7 +215,20 @@ int main(const int argc, char** argv) {
     const gn09::local_structure structure = gn09::materialize_local_structure(start_world,
                                                                                *cli.start_site);
     const double offset = double(structure.zones[1].box.v0 + 200) / 100.0;
-    if (structure.dock_axis == 0) {
+    if (cli.start_exit) {
+      const gn09::emergency_exit& door = structure.emergency_exits[*cli.start_exit];
+      const double side = door.span.v0 == structure.zones[door.zone].box.v0 ? -1.0 : 1.0;
+      const gn09::point mouth{0, 0, side * 12.0};
+      const gn09::point entrance{double(door.span.u0 + door.span.u1) / 200.0,
+                                 double(structure.level_cm) / 100.0,
+                                 double(door.span.v0) / 100.0 + side * 1.2};
+      start = gn09::structure_to_world(structure,
+        mouth.x * 0.3 + entrance.x * 0.7,
+        mouth.y * 0.3 + entrance.y * 0.7,
+        mouth.z * 0.3 + entrance.z * 0.7);
+      target = gn09::structure_to_world(structure, entrance.x,
+                                        entrance.y, entrance.z - side * 1.2);
+    } else if (structure.dock_axis == 0) {
       start = cli.site_exterior
         ? gn09::structure_to_world(structure, 4.0, 0.0, offset)
         : gn09::structure_to_world(structure, 19.0, 0.0, offset);
@@ -209,6 +245,10 @@ int main(const int argc, char** argv) {
         : gn09::structure_to_world(structure, 20.0,
                                     double(structure.level_cm) / 100.0, 0.0);
     }
+  } else if (cli.start_cave) {
+    const gn09::site local = gn09::materialize_site(start_world, *cli.start_cave);
+    start = local.rooms[0].centre;
+    target = local.rooms[1].centre;
   } else if (cli.start_edge) {
     const gn09::edge link = start_world.route.edges[*cli.start_edge];
     const gn09::point a = start_world.route.nodes[link.a].centre;

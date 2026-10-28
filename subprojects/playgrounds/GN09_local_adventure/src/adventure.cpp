@@ -20,6 +20,15 @@ double random01(const uint64_t seed, const uint64_t a, const uint64_t b = 0) {
   return devils_engine::utils::prng_normalize(devils_engine::utils::mix(seed, a, b));
 }
 
+site_recipe recipe_for(const uint64_t seed, const node& at) {
+  const uint64_t choice = devils_engine::utils::mix(seed, at.key, 0x524543495045ull);
+  if (is_base(at.kind)) {
+    return site_recipe(uint8_t(site_recipe::mining_base) + choice % 3u);
+  }
+  return at.kind == theme::vent ? site_recipe::thermal_cave :
+    choice % 2u ? site_recipe::nest_cave : site_recipe::ore_cave;
+}
+
 point add(const point a, const point b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 point subtract(const point a, const point b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 point scale(const point a, const double amount) { return {a.x * amount, a.y * amount, a.z * amount}; }
@@ -93,6 +102,17 @@ point base_position(const uint64_t seed, const int x, const int z) {
 uint64_t solid_volume(const std::vector<built_solid>& solids) {
   uint64_t total = 0;
   for (const built_solid& solid : solids) {
+    total += uint64_t(solid.footprint.u1 - solid.footprint.u0) *
+             uint64_t(solid.footprint.v1 - solid.footprint.v0) *
+             uint64_t(solid.y1 - solid.y0);
+  }
+  return total;
+}
+
+uint64_t hatch_panel_volume(const std::vector<built_solid>& solids) {
+  uint64_t total = 0;
+  for (const built_solid& solid : solids) {
+    if (!solid.hatch_panel) continue;
     total += uint64_t(solid.footprint.u1 - solid.footprint.u0) *
              uint64_t(solid.footprint.v1 - solid.footprint.v0) *
              uint64_t(solid.y1 - solid.y0);
@@ -174,6 +194,10 @@ double cave_edge_field(const adventure& world, const node& from, const node& to,
 
 } // namespace
 
+site_recipe recipe_of(const uint64_t seed, const node& at) {
+  return recipe_for(seed, at);
+}
+
 const char* name(const theme value) {
   switch (value) {
     case theme::empty: return "empty";
@@ -196,12 +220,44 @@ const char* name(const cave_biome value) {
   return "unknown";
 }
 
+const char* name(const site_recipe value) {
+  switch (value) {
+    case site_recipe::ore_cave: return "ore_cave";
+    case site_recipe::nest_cave: return "nest_cave";
+    case site_recipe::thermal_cave: return "thermal_cave";
+    case site_recipe::mining_base: return "mining_base";
+    case site_recipe::residential_base: return "residential_base";
+    case site_recipe::military_base: return "military_base";
+  }
+  return "unknown";
+}
+
 cave_biome biome_at(const uint64_t seed, const point position) {
   constexpr double span = 2.0 * sector_size;
   const int64_t bx = int64_t(std::floor(position.x / span));
   const int64_t bz = int64_t(std::floor(position.z / span));
   return cave_biome(devils_engine::utils::mix(seed, uint64_t(bx), uint64_t(bz),
                                                0x42494f4d45ull) % 3u);
+}
+
+std::optional<edge_pocket> materialize_edge_pocket(const uint64_t seed,
+                                                    const node& a, const node& b) {
+  const node& first = a.key < b.key ? a : b;
+  const node& second = a.key < b.key ? b : a;
+  const uint64_t key = devils_engine::utils::mix(seed, first.key, second.key,
+                                                 0x504f434b4554ull);
+  if (key % 3u != 0) return std::nullopt;
+  const point ab = subtract(second.centre, first.centre);
+  const double t = 0.35 + 0.3 * random01(seed, key, 1);
+  const point mouth = add(first.centre, scale(ab, t));
+  point side{-ab.z, 0, ab.x};
+  if (length(side) < 0.1) side = {1, 0, 0};
+  side = scale(side, 1.0 / length(side));
+  const double sign = (key & 8u) ? 1.0 : -1.0;
+  const point centre = add(mouth, add(scale(side, sign *
+    (8.0 + 3.0 * random01(seed, key, 2))),
+    {0, (random01(seed, key, 3) - 0.5) * 3.0, 0}));
+  return edge_pocket{mouth, centre, 3.8 + 1.2 * random01(seed, key, 4)};
 }
 
 graph generate_graph(const uint64_t seed, const graph::window area) {
@@ -320,30 +376,52 @@ graph generate_graph(const uint64_t seed, const graph::window area) {
 site generate_site(const uint64_t seed, const node& at, std::vector<portal> ports,
                    const double clearance_radius) {
   if (at.kind == theme::empty) throw std::invalid_argument("empty route node has no local site");
-  site out{at.id, at.kind, at.centre, std::move(ports), {}, {}};
-  out.rooms.push_back({at.centre, std::max(starter_sub_turn_radius,
+  const site_recipe recipe = recipe_for(seed, at);
+  site out{at.id, at.kind, recipe, at.centre, std::move(ports), {}, {}};
+  out.rooms.push_back({at.centre, std::max(starter_sub_turn_radius +
+                                            (recipe == site_recipe::nest_cave ? 1.5 : 0.0),
                                           clearance_radius + surface_guard + 0.5),
                        is_base(at.kind) ? "dock" : "main_chamber"});
-  const uint32_t side_rooms = is_base(at.kind)
-    ? 4u + uint32_t(devils_engine::utils::mix(seed, at.key, 97) % 3u)
-    : 2u + uint32_t(devils_engine::utils::mix(seed, at.key, 97) % 3u);
-  constexpr std::array<const char*, 6> grotto_uses{"pool", "shelf", "nest", "alcove", "vein", "cache"};
-  constexpr std::array<const char*, 6> vent_uses{"warm_pool", "crystal", "shaft", "shelter", "hive", "cache"};
-  constexpr std::array<const char*, 6> outpost_uses{"hab", "workshop", "store", "control", "medical", "reactor"};
-  constexpr std::array<const char*, 6> derelict_uses{"empty_hab", "broken_workshop", "sealed_store",
-                                                    "control", "service", "reactor"};
+  const uint32_t side_rooms = recipe == site_recipe::mining_base ? 6u :
+    recipe == site_recipe::residential_base ? 6u :
+    recipe == site_recipe::military_base ? 4u :
+    recipe == site_recipe::nest_cave ? 4u :
+    recipe == site_recipe::thermal_cave ? 3u : 3u;
+  constexpr std::array<const char*, 6> ore_uses{
+    "ore_vein", "crystal_shelf", "mineral_pool", "cache", "fault", "ore_pocket"};
+  constexpr std::array<const char*, 6> nest_uses{
+    "brood", "nursery", "feeding", "molt", "eggs", "shelter"};
+  constexpr std::array<const char*, 6> thermal_uses{
+    "warm_pool", "crystal", "shaft", "shelter", "hive", "cache"};
+  constexpr std::array<const char*, 6> mining_uses{
+    "ore_processing", "excavator", "ore_store", "power", "crew", "control"};
+  constexpr std::array<const char*, 6> residential_uses{
+    "commons", "hab", "hydroponics", "clinic", "lounge", "galley"};
+  constexpr std::array<const char*, 6> military_uses{
+    "barracks", "armory", "command", "reactor", "surveillance", "medbay"};
   for (uint32_t i = 0; i < side_rooms; ++i) {
     const double angle = 6.283185307179586 * (double(i) + 0.25 + 0.5 * random01(seed, at.key, i + 200)) /
                          double(side_rooms);
-    const double offset = 14.0 + 1.5 * random01(seed, at.key, i + 300);
+    const double offset = (recipe == site_recipe::nest_cave ? 18.0 :
+                           recipe == site_recipe::ore_cave ? 22.0 : 20.0) +
+                          2.0 * random01(seed, at.key, i + 300);
+    const double rise = recipe == site_recipe::thermal_cave
+      ? (random01(seed, at.key, i + 350) - 0.5) * 9.0
+      : recipe == site_recipe::nest_cave
+        ? (random01(seed, at.key, i + 350) - 0.5) * 3.0 : 0.0;
     const point centre = is_base(at.kind) ? at.centre :
-      add(at.centre, {std::cos(angle) * offset, 0.0, std::sin(angle) * offset});
-    const double radius = is_base(at.kind) ? 0.0 : clearance_radius + surface_guard + 0.2 +
-                          0.5 * random01(seed, at.key, i + 400);
-    const char* purpose = at.kind == theme::grotto ? grotto_uses[i] :
-                          at.kind == theme::vent ? vent_uses[i] :
-                          at.kind == theme::outpost ? outpost_uses[i] : derelict_uses[i];
-    out.rooms.push_back({centre, radius, purpose});
+      add(at.centre, {std::cos(angle) * offset, rise, std::sin(angle) * offset});
+    const double radius = is_base(at.kind) ? 0.0 : clearance_radius + surface_guard +
+      (recipe == site_recipe::nest_cave ? 1.1 : 0.3) +
+      0.6 * random01(seed, at.key, i + 400);
+    const char* purpose = recipe == site_recipe::ore_cave ? ore_uses[i] :
+      recipe == site_recipe::nest_cave ? nest_uses[i] :
+      recipe == site_recipe::thermal_cave ? thermal_uses[i] :
+      recipe == site_recipe::mining_base ? mining_uses[i] :
+      recipe == site_recipe::residential_base ? residential_uses[i] : military_uses[i];
+    const std::string worn_purpose = at.kind == theme::derelict
+      ? std::string("ruined_") + purpose : purpose;
+    out.rooms.push_back({centre, radius, worn_purpose});
     const uint32_t index = uint32_t(out.rooms.size() - 1);
     if (!is_base(at.kind)) {
       const uint32_t parent = i > 0 && random01(seed, at.key, i + 500) < 0.5 ? index - 1 : 0;
@@ -368,6 +446,39 @@ site materialize_site(const adventure& world, const uint32_t node_id) {
     }
   }
   return generate_site(world.seed, at, std::move(ports), world.clearance_radius);
+}
+
+double local_cave_field(const uint64_t seed, const site& local,
+                        const double clearance_radius, const point position) {
+  if (is_base(local.kind) ||
+      std::abs(position.x - local.centre.x) > 36.0 ||
+      std::abs(position.y - local.centre.y) > 36.0 ||
+      std::abs(position.z - local.centre.z) > 36.0) return 3.0;
+  const double broad = value_noise(seed + 1, position, 11.0);
+  double field = 3.0;
+  for (const room& chamber : local.rooms) {
+    const point q = subtract(position, chamber.centre);
+    const double core = length(q) - chamber.radius;
+    const double lateral = local.recipe == site_recipe::nest_cave ? 1.25 :
+                           local.recipe == site_recipe::ore_cave ? 1.15 : 1.05;
+    const double vertical = local.recipe == site_recipe::thermal_cave ? 1.65 :
+                            local.recipe == site_recipe::ore_cave ? 0.8 : 1.05;
+    const double shaped = std::sqrt((q.x / lateral) * (q.x / lateral) +
+                                    (q.y / vertical) * (q.y / vertical) +
+                                    (q.z / lateral) * (q.z / lateral)) -
+                          chamber.radius - 0.35 * broad;
+    field = std::min(field, std::min(core, shaped));
+  }
+  for (const portal& port : local.portals) {
+    field = std::min(field, segment_distance(position, local.centre, port.centre) -
+                             (clearance_radius + surface_guard));
+  }
+  for (const room_link link : local.links) {
+    field = std::min(field, segment_distance(position, local.rooms[link.a].centre,
+                                              local.rooms[link.b].centre) -
+                             (clearance_radius + surface_guard));
+  }
+  return field;
 }
 
 adventure generate(const uint64_t seed, const graph::window area, const double clearance_radius) {
@@ -405,8 +516,12 @@ adventure generate(const uint64_t seed, const graph::window area, const double c
         const uint8_t choice = uint8_t(pose_slot * 12u + plan);
         context.outpost_layout[found->id] = choice;
         const local_structure candidate = materialize_local_structure(context, found->id);
-        const uint64_t total = solid_volume(materialize_outpost_solids(candidate));
-        const uint64_t kept = solid_volume(fit_outpost_solids(context, candidate));
+        if (pose >= 0 && outpost_body_rock_percent(context, candidate) < 80) continue;
+        const std::vector<built_solid> raw = materialize_outpost_solids(candidate);
+        const std::vector<built_solid> fitted = fit_outpost_solids(context, candidate);
+        if (hatch_panel_volume(raw) != hatch_panel_volume(fitted)) continue;
+        const uint64_t total = solid_volume(raw);
+        const uint64_t kept = solid_volume(fitted);
         if (kept * best_total > best_kept * total) {
           best_kept = kept;
           best_total = total;
@@ -434,7 +549,7 @@ adventure generate_for_view(const uint64_t seed, const point observer, const dou
                   clearance_radius);
 }
 
-double density(const adventure& world, const point position) {
+double cave_density(const adventure& world, const point position) {
   if (position.y < world_y_min || position.y > world_y_max) return 3.0;
   const double broad = value_noise(world.seed + 1, position, 11.0);
   const double detail = value_noise(world.seed + 2, position, 4.0);
@@ -448,45 +563,53 @@ double density(const adventure& world, const point position) {
     field = std::min(field, cave_edge_field(world, a, b, position, wall_noise));
     // Сметённый объём капсульного корпуса при поступательном движении по ребру.
     // Участки корпуса за концами ребра попадают в поворотные сферы узлов.
-    field = std::min(field, segment_distance(position, a.centre, b.centre) -
-                             starter_sub_path_radius);
+    const double route_distance = segment_distance(position, a.centre, b.centre);
+    field = std::min(field, route_distance - starter_sub_path_radius);
+    if (route_distance <= 24.0) {
+      if (const auto pocket = materialize_edge_pocket(world.seed, a, b)) {
+        const double connector = segment_distance(position, pocket->mouth,
+                                                   pocket->centre) -
+                                 (world.clearance_radius + surface_guard);
+        const double chamber = length(subtract(position, pocket->centre)) -
+                               pocket->radius - 0.25 * broad;
+        field = std::min(field, std::min(connector, chamber));
+      }
+    }
   }
   for (const node& at : world.route.nodes) {
     // В сфере помещается корпус при ЛЮБОЙ ориентации вокруг центра узла.
-    const double radius = at.kind == theme::empty && at.rank != 1
-      ? starter_sub_turn_radius + 2.5 * random01(world.seed, at.key, 601)
-      : starter_sub_turn_radius;
+    const double radius = is_base(at.kind) ? base_cavern_radius :
+      at.kind == theme::empty && at.rank != 1
+        ? starter_sub_turn_radius + 2.5 * random01(world.seed, at.key, 601)
+        : starter_sub_turn_radius;
     field = std::min(field, length(subtract(position, at.centre)) - radius);
   }
   for (const node& at : world.route.nodes) {
-    if (at.kind == theme::empty) continue;
+    if (at.kind == theme::empty || is_base(at.kind)) continue;
+    if (std::abs(position.x - at.centre.x) > 36.0 ||
+        std::abs(position.y - at.centre.y) > 36.0 ||
+        std::abs(position.z - at.centre.z) > 36.0) continue;
+    const site local = materialize_site(world, at.id);
+    field = std::min(field, local_cave_field(world.seed, local,
+                                             world.clearance_radius, position));
+  }
+  return field;
+}
+
+double density(const adventure& world, const point position) {
+  double field = cave_density(world, position);
+  if (position.y < world_y_min || position.y > world_y_max) return field;
+  for (const node& at : world.route.nodes) {
+    if (!is_base(at.kind)) continue;
     // План появляется по запросу возле узла. Решение зависит только от seed, узла и портов;
     // ранее опубликованный чанк уже получил бы ровно ту же форму.
-    const double reach = is_base(at.kind) ? 47.0 : 24.0;
+    const double reach = 65.0;
     if (std::abs(position.x - at.centre.x) > reach ||
         std::abs(position.y - at.centre.y) > reach ||
         std::abs(position.z - at.centre.z) > reach) continue;
-    if (is_base(at.kind)) {
-      // Станция теперь вырезает только монтажный объём вокруг своего плана.
-      // Старые боковые ящики места больше не подменяют план сооружения.
-      field = std::min(field, outpost_envelope_field(materialize_local_structure(world, at.id),
-                                                     position));
-      continue;
-    }
-    const site local = materialize_site(world, at.id);
-    for (const room& chamber : local.rooms) {
-      const double shape = length(subtract(position, chamber.centre)) - chamber.radius;
-      field = std::min(field, shape - 0.16 * broad);
-    }
-    for (const portal& port : local.portals) {
-      field = std::min(field, segment_distance(position, local.centre, port.centre) -
-                               (world.clearance_radius + surface_guard));
-    }
-    for (const room_link link : local.links) {
-      field = std::min(field, segment_distance(position, local.rooms[link.a].centre,
-                                                local.rooms[link.b].centre) -
-                               (world.clearance_radius + surface_guard));
-    }
+    // Монтажный объём станции, отделённый от естественной пещеры.
+    field = std::min(field, outpost_envelope_field(materialize_local_structure(world, at.id),
+                                                   position));
   }
   return field;
 }
@@ -637,6 +760,13 @@ verification verify(const adventure& world) {
     if (!free_submarine_edge(route.nodes[link.a].centre, route.nodes[link.b].centre)) {
       return {false, "graph edge blocks the 17 x 6 m submarine"};
     }
+    if (const auto pocket = materialize_edge_pocket(world.seed,
+          route.nodes[link.a], route.nodes[link.b])) {
+      if (!free_segment(pocket->mouth, pocket->centre) ||
+          !free_sphere(pocket->centre)) {
+        return {false, "decorative edge pocket has no small clear route"};
+      }
+    }
     const point ab = subtract(b, a);
     const double span = length(ab);
     const point axis = scale(ab, 1.0 / span);
@@ -763,8 +893,13 @@ verification verify(const adventure& world) {
     if (const std::string refusal = verify_local_structure(world, local, structure);
         !refusal.empty()) return {false, refusal};
     if (is_base(local.kind)) {
+      if (const std::string refusal = verify_outpost_environment(world, structure);
+          !refusal.empty()) return {false, refusal};
       const std::vector<built_solid> raw = materialize_outpost_solids(structure);
       const std::vector<built_solid> fitted = fit_outpost_solids(world, structure);
+      if (hatch_panel_volume(raw) != hatch_panel_volume(fitted)) {
+        return {false, "outpost route fitting removed a hatch panel"};
+      }
       const uint64_t minimum_percent = local.kind == theme::derelict ? 80 : 85;
       if (solid_volume(fitted) * 100 < solid_volume(raw) * minimum_percent) {
         return {false, "outpost " + std::to_string(i) + " kept " +
@@ -938,15 +1073,18 @@ bool write_site_svg(const adventure& world, const uint32_t node_id, const std::s
   std::ofstream output(path);
   if (!output) return false;
   const site local = materialize_site(world, node_id);
-  output << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 48 48\" "
+  output << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" "
             "width=\"960\" height=\"960\">\n"
-            "<rect width=\"48\" height=\"48\" fill=\"#1b2024\"/>\n";
+            "<rect width=\"64\" height=\"64\" fill=\"#1b2024\"/>\n"
+         << "<text x=\"1\" y=\"2\" fill=\"#d4e0e8\" font-size=\"1.1\">"
+         << name(local.recipe) << " · local field</text>\n";
   constexpr double step = 0.25;
-  for (int z = 0; z < 192; ++z) {
-    for (int x = 0; x < 192; ++x) {
-      const double local_x = (double(x) + 0.5) * step - 24.0;
-      const double local_z = (double(z) + 0.5) * step - 24.0;
-      if (density(world, {local.centre.x + local_x, local.centre.y, local.centre.z + local_z}) < 0.0) {
+  for (int z = 0; z < 256; ++z) {
+    for (int x = 0; x < 256; ++x) {
+      const double local_x = (double(x) + 0.5) * step - 32.0;
+      const double local_z = (double(z) + 0.5) * step - 32.0;
+      if (local_cave_field(world.seed, local, world.clearance_radius,
+          {local.centre.x + local_x, local.centre.y, local.centre.z + local_z}) < 0.0) {
         output << "<rect x=\"" << double(x) * step << "\" y=\"" << double(z) * step
                << "\" width=\"0.25\" height=\"0.25\" fill=\"#b4a891\"/>\n";
       }
@@ -955,20 +1093,20 @@ bool write_site_svg(const adventure& world, const uint32_t node_id, const std::s
   for (const room_link link : local.links) {
     const point a = local.rooms[link.a].centre;
     const point b = local.rooms[link.b].centre;
-    output << "<line x1=\"" << a.x - local.centre.x + 24.0 << "\" y1=\""
-           << a.z - local.centre.z + 24.0 << "\" x2=\""
-           << b.x - local.centre.x + 24.0 << "\" y2=\""
-           << b.z - local.centre.z + 24.0
+    output << "<line x1=\"" << a.x - local.centre.x + 32.0 << "\" y1=\""
+           << a.z - local.centre.z + 32.0 << "\" x2=\""
+           << b.x - local.centre.x + 32.0 << "\" y2=\""
+           << b.z - local.centre.z + 32.0
            << "\" stroke=\"#526574\" stroke-width=\"0.08\"/>\n";
   }
   for (const portal& port : local.portals) {
-    output << "<circle cx=\"" << port.centre.x - local.centre.x + 24.0
-           << "\" cy=\"" << port.centre.z - local.centre.z + 24.0
+    output << "<circle cx=\"" << port.centre.x - local.centre.x + 32.0
+           << "\" cy=\"" << port.centre.z - local.centre.z + 32.0
            << "\" r=\"0.38\" fill=\"#66d5df\"/>\n";
   }
   for (const room& chamber : local.rooms) {
-    const double x = chamber.centre.x - local.centre.x + 24.0;
-    const double z = chamber.centre.z - local.centre.z + 24.0;
+    const double x = chamber.centre.x - local.centre.x + 32.0;
+    const double z = chamber.centre.z - local.centre.z + 32.0;
     output << "<circle cx=\"" << x << "\" cy=\"" << z
            << "\" r=\"0.16\" fill=\"#e6a46d\"/>\n"
            << "<text x=\"" << x + 0.24 << "\" y=\"" << z - 0.24

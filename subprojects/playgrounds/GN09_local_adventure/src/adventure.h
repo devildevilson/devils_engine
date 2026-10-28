@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,14 @@ enum class cave_biome : uint8_t { karst, rift, chimney };
 const char* name(cave_biome value);
 cave_biome biome_at(uint64_t seed, point position);
 
+// Рецепт малого места выбирается по постоянному ключу узла. Это локальный
+// генератор, а не новый вид узла в макрографе.
+enum class site_recipe : uint8_t {
+  ore_cave, nest_cave, thermal_cave,
+  mining_base, residential_base, military_base
+};
+const char* name(site_recipe value);
+
 struct node {
   uint32_t id = 0;
   uint64_t key = 0; // постоянный ключ точки, не зависящий от запрошенного окна
@@ -27,6 +36,7 @@ struct node {
   theme kind = theme::empty;
   uint8_t rank = 0; // назначается до рёбер; обязан совпасть с итоговой степенью
 };
+site_recipe recipe_of(uint64_t seed, const node& at);
 
 struct edge {
   uint32_t a = 0;
@@ -63,11 +73,21 @@ struct room_link {
 struct site {
   uint32_t node_id = 0;
   theme kind = theme::grotto;
+  site_recipe recipe = site_recipe::ore_cave;
   point centre;
   std::vector<portal> portals;
   std::vector<room> rooms;
   std::vector<room_link> links;
 };
+
+struct edge_pocket {
+  point mouth;
+  point centre;
+  double radius = 0;
+};
+// Небольшой декоративный карман привязан к ребру, не создавая новый узел графа.
+std::optional<edge_pocket> materialize_edge_pocket(uint64_t seed,
+                                                    const node& a, const node& b);
 
 struct adventure {
   uint64_t seed = 0;
@@ -86,6 +106,8 @@ inline constexpr double starter_sub_beam = 6.0;   // временный макс
 inline constexpr double starter_sub_axis_half = (starter_sub_length - starter_sub_beam) / 2.0;
 inline constexpr double starter_sub_path_radius = starter_sub_beam / 2.0 + surface_guard;
 inline constexpr double starter_sub_turn_radius = starter_sub_length / 2.0 + surface_guard;
+// Естественная полость у базы содержит мокрый док 24x24x7 м с запасом под сетку.
+inline constexpr double base_cavern_radius = 19.5;
 static_assert(surface_guard * surface_guard > 3.0);
 inline constexpr uint32_t min_base_intermediates = 2;
 inline constexpr uint32_t max_deadend_nodes = 5;
@@ -94,6 +116,9 @@ graph generate_graph(uint64_t seed, graph::window area = {});
 site generate_site(uint64_t seed, const node& at, std::vector<portal> ports,
                    double clearance_radius = 1.5);
 site materialize_site(const adventure& world, uint32_t node_id);
+// Поле одного локального природного места без магистральной пещеры вокруг него.
+double local_cave_field(uint64_t seed, const site& local,
+                        double clearance_radius, point position);
 adventure generate(uint64_t seed, graph::window area = {}, double clearance_radius = 1.5);
 // Возвращает конечный фрагмент бесконечной по X/Z сети с запасом за дальностью видимости.
 adventure generate_for_view(uint64_t seed, point observer, double visibility,
@@ -102,6 +127,9 @@ adventure generate_for_view(uint64_t seed, point observer, double visibility,
 // Положительное поле — скала, отрицательное — свободное пространство.
 // Чанк берёт только мировые координаты; порядок запросов и место наблюдателя не являются входами.
 double density(const adventure& world, point position);
+// Поле пещеры ДО установки локальных структур. По нему принимается место дока
+// и оценивается, насколько построенный корпус окружён породой.
+double cave_density(const adventure& world, point position);
 
 struct chunk {
   static constexpr int cells = 16;

@@ -132,9 +132,9 @@ void append_outpost_surface(const adventure& world, const chunk& volume, surface
   };
   for (const node& at : world.route.nodes) {
     if (!is_base(at.kind)) continue;
-    if (at.centre.x < chunk_low.x - 48.0 || at.centre.x > chunk_high.x + 48.0 ||
-        at.centre.y < chunk_low.y - 16.0 || at.centre.y > chunk_high.y + 16.0 ||
-        at.centre.z < chunk_low.z - 48.0 || at.centre.z > chunk_high.z + 48.0) continue;
+    if (at.centre.x < chunk_low.x - 64.0 || at.centre.x > chunk_high.x + 64.0 ||
+        at.centre.y < chunk_low.y - 32.0 || at.centre.y > chunk_high.y + 32.0 ||
+        at.centre.z < chunk_low.z - 64.0 || at.centre.z > chunk_high.z + 64.0) continue;
     const local_structure structure = materialize_local_structure(world, at.id);
     for (const built_solid& solid : fit_outpost_solids(world, structure)) {
       const point first = structure_to_world(structure, double(solid.footprint.u0) / 100.0,

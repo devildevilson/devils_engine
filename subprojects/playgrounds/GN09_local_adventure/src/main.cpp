@@ -90,15 +90,20 @@ bool parse(const int argc, char** argv, options& out) {
 
 void report(const gn09::adventure& world, const gn09::verification& result) {
   uint32_t bases = 0, empty = 0;
+  uint32_t pockets = 0;
   for (const gn09::node& at : world.route.nodes) {
     bases += gn09::is_base(at.kind);
     empty += at.kind == gn09::theme::empty;
+  }
+  for (const gn09::edge link : world.route.edges) {
+    pockets += gn09::materialize_edge_pocket(world.seed,
+      world.route.nodes[link.a], world.route.nodes[link.b]).has_value();
   }
   std::cout << "GN09 seed=" << world.seed << " R=" << world.clearance_radius
             << " m graph=" << world.route.nodes.size() << " nodes/"
             << world.route.edges.size() << " edges, entry=" << world.route.entry
             << " destination=" << world.route.destination << ", bases=" << bases
-            << " empty=" << empty << "\n";
+            << " empty=" << empty << " decorative edge pockets=" << pockets << "\n";
   for (const gn09::node& at : world.route.nodes) {
     std::cout << "  node " << at.id << " rank=" << unsigned(at.rank) << ' ' << gn09::name(at.kind)
               << " at (" << at.centre.x << ',' << at.centre.y << ',' << at.centre.z << ")\n";
@@ -113,7 +118,8 @@ void report(const gn09::adventure& world, const gn09::verification& result) {
   for (uint32_t i = 0; i < world.route.nodes.size(); ++i) {
     if (world.route.nodes[i].kind == gn09::theme::empty) continue;
     const gn09::site local = gn09::materialize_site(world, i);
-    std::cout << "  site " << local.node_id << " " << gn09::name(local.kind) << " at ("
+    std::cout << "  site " << local.node_id << " " << gn09::name(local.kind)
+              << '/' << gn09::name(local.recipe) << " at ("
               << local.centre.x << ',' << local.centre.y << ',' << local.centre.z << ") "
               << local.portals.size()
               << " ports, " << local.links.size()
@@ -124,12 +130,15 @@ void report(const gn09::adventure& world, const gn09::verification& result) {
     std::cout << "    local structure: " << structure.zones.size() << " built zones, "
               << structure.openings.size() << " openings, "
               << structure.ports.size() << " dock ports, "
-              << structure.deposits.size() << " resource deposits";
+              << structure.features.size() << " local features";
     if (gn09::is_base(structure.kind)) {
       std::cout << ", forward=(" << structure.forward.x << ',' << structure.forward.z << ')';
-      std::cout << ", hatch=" << (structure.dock_axis > 0 ? "below_ceiling" :
-                                   structure.dock_axis < 0 ? "above_floor" : "side")
-                << ", level=" << double(structure.level_cm) / 100.0 << 'm';
+      std::cout << ", dock=" << (structure.dock_axis > 0 ? "floor" :
+                                 structure.dock_axis < 0 ? "roof" : "side")
+                << ':' << gn09::name(structure.dock_hatch)
+                << ", level=" << double(structure.level_cm) / 100.0 << 'm'
+                << ", emergency=" << structure.emergency_exits.size()
+                << ", body rock=" << gn09::outpost_body_rock_percent(world, structure) << '%';
       const auto volume = [](const std::vector<gn09::built_solid>& solids) {
         uint64_t total = 0;
         for (const gn09::built_solid& solid : solids) {
@@ -182,6 +191,28 @@ int main(const int argc, char** argv) {
     // при сохранении корректных степеней и связности графа.
     const gn09::adventure reference = gn09::generate(opt.seed, {}, opt.radius);
     const gn09::adventure examples = gn09::generate(0, {}, opt.radius);
+    const gn09::adventure other_recipes = gn09::generate(1, {}, opt.radius);
+    std::array<bool, 6> seen_recipes{};
+    for (const gn09::adventure* sample : {&examples, &other_recipes}) {
+      for (const gn09::node& at : sample->route.nodes) {
+        if (at.kind == gn09::theme::empty) continue;
+        const gn09::site local = gn09::materialize_site(*sample, at.id);
+        seen_recipes[uint32_t(local.recipe)] = true;
+      }
+    }
+    if (std::find(seen_recipes.begin(), seen_recipes.end(), false) != seen_recipes.end()) {
+      std::cerr << "seed-0/1 examples do not cover all local recipes\n";
+      return 1;
+    }
+    uint32_t example_pockets = 0;
+    for (const gn09::edge link : examples.route.edges) {
+      example_pockets += gn09::materialize_edge_pocket(0,
+        examples.route.nodes[link.a], examples.route.nodes[link.b]).has_value();
+    }
+    if (example_pockets == 0 || example_pockets >= examples.route.edges.size()) {
+      std::cerr << "decorative edge pockets are not occasional\n";
+      return 1;
+    }
     std::array<bool, 3> seen_faces{};
     for (const gn09::node& at : examples.route.nodes) {
       if (!gn09::is_base(at.kind)) continue;
@@ -225,6 +256,33 @@ int main(const int argc, char** argv) {
       std::cerr << "self-check missed a displaced vertical docking hatch\n";
       return 1;
     }
+    gn09::local_structure broken_exit = gn09::materialize_local_structure(reference,
+                                                                          reference.route.entry);
+    broken_exit.emergency_exits[0].span.v0 += 100;
+    broken_exit.emergency_exits[0].span.v1 += 100;
+    if (gn09::verify_local_structure(reference, built_site, broken_exit) !=
+        "emergency exit is not on an outer module wall") {
+      std::cerr << "self-check missed an emergency door outside its module wall\n";
+      return 1;
+    }
+    const auto military = std::find_if(examples.route.nodes.begin(), examples.route.nodes.end(),
+      [&](const gn09::node& at) {
+        return gn09::is_base(at.kind) &&
+          gn09::materialize_site(examples, at.id).recipe == gn09::site_recipe::military_base;
+      });
+    if (military == examples.route.nodes.end()) {
+      std::cerr << "seed-0 examples have no military base for the geometry check\n";
+      return 1;
+    }
+    gn09::local_structure bulky_military = gn09::materialize_local_structure(examples,
+                                                                               military->id);
+    bulky_military.zones[3].box.v1 += 400;
+    if (gn09::verify_local_structure(examples,
+          gn09::materialize_site(examples, military->id), bulky_military) !=
+        "outpost recipe does not make its declared body shape") {
+      std::cerr << "self-check missed a military base stretched beyond its recipe\n";
+      return 1;
+    }
     gn09::local_structure broken_port = gn09::materialize_local_structure(reference, reference.route.entry);
     broken_port.ports[0].edge_index = UINT32_MAX;
     if (gn09::verify_local_structure(reference, built_site, broken_port) !=
@@ -263,11 +321,11 @@ int main(const int argc, char** argv) {
       return 1;
     }
     const gn09::site natural_site = gn09::materialize_site(reference, natural->id);
-    gn09::local_structure misplaced_deposit = gn09::materialize_local_structure(reference, natural->id);
-    misplaced_deposit.deposits[0].centre.x += 100.0;
-    if (gn09::verify_local_structure(reference, natural_site, misplaced_deposit) !=
-        "resource deposit lies outside its chamber") {
-      std::cerr << "self-check missed a resource outside its chamber\n";
+    gn09::local_structure misplaced_feature = gn09::materialize_local_structure(reference, natural->id);
+    misplaced_feature.features[0].centre.x += 100.0;
+    if (gn09::verify_local_structure(reference, natural_site, misplaced_feature) !=
+        "local feature lies outside its chamber") {
+      std::cerr << "self-check missed a feature outside its chamber\n";
       return 1;
     }
     gn09::adventure clipped_turn = reference;
@@ -478,7 +536,7 @@ int main(const int argc, char** argv) {
                  "vertical routes, dead ends <=5, "
                  "3D profiles, overlapping windows and chunk/surface seams agree ("
               << surface.shared_vertices << " cave + " << station_surface.shared_vertices
-              << " outpost shared surface vertices); ten corruptions refused\n";
+              << " outpost shared surface vertices); twelve corruptions refused\n";
     return 0;
   }
 

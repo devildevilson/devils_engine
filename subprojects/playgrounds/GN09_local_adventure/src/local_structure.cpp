@@ -14,6 +14,22 @@ namespace {
 
 constexpr double dock_opening_radius = starter_sub_path_radius + 1.25;
 
+struct outpost_profile {
+  int32_t side_arm_end = 2800;
+  int32_t slot = 600;
+  int32_t spine_half = 200;
+  int32_t module_depth = 550;
+};
+
+outpost_profile profile_for(const site_recipe recipe) {
+  switch (recipe) {
+    case site_recipe::mining_base: return {3400, 700, 180, 500};
+    case site_recipe::residential_base: return {2000, 800, 300, 900};
+    case site_recipe::military_base: return {2200, 500, 200, 500};
+    default: return {};
+  }
+}
+
 double dot(const point a, const point b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 point subtract(const point a, const point b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 
@@ -35,6 +51,14 @@ double segment_distance_2d(const double u, const double v, const double au,
   const double t = std::clamp(((u - au) * du + (v - av) * dv) / (du * du + dv * dv),
                               0.0, 1.0);
   return std::hypot(u - au - t * du, v - av - t * dv);
+}
+
+double segment_distance_3d(const point p, const point a, const point b) {
+  const point ab = subtract(b, a);
+  const double t = std::clamp(dot(subtract(p, a), ab) / dot(ab, ab), 0.0, 1.0);
+  const point closest{a.x + ab.x * t, a.y + ab.y * t, a.z + ab.z * t};
+  const point gap = subtract(p, closest);
+  return std::sqrt(dot(gap, gap));
 }
 
 // Ось лодки параллельна локальной оси v; её боковой шлюз смотрит на единственный
@@ -86,8 +110,20 @@ bool shared_wall_contains(const plan_rect a, const plan_rect b, const plan_rect 
 
 } // namespace
 
+const char* name(const hatch_condition condition) {
+  switch (condition) {
+    case hatch_condition::operable: return "operable";
+    case hatch_condition::jammed: return "jammed";
+    case hatch_condition::breached: return "breached";
+  }
+  return "unknown";
+}
+
 int8_t preferred_dock_axis(const uint64_t seed, const node& at) {
   const uint64_t pose = devils_engine::utils::mix(seed, at.key, 0x444f434bull) % 10u;
+  const site_recipe recipe = recipe_of(seed, at);
+  if (recipe == site_recipe::mining_base) return pose < 6u ? 0 : 1;
+  if (recipe == site_recipe::residential_base) return pose < 8u ? -1 : 0;
   const cave_biome biome = biome_at(seed, at.centre);
   const uint64_t side_limit = biome == cave_biome::karst ? 6u :
                               biome == cave_biome::rift ? 4u : 2u;
@@ -101,6 +137,7 @@ local_structure materialize_local_structure(const adventure& world, const uint32
   local_structure result;
   result.node_id = node_id;
   result.kind = at.kind;
+  result.recipe = local.recipe;
   result.centre = at.centre;
 
   if (!is_base(at.kind)) {
@@ -111,9 +148,10 @@ local_structure materialize_local_structure(const adventure& world, const uint32
       const point centre{chamber.centre.x + (int(hash & 3u) - 1.5) * step,
                          chamber.centre.y - chamber.radius + 0.8,
                          chamber.centre.z + (int((hash >> 2) & 3u) - 1.5) * step};
-      const char* kind = at.kind == theme::vent ? "thermal_crystal" :
+      const char* kind = local.recipe == site_recipe::nest_cave ? "egg_cluster" :
+                         local.recipe == site_recipe::thermal_cave ? "thermal_crystal" :
                          (hash & 16u) ? "metal_ore" : "mineral_vein";
-      result.deposits.push_back({i, centre, kind, 1u + uint32_t((hash >> 8) % 3u)});
+      result.features.push_back({i, centre, kind, 1u + uint32_t((hash >> 8) % 3u)});
     }
     return result;
   }
@@ -175,7 +213,12 @@ local_structure materialize_local_structure(const adventure& world, const uint32
     }
   }
 
-  result.level_cm = int32_t(result.dock_axis) * 1575;
+  result.level_cm = result.dock_axis > 0 ? 2400 :
+                    result.dock_axis < 0 ? -1575 : 0;
+  if (at.kind == theme::derelict) {
+    result.dock_hatch = devils_engine::utils::mix(world.seed, at.key, 0x4841544348ull) & 1u
+      ? hatch_condition::jammed : hatch_condition::breached;
+  }
 
   const point right{-result.forward.z, 0, result.forward.x};
   // Пересекаем запас проезда лодки с каждой стороной дока. Косой маршрут у угла
@@ -211,32 +254,48 @@ local_structure materialize_local_structure(const adventure& world, const uint32
   }
 
   const int32_t offset_v = result.dock_axis == 0 ? chosen_offset : 0;
+  const outpost_profile profile = profile_for(result.recipe);
 
   // 0: мокрый док; 1: шлюз; 2: технический коридор; 3..: модули.
   // Смежность и проёмы задаются точными сантиметровыми отрезками как у GN07.
   const uint32_t modules = uint32_t(local.rooms.size() - 1);
   const uint32_t slots = (modules + 1u) / 2u;
-  const int32_t spine_begin = result.dock_axis == 0 ? 1600 : 400;
-  const int32_t end = spine_begin + int32_t(slots) * 600;
+  const int32_t spine_begin = result.dock_axis == 0 ? profile.side_arm_end : 400;
+  const int32_t end = spine_begin + int32_t(slots) * profile.slot;
   result.zones.push_back({{-1200, -1200, 1200, 1200}, "wet_dock"});
   result.zones.push_back({result.dock_axis == 0
-    ? plan_rect{1200, offset_v - 200, 1600, offset_v + 200}
+    ? plan_rect{1200, offset_v - 200, spine_begin, offset_v + 200}
     : plan_rect{-400, -400, 400, 400}, "airlock"});
-  result.zones.push_back({{spine_begin, offset_v - 200, end, offset_v + 200}, "spine"});
+  result.zones.push_back({{spine_begin, offset_v - profile.spine_half,
+                           end, offset_v + profile.spine_half}, "spine"});
   if (result.dock_axis == 0) {
     result.openings.push_back({0, 1, {1200, offset_v - 125, 1200, offset_v + 125}});
   }
   result.openings.push_back({1, 2, {spine_begin, offset_v - 125,
                                      spine_begin, offset_v + 125}});
   for (uint32_t i = 0; i < modules; ++i) {
-    const int32_t x0 = spine_begin + int32_t(i / 2u) * 600;
+    const int32_t x0 = spine_begin + int32_t(i / 2u) * profile.slot;
     const bool upper = i % 2u == 0;
-    const int32_t z0 = offset_v + (upper ? 200 : -750);
-    const int32_t z1 = offset_v + (upper ? 750 : -200);
-    result.zones.push_back({{x0, z0, x0 + 600, z1}, local.rooms[i + 1].purpose});
+    const int32_t z0 = offset_v + (upper ? profile.spine_half :
+                                          -profile.spine_half - profile.module_depth);
+    const int32_t z1 = offset_v + (upper ? profile.spine_half + profile.module_depth :
+                                          -profile.spine_half);
+    result.zones.push_back({{x0, z0, x0 + profile.slot, z1}, local.rooms[i + 1].purpose});
+    const int32_t door_u0 = x0 + (profile.slot - 200) / 2;
     result.openings.push_back({2, i + 3u,
-      {x0 + 200, offset_v + (upper ? 200 : -200),
-       x0 + 400, offset_v + (upper ? 200 : -200)}});
+      {door_u0, offset_v + (upper ? profile.spine_half : -profile.spine_half),
+       door_u0 + 200, offset_v + (upper ? profile.spine_half : -profile.spine_half)}});
+  }
+  for (uint32_t i = 0; i < 2; ++i) {
+    const plan_rect room = result.zones[3 + i].box;
+    const bool upper = i == 0;
+    const int32_t wall = upper ? room.v1 : room.v0;
+    const hatch_condition condition = at.kind == theme::outpost
+      ? hatch_condition::operable
+      : upper ? hatch_condition::jammed : hatch_condition::breached;
+    const int32_t door_u0 = room.u0 + (room.u1 - room.u0 - 200) / 2;
+    result.emergency_exits.push_back({3 + i,
+      {door_u0, wall, door_u0 + 200, wall}, condition});
   }
   return result;
 }
@@ -244,24 +303,31 @@ local_structure materialize_local_structure(const adventure& world, const uint32
 std::string verify_local_structure(const adventure& world, const site& local,
                                    const local_structure& structure) {
   if (structure.node_id != local.node_id || structure.kind != local.kind ||
+      structure.recipe != local.recipe ||
       structure.centre.x != local.centre.x || structure.centre.y != local.centre.y ||
       structure.centre.z != local.centre.z) return "local structure disagrees with site";
+  const bool built_recipe = local.recipe == site_recipe::mining_base ||
+    local.recipe == site_recipe::residential_base ||
+    local.recipe == site_recipe::military_base;
+  if (is_base(local.kind) != built_recipe) return "local recipe disagrees with site kind";
   if (!is_base(local.kind)) {
-    if (!structure.zones.empty() || !structure.openings.empty() || !structure.ports.empty() ||
-        structure.deposits.size() != local.rooms.size() - 1) {
-      return "resource cave has an invalid deposit plan";
+    if (!structure.zones.empty() || !structure.openings.empty() ||
+        !structure.ports.empty() || !structure.emergency_exits.empty() ||
+        structure.features.size() != local.rooms.size() - 1) {
+      return "natural site has an invalid feature plan";
     }
-    for (const resource_deposit& deposit : structure.deposits) {
-      if (deposit.room == 0 || deposit.room >= local.rooms.size() || deposit.amount == 0 ||
-          deposit.kind.empty()) return "resource deposit lacks a chamber or yield";
-      const point delta = subtract(deposit.centre, local.rooms[deposit.room].centre);
-      if (dot(delta, delta) > local.rooms[deposit.room].radius * local.rooms[deposit.room].radius ||
-          density(world, deposit.centre) >= 0.0) return "resource deposit lies outside its chamber";
+    for (const local_feature& feature : structure.features) {
+      if (feature.room == 0 || feature.room >= local.rooms.size() || feature.amount == 0 ||
+          feature.kind.empty()) return "local feature lacks a chamber or count";
+      const point delta = subtract(feature.centre, local.rooms[feature.room].centre);
+      if (dot(delta, delta) > local.rooms[feature.room].radius * local.rooms[feature.room].radius ||
+          density(world, feature.centre) >= 0.0) return "local feature lies outside its chamber";
     }
     return {};
   }
-  if (!structure.deposits.empty() || structure.zones.size() != local.rooms.size() + 2 ||
+  if (!structure.features.empty() || structure.zones.size() != local.rooms.size() + 2 ||
       structure.ports.size() < local.portals.size() ||
+      structure.emergency_exits.size() != 2 ||
       structure.openings.size() != structure.zones.size() -
                                    (structure.dock_axis == 0 ? 1u : 2u)) {
     return "outpost has an invalid zone or opening count";
@@ -269,10 +335,15 @@ std::string verify_local_structure(const adventure& world, const site& local,
   if ((structure.dock_axis == 0 && structure.level_cm != 0) ||
       (structure.dock_axis != 0 &&
        (std::abs(structure.dock_axis) != 1 ||
-        structure.level_cm != int32_t(structure.dock_axis) * 1575 ||
+        structure.level_cm != (structure.dock_axis > 0 ? 2400 : -1575) ||
         structure.zones[1].box.u0 != -400 || structure.zones[1].box.u1 != 400 ||
         structure.zones[1].box.v0 != -400 || structure.zones[1].box.v1 != 400))) {
     return "outpost has an invalid docking face";
+  }
+  if ((local.kind == theme::outpost && structure.dock_hatch != hatch_condition::operable) ||
+      (local.kind == theme::derelict &&
+       structure.dock_hatch == hatch_condition::operable)) {
+    return "outpost docking hatch has an invalid condition";
   }
   for (uint32_t i = 0; i < structure.zones.size(); ++i) {
     const plan_rect a = structure.zones[i].box;
@@ -284,6 +355,21 @@ std::string verify_local_structure(const adventure& world, const site& local,
       if (interior_overlap(a, structure.zones[j].box)) return "outpost zones overlap";
     }
   }
+  int32_t first_u = INT32_MAX, last_u = INT32_MIN;
+  int32_t first_v = INT32_MAX, last_v = INT32_MIN;
+  for (size_t i = 2; i < structure.zones.size(); ++i) {
+    const plan_rect box = structure.zones[i].box;
+    first_u = std::min(first_u, box.u0); last_u = std::max(last_u, box.u1);
+    first_v = std::min(first_v, box.v0); last_v = std::max(last_v, box.v1);
+  }
+  const int32_t body_length = last_u - first_u, body_width = last_v - first_v;
+  if ((structure.recipe == site_recipe::mining_base &&
+       (body_length < 2000 || body_width > 1600)) ||
+      (structure.recipe == site_recipe::residential_base && body_width < 2200) ||
+      (structure.recipe == site_recipe::military_base &&
+       (body_length > 1500 || body_width > 1600))) {
+    return "outpost recipe does not make its declared body shape";
+  }
   std::vector<uint8_t> reached(structure.zones.size(), 0);
   reached[structure.dock_axis == 0 ? 0 : 1] = 1;
   for (const built_opening& opening : structure.openings) {
@@ -292,6 +378,23 @@ std::string verify_local_structure(const adventure& world, const site& local,
         !shared_wall_contains(structure.zones[opening.a].box,
                               structure.zones[opening.b].box, opening.span)) {
       return "outpost opening does not lie on a shared wall";
+    }
+  }
+  for (size_t i = 0; i < structure.emergency_exits.size(); ++i) {
+    const emergency_exit& door = structure.emergency_exits[i];
+    if (door.zone < 3 || door.zone >= structure.zones.size() ||
+        (i > 0 && door.zone == structure.emergency_exits[0].zone)) {
+      return "emergency exit lacks a distinct module";
+    }
+    const plan_rect room = structure.zones[door.zone].box;
+    if (door.span.v0 != door.span.v1 ||
+        (door.span.v0 != room.v0 && door.span.v0 != room.v1) ||
+        door.span.u0 < room.u0 || door.span.u1 > room.u1 ||
+        door.span.u1 - door.span.u0 != 200) {
+      return "emergency exit is not on an outer module wall";
+    }
+    if (local.kind == theme::outpost && door.condition != hatch_condition::operable) {
+      return "active outpost has a failed emergency door";
     }
   }
   const plan_rect dock = structure.zones[0].box;
@@ -359,8 +462,7 @@ double outpost_envelope_field(const local_structure& structure, const point posi
   const point delta = subtract(position, structure.centre);
   const point right{-structure.forward.z, 0, structure.forward.x};
   const point local{dot(delta, structure.forward), delta.y, dot(delta, right)};
-  const double berth_v = double(structure.zones[1].box.v0 + 200) / 100.0;
-  double field = docking_sweep_field(local, berth_v, structure.dock_axis);
+  double field = 3.0;
   // Док — природная полость вокруг узла и линии стыковки, а не вырезанный
   // прямоугольный ангар. Для жилых зон вырезаем внутренность, а наружные
   // стены, пол и крыша заходят в скалу на толщину своей обшивки.
@@ -375,9 +477,21 @@ double outpost_envelope_field(const local_structure& structure, const point posi
       {(u1 - u0) / 2.0, 4.5, (v1 - v0) / 2.0}));
   }
   if (structure.dock_axis != 0) {
-    // Короткая шахта соединяет вертикальный люк со свободным объёмом лодки.
+    // Узкая шахта соединяет вертикальный люк с уже существующей пещерой;
+    // мокрый док при этом не вырезается формой аванпоста.
     field = std::min(field, box_field(local,
-      {0, 11.5 * structure.dock_axis, 0}, {3.6, 3.5, 3.6}));
+      {0, structure.dock_axis > 0 ? 16.0 : -11.5, 0},
+      {3.6, structure.dock_axis > 0 ? 6.0 : 3.5, 3.6}));
+  }
+  // Два узких наружных пути к аварийным дверям. Они идут снаружи модулей
+  // обратно к естественному доку и не открывают весь корпус станции.
+  for (const emergency_exit& door : structure.emergency_exits) {
+    const double u = double(door.span.u0 + door.span.u1) / 200.0;
+    const double v = double(door.span.v0) / 100.0;
+    const double side = door.span.v0 == structure.zones[door.zone].box.v0 ? -1.0 : 1.0;
+    const point start{u, double(structure.level_cm) / 100.0, v + side * 1.2};
+    const point mouth{0.0, 0.0, side * 12.0};
+    field = std::min(field, segment_distance_3d(local, start, mouth) - 3.0);
   }
   // Внутренности зон чуть утоплены в стену. Отдельные короткие вырезы на
   // точных люках открывают сквозной проход, не раздвигая всю скалу от корпуса.
@@ -404,6 +518,82 @@ double outpost_envelope_field(const local_structure& structure, const point posi
   return field;
 }
 
+uint32_t outpost_body_rock_percent(const adventure& world,
+                                   const local_structure& structure) {
+  if (!is_base(structure.kind) || structure.zones.size() < 3) return 0;
+  uint64_t rock = 0, total = 0;
+  // Только главный корпус: узкий шлюзовой рукав намеренно выходит в пещеру.
+  // Область оценивается ДО вырезания интерьера станции.
+  for (size_t i = 2; i < structure.zones.size(); ++i) {
+    const plan_rect box = structure.zones[i].box;
+    const uint64_t area = uint64_t(box.u1 - box.u0) * uint64_t(box.v1 - box.v0);
+    for (int u = 1; u <= 5; u += 2) for (int v = 1; v <= 5; v += 2) {
+      const double local_u = double(box.u0) / 100.0 +
+                             double(box.u1 - box.u0) * u / 600.0;
+      const double local_v = double(box.v0) / 100.0 +
+                             double(box.v1 - box.v0) * v / 600.0;
+      const point sample = structure_to_world(structure, local_u,
+                                               double(structure.level_cm) / 100.0,
+                                               local_v);
+      total += area;
+      if (cave_density(world, sample) > 0.0) rock += area;
+    }
+  }
+  return total ? uint32_t(rock * 100 / total) : 0;
+}
+
+std::string verify_outpost_environment(const adventure& world,
+                                       const local_structure& structure) {
+  if (!is_base(structure.kind)) return {};
+  // 24x24x7 м мокрого дока — свойство природной пещеры, а не вырез станции.
+  // Проверяем углы и внутренние точки; сам гарантированный объём следует из
+  // базовой сферы радиусом 19.5 м (> радиус дока + surface_guard).
+  for (const double u : {-12.0, 0.0, 12.0}) {
+    for (const double y : {-3.5, 0.0, 3.5}) {
+      for (const double v : {-12.0, 0.0, 12.0}) {
+        if (cave_density(world, structure_to_world(structure, u, y, v)) >= 0.0) {
+          return "outpost wet dock is not naturally open";
+        }
+      }
+    }
+  }
+  const double berth_v = double(structure.zones[1].box.v0 + 200) / 100.0;
+  for (int u = -12; u <= 12; u += 4) for (int y = -8; y <= 8; y += 4) {
+    for (int v = -12; v <= 12; v += 4) {
+      const point local{double(u), double(y), double(v)};
+      if (docking_sweep_field(local, berth_v, structure.dock_axis) > 0.0) continue;
+      if (cave_density(world, structure_to_world(structure, local.x, local.y,
+                                                 local.z)) >= 0.0) {
+        return "outpost docking sweep is not naturally open";
+      }
+    }
+  }
+  if (structure.dock_axis >= 0 && outpost_body_rock_percent(world, structure) < 80) {
+    return "outpost body has too little surrounding rock";
+  }
+  for (const emergency_exit& door : structure.emergency_exits) {
+    const double side = door.span.v0 == structure.zones[door.zone].box.v0 ? -1.0 : 1.0;
+    const point start{double(door.span.u0 + door.span.u1) / 200.0,
+                      double(structure.level_cm) / 100.0,
+                      double(door.span.v0) / 100.0 + side * 1.2};
+    const point mouth{0, 0, side * 12.0};
+    if (cave_density(world, structure_to_world(structure, mouth.x, mouth.y,
+                                                mouth.z)) >= 0.0) {
+      return "emergency exit does not reach the natural cave";
+    }
+    for (int i = 0; i <= 8; ++i) {
+      const double t = double(i) / 8.0;
+      const point p{start.x + (mouth.x - start.x) * t,
+                    start.y + (mouth.y - start.y) * t,
+                    start.z + (mouth.z - start.z) * t};
+      if (density(world, structure_to_world(structure, p.x, p.y, p.z)) >= 0.0) {
+        return "emergency exit route is blocked by rock";
+      }
+    }
+  }
+  return {};
+}
+
 std::vector<built_solid> materialize_outpost_solids(const local_structure& structure) {
   std::vector<built_solid> solids;
   if (!is_base(structure.kind)) return solids;
@@ -415,9 +605,27 @@ std::vector<built_solid> materialize_outpost_solids(const local_structure& struc
     const int32_t bottom = structure.level_cm - 300;
     const int32_t top = structure.level_cm + 300;
     const auto slab = [&](const int32_t y0, const int32_t y1,
-                          const bool hatch) {
+                          const bool hatch, const bool roof) {
       if (!hatch) {
-        solids.push_back({zone, y0, y1, floor_shade});
+        const bool glazed = roof && i >= 3 &&
+          structure.recipe == site_recipe::residential_base;
+        const bool broken = roof && structure.kind == theme::derelict &&
+          ((i == 1 && structure.dock_axis == 0) ||
+           (i == 3 && structure.dock_axis != 0));
+        if (!glazed && !broken) {
+          solids.push_back({zone, y0, y1, floor_shade});
+          return;
+        }
+        // Крыша жилого модуля имеет отдельную «стеклянную» панель. В
+        // заброшенной наружной части центральный кусок отсутствует.
+        const int32_t u0 = (zone.u0 + zone.u1 - 300) / 2;
+        const int32_t v0 = (zone.v0 + zone.v1 - 300) / 2;
+        const int32_t u1 = u0 + 300, v1 = v0 + 300;
+        solids.push_back({{zone.u0, zone.v0, u0, zone.v1}, y0, y1, floor_shade});
+        solids.push_back({{u1, zone.v0, zone.u1, zone.v1}, y0, y1, floor_shade});
+        solids.push_back({{u0, zone.v0, u1, v0}, y0, y1, floor_shade});
+        solids.push_back({{u0, v1, u1, zone.v1}, y0, y1, floor_shade});
+        if (!broken) solids.push_back({{u0, v0, u1, v1}, y0, y1, 121});
         return;
       }
       // Вертикальный единственный шлюз: отверстие 6x6 м сквозь толстое
@@ -430,8 +638,8 @@ std::vector<built_solid> materialize_outpost_solids(const local_structure& struc
       solids.push_back({{-r, r, r, zone.v1}, y0, y1, frame_shade});
     };
     const int32_t embed = structure.dock_axis == 0 ? 60 : 240;
-    slab(bottom - embed, bottom + 40, i == 1 && structure.dock_axis > 0);
-    slab(top - 40, top + embed, i == 1 && structure.dock_axis < 0);
+    slab(bottom - embed, bottom + 40, i == 1 && structure.dock_axis > 0, false);
+    slab(top - 40, top + embed, i == 1 && structure.dock_axis < 0, true);
     for (uint32_t side = 0; side < 4; ++side) {
       const bool u_side = side < 2;
       const int32_t line = side == 0 ? zone.u0 : side == 1 ? zone.u1 :
@@ -451,6 +659,9 @@ std::vector<built_solid> materialize_outpost_solids(const local_structure& struc
       for (const built_opening& opening : structure.openings) {
         if (opening.a == i || opening.b == i) add_gap(opening.span);
       }
+      for (const emergency_exit& door : structure.emergency_exits) {
+        if (door.zone == i) add_gap(door.span);
+      }
       std::sort(gaps.begin(), gaps.end());
       const auto emit = [&](const int32_t a, const int32_t b) {
         if (a >= b) return;
@@ -468,6 +679,31 @@ std::vector<built_solid> materialize_outpost_solids(const local_structure& struc
         cursor = std::max(cursor, b);
       }
       emit(cursor, finish);
+    }
+  }
+  for (const emergency_exit& door : structure.emergency_exits) {
+    const int32_t wall = door.span.v0;
+    const plan_rect footprint{door.span.u0, wall - 20,
+                              door.span.u1, wall + 20};
+    solids.push_back({footprint, structure.level_cm - 260,
+                      structure.level_cm - 120, wall_shade});
+    solids.push_back({footprint, structure.level_cm + 120,
+                      structure.level_cm + 260, wall_shade});
+    if (door.condition != hatch_condition::breached) {
+      solids.push_back({footprint, structure.level_cm - 120,
+                        structure.level_cm + 120,
+                        door.condition == hatch_condition::operable ? uint8_t{126} : uint8_t{115},
+                        true});
+    }
+  }
+  if (structure.dock_hatch == hatch_condition::jammed) {
+    if (structure.dock_axis == 0) {
+      const plan_rect span = structure.openings.front().span;
+      solids.push_back({{span.u0, span.v0, span.u0 + 20, span.v1},
+                        structure.level_cm - 120, structure.level_cm + 120, 115, true});
+    } else {
+      const int32_t face = structure.level_cm + (structure.dock_axis > 0 ? -300 : 300);
+      solids.push_back({{-300, -300, 300, 300}, face - 10, face + 10, 115, true});
     }
   }
   return solids;
@@ -614,26 +850,30 @@ bool write_structure_svg(const adventure& world, const uint32_t node_id, const s
   std::ofstream output(path);
   if (!output) return false;
   if (!is_base(structure.kind)) {
-    output << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-24 -24 48 48\" "
+    output << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-32 -32 64 64\" "
               "width=\"960\" height=\"960\">\n"
-              "<rect x=\"-24\" y=\"-24\" width=\"48\" height=\"48\" fill=\"#1b2024\"/>\n";
+              "<rect x=\"-32\" y=\"-32\" width=\"64\" height=\"64\" fill=\"#1b2024\"/>\n";
     const site local = materialize_site(world, node_id);
     for (const room& chamber : local.rooms) {
       output << "<circle cx=\"" << chamber.centre.x - structure.centre.x << "\" cy=\""
              << chamber.centre.z - structure.centre.z << "\" r=\"" << chamber.radius
              << "\" fill=\"#314f5e\" stroke=\"#8ab5c7\" stroke-width=\"0.1\"/>\n";
     }
-    for (const resource_deposit& deposit : structure.deposits) {
-      output << "<circle cx=\"" << deposit.centre.x - structure.centre.x << "\" cy=\""
-             << deposit.centre.z - structure.centre.z << "\" r=\"0.45\" fill=\"#e4c46b\"/>\n"
-             << "<text x=\"" << deposit.centre.x - structure.centre.x + 0.7 << "\" y=\""
-             << deposit.centre.z - structure.centre.z << "\" fill=\"white\" font-size=\"0.7\">"
-             << deposit.kind << ':' << deposit.amount << "</text>\n";
+    for (const local_feature& feature : structure.features) {
+      output << "<circle cx=\"" << feature.centre.x - structure.centre.x << "\" cy=\""
+             << feature.centre.z - structure.centre.z << "\" r=\"0.45\" fill=\"#e4c46b\"/>\n"
+             << "<text x=\"" << feature.centre.x - structure.centre.x + 0.7 << "\" y=\""
+             << feature.centre.z - structure.centre.z << "\" fill=\"white\" font-size=\"0.7\">"
+             << feature.kind << ':' << feature.amount << "</text>\n";
     }
   } else {
-    output << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-13 -16 50 32\" "
-              "width=\"1200\" height=\"768\">\n"
-              "<rect x=\"-13\" y=\"-16\" width=\"50\" height=\"32\" fill=\"#1b2024\"/>\n";
+    int32_t far_u = 0;
+    for (const built_zone& zone : structure.zones) far_u = std::max(far_u, zone.box.u1);
+    const double width = double(far_u) / 100.0 + 16.0;
+    output << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-13 -18 "
+           << width << " 36\" width=\"1200\" height=\"720\">\n"
+           << "<rect x=\"-13\" y=\"-18\" width=\"" << width
+           << "\" height=\"36\" fill=\"#1b2024\"/>\n";
     for (const built_zone& zone : structure.zones) {
       output << "<rect x=\"" << double(zone.box.u0) / 100.0 << "\" y=\""
              << double(zone.box.v0) / 100.0 << "\" width=\""
@@ -644,6 +884,22 @@ bool write_structure_svg(const adventure& world, const uint32_t node_id, const s
              << "\" y=\"" << double(zone.box.v0 + zone.box.v1) / 200.0
              << "\" text-anchor=\"middle\" fill=\"white\" font-size=\"0.6\">"
              << zone.purpose << "</text>\n";
+    }
+    for (const built_solid& solid : fit_outpost_solids(world, structure)) {
+      if (solid.shade != 121 || solid.y0 < structure.level_cm + 260) continue;
+      output << "<rect x=\"" << double(solid.footprint.u0) / 100.0 << "\" y=\""
+             << double(solid.footprint.v0) / 100.0 << "\" width=\""
+             << double(solid.footprint.u1 - solid.footprint.u0) / 100.0
+             << "\" height=\"" << double(solid.footprint.v1 - solid.footprint.v0) / 100.0
+             << "\" fill=\"#81c8da\" fill-opacity=\"0.55\"/>\n";
+    }
+    for (const emergency_exit& door : structure.emergency_exits) {
+      const double side = door.span.v0 == structure.zones[door.zone].box.v0 ? -1.0 : 1.0;
+      output << "<line x1=\"" << double(door.span.u0 + door.span.u1) / 200.0
+             << "\" y1=\"" << double(door.span.v0) / 100.0 + side * 1.2
+             << "\" x2=\"0\" y2=\"" << side * 12.0
+             << "\" stroke=\"#65d3e3\" stroke-width=\"0.15\" "
+                "stroke-dasharray=\"0.5 0.4\"/>\n";
     }
     for (const built_solid& solid : fit_outpost_solids(world, structure)) {
       if (solid.y1 <= structure.level_cm - 260 ||
@@ -660,6 +916,15 @@ bool write_structure_svg(const adventure& world, const uint32_t node_id, const s
              << double(opening.span.u1) / 100.0 << "\" y2=\""
              << double(opening.span.v1) / 100.0
              << "\" stroke=\"#e5c36b\" stroke-width=\"0.28\"/>\n";
+    }
+    for (const emergency_exit& door : structure.emergency_exits) {
+      const char* colour = door.condition == hatch_condition::operable ? "#65d3e3" :
+                           door.condition == hatch_condition::jammed ? "#e59651" : "#d66d73";
+      output << "<line x1=\"" << double(door.span.u0) / 100.0 << "\" y1=\""
+             << double(door.span.v0) / 100.0 << "\" x2=\""
+             << double(door.span.u1) / 100.0 << "\" y2=\""
+             << double(door.span.v1) / 100.0 << "\" stroke=\"" << colour
+             << "\" stroke-width=\"0.55\"/>\n";
     }
     if (structure.dock_axis != 0) {
       output << "<rect x=\"-3\" y=\"-3\" width=\"6\" height=\"6\" "
