@@ -17,6 +17,9 @@ struct surface_vertex {
 using surface_mesh = std::vector<surface_vertex>;
 
 surface_mesh generate_surface(const adventure& world, const chunk& volume);
+struct field_region;
+// Та же поверхность по полю, уже подготовленному prepare_chunk_field для этого чанка.
+surface_mesh generate_surface(const field_region& region, const chunk& volume);
 void append_outpost_surface(const adventure& world, const chunk& volume, surface_mesh& mesh);
 
 struct surface_seam_result {

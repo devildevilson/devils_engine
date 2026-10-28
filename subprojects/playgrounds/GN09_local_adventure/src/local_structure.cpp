@@ -218,6 +218,12 @@ local_structure materialize_local_structure(const adventure& world, const uint32
   if (at.kind == theme::derelict) {
     result.dock_hatch = devils_engine::utils::mix(world.seed, at.key, 0x4841544348ull) & 1u
       ? hatch_condition::jammed : hatch_condition::breached;
+    if (world.outpost_breach.size() == world.route.nodes.size()) {
+      result.roof_breach = world.outpost_breach[node_id];
+    }
+  }
+  if (world.outpost_glazing.size() == world.route.nodes.size()) {
+    result.glazed_roofs = world.outpost_glazing[node_id];
   }
 
   const point right{-result.forward.z, 0, result.forward.x};
@@ -518,6 +524,52 @@ double outpost_envelope_field(const local_structure& structure, const point posi
   return field;
 }
 
+bool outpost_envelope_reaches(const local_structure& structure, const point low,
+                              const point high) {
+  if (!is_base(structure.kind)) return false;
+  // Локальная оболочка всех слагаемых outpost_envelope_field. Каждое из них —
+  // честное расстояние до коробки или отрезка, поэтому дальше 3 м от оболочки
+  // функция возвращает ровно стартовое 3.0.
+  const double level = double(structure.level_cm) / 100.0;
+  double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0, y0 = level - 4.5, y1 = level + 4.5;
+  const auto take = [&](const double u, const double v) {
+    u0 = std::min(u0, u); u1 = std::max(u1, u);
+    v0 = std::min(v0, v); v1 = std::max(v1, v);
+  };
+  for (const built_zone& zone : structure.zones) {
+    take(double(zone.box.u0) / 100.0, double(zone.box.v0) / 100.0);
+    take(double(zone.box.u1) / 100.0, double(zone.box.v1) / 100.0);
+  }
+  if (structure.dock_axis != 0) {
+    take(-3.6, -3.6);
+    take(3.6, 3.6);
+    y0 = std::min(y0, structure.dock_axis > 0 ? 10.0 : -15.0);
+    y1 = std::max(y1, structure.dock_axis > 0 ? 22.0 : -8.0);
+  }
+  for (const emergency_exit& door : structure.emergency_exits) {
+    take(double(door.span.u0) / 100.0, double(door.span.v0) / 100.0 - 1.2);
+    take(double(door.span.u1) / 100.0, double(door.span.v0) / 100.0 + 1.2);
+    take(0.0, -12.0);
+    take(0.0, 12.0);
+    y0 = std::min(y0, 0.0);
+    y1 = std::max(y1, 0.0);
+  }
+  // Проёмы лежат на стенах зон; их вырез выступает за стену на 1.25+0.35 м.
+  const double margin = 3.0 + 1.6 + 1.0;
+  point world_low{1e30, structure.centre.y + y0 - margin, 1e30};
+  point world_high{-1e30, structure.centre.y + y1 + margin, -1e30};
+  for (const double u : {u0 - margin, u1 + margin}) {
+    for (const double v : {v0 - margin, v1 + margin}) {
+      const point p = structure_to_world(structure, u, 0.0, v);
+      world_low.x = std::min(world_low.x, p.x); world_high.x = std::max(world_high.x, p.x);
+      world_low.z = std::min(world_low.z, p.z); world_high.z = std::max(world_high.z, p.z);
+    }
+  }
+  return world_low.x <= high.x && world_high.x >= low.x &&
+         world_low.y <= high.y && world_high.y >= low.y &&
+         world_low.z <= high.z && world_high.z >= low.z;
+}
+
 uint32_t outpost_body_rock_percent(const adventure& world,
                                    const local_structure& structure) {
   if (!is_base(structure.kind) || structure.zones.size() < 3) return 0;
@@ -541,6 +593,20 @@ uint32_t outpost_body_rock_percent(const adventure& world,
   }
   return total ? uint32_t(rock * 100 / total) : 0;
 }
+
+namespace {
+
+// Верх крыши зоны над её серединой в локальных метрах (см. slab ниже).
+double roof_top(const local_structure& structure) {
+  const double embed = structure.dock_axis == 0 ? 0.6 : 2.4;
+  return double(structure.level_cm) / 100.0 + 3.0 + embed;
+}
+
+bool roof_hatch(const local_structure& structure, const uint32_t zone) {
+  return zone == 1 && structure.dock_axis < 0;
+}
+
+} // namespace
 
 std::string verify_outpost_environment(const adventure& world,
                                        const local_structure& structure) {
@@ -571,6 +637,39 @@ std::string verify_outpost_environment(const adventure& world,
   if (structure.dock_axis >= 0 && outpost_body_rock_percent(world, structure) < 80) {
     return "outpost body has too little surrounding rock";
   }
+  const uint16_t glazed_mask = structure.glazed_roofs;
+  if (structure.roof_breach != 0 || glazed_mask != 0) {
+    if (structure.roof_breach != 0 &&
+        (structure.kind != theme::derelict || structure.roof_breach >= structure.zones.size() ||
+         roof_hatch(structure, structure.roof_breach))) return "roof breach names an invalid zone";
+    if ((glazed_mask & 7u) != 0 || (glazed_mask >> std::min<size_t>(16, structure.zones.size())) != 0 ||
+        (structure.roof_breach != 0 && ((glazed_mask >> structure.roof_breach) & 1u))) {
+      return "glazed roof names an invalid module";
+    }
+    // Независимо от выбора: решётка 5x5 над всей панелью 3x3 м и на двух высотах.
+    // Окно проверки может обрезать галерею соседнего сектора, поэтому воздух
+    // ищется в абсолютном окружении базы, как в настоящем мире у этих чанков.
+    const adventure context = canonical_context(world.seed, structure.centre,
+                                                world.clearance_radius);
+    const auto exposed = [&](const uint32_t zone) {
+      const plan_rect box = structure.zones[zone].box;
+      const double u = double(box.u0 + box.u1) / 200.0, v = double(box.v0 + box.v1) / 200.0;
+      for (int a = -2; a <= 2; ++a) for (int b = -2; b <= 2; ++b) {
+        for (const double lift : {0.6, 1.8}) {
+          if (cave_density(context, structure_to_world(structure, u + 0.7 * a,
+                                                       roof_top(structure) + lift,
+                                                       v + 0.7 * b)) >= 0.0) return false;
+        }
+      }
+      return true;
+    };
+    if (structure.roof_breach != 0 && !exposed(structure.roof_breach)) {
+      return "roof breach opens into solid rock";
+    }
+    for (uint32_t zone = 3; zone < structure.zones.size() && zone < 16; ++zone) {
+      if (((glazed_mask >> zone) & 1u) && !exposed(zone)) return "glazed roof faces solid rock";
+    }
+  }
   for (const emergency_exit& door : structure.emergency_exits) {
     const double side = door.span.v0 == structure.zones[door.zone].box.v0 ? -1.0 : 1.0;
     const point start{double(door.span.u0 + door.span.u1) / 200.0,
@@ -594,6 +693,62 @@ std::string verify_outpost_environment(const adventure& world,
   return {};
 }
 
+double glazing_chance(const site_recipe recipe) {
+  return recipe == site_recipe::residential_base ? 0.8 :
+         recipe == site_recipe::mining_base ? 0.3 :
+         recipe == site_recipe::military_base ? 0.2 : 0.0;
+}
+
+uint16_t open_roof_mask(const adventure& world, const local_structure& structure) {
+  if (!is_base(structure.kind)) return 0;
+  const double top = roof_top(structure);
+  uint16_t mask = 0;
+  for (uint32_t zone = 1; zone < structure.zones.size() && zone < 16; ++zone) {
+    if (roof_hatch(structure, zone)) continue;
+    const plan_rect box = structure.zones[zone].box;
+    const double u = double(box.u0 + box.u1) / 200.0, v = double(box.v0 + box.v1) / 200.0;
+    bool open = true;
+    // Решётка 4x4 чуть шире панели 3x3 м на трёх высотах до 2.5 м: выбор строже
+    // проверки, которая берёт другие точки внутри той же области.
+    for (int a = 0; a < 4 && open; ++a) for (int b = 0; b < 4 && open; ++b) {
+      for (const double lift : {0.3, 1.2, 2.5}) {
+        if (!open) break;
+        open = cave_density(world, structure_to_world(structure, u - 1.8 + 1.2 * a,
+                                                      top + lift, v - 1.8 + 1.2 * b)) < 0.0;
+      }
+    }
+    if (open) mask = uint16_t(mask | (1u << zone));
+  }
+  return mask;
+}
+
+roof_finish choose_roof_finish(const adventure& world, const local_structure& structure) {
+  roof_finish result;
+  if (!is_base(structure.kind)) return result;
+  const uint16_t open = open_roof_mask(world, structure);
+  const node& at = world.route.nodes.at(structure.node_id);
+  if (structure.kind == theme::derelict) {
+    const uint32_t count = uint32_t(structure.zones.size()) - 1u;
+    const uint32_t first = uint32_t(devils_engine::utils::mix(world.seed, at.key,
+                                                              0x524f4f46ull) % count);
+    for (uint32_t step = 0; step < count && result.breach == 0; ++step) {
+      const uint32_t zone = 1u + (first + step) % count;
+      if (open & (1u << zone)) result.breach = zone;
+    }
+  }
+  // Стекло — удача расположения, а не обещание рецепта: только открытый модуль и
+  // только с вероятностью рецепта. Пролом заменяет панель, стекла на нём нет.
+  const double chance = glazing_chance(structure.recipe);
+  for (uint32_t zone = 3; zone < structure.zones.size() && zone < 16; ++zone) {
+    if (!(open & (1u << zone)) || zone == result.breach) continue;
+    const uint64_t roll = devils_engine::utils::mix(world.seed, at.key, zone, 0x474c415aull);
+    if (double(roll >> 11) * 0x1p-53 < chance) {
+      result.glazed = uint16_t(result.glazed | (1u << zone));
+    }
+  }
+  return result;
+}
+
 std::vector<built_solid> materialize_outpost_solids(const local_structure& structure) {
   std::vector<built_solid> solids;
   if (!is_base(structure.kind)) return solids;
@@ -607,17 +762,15 @@ std::vector<built_solid> materialize_outpost_solids(const local_structure& struc
     const auto slab = [&](const int32_t y0, const int32_t y1,
                           const bool hatch, const bool roof) {
       if (!hatch) {
-        const bool glazed = roof && i >= 3 &&
-          structure.recipe == site_recipe::residential_base;
+        const bool glazed = roof && i < 16 && ((structure.glazed_roofs >> i) & 1u);
         const bool broken = roof && structure.kind == theme::derelict &&
-          ((i == 1 && structure.dock_axis == 0) ||
-           (i == 3 && structure.dock_axis != 0));
+          i == structure.roof_breach;
         if (!glazed && !broken) {
           solids.push_back({zone, y0, y1, floor_shade});
           return;
         }
-        // Крыша жилого модуля имеет отдельную «стеклянную» панель. В
-        // заброшенной наружной части центральный кусок отсутствует.
+        // Застеклённый модуль имеет отдельную «стеклянную» панель; у пролома
+        // заброшенной базы центральный кусок отсутствует.
         const int32_t u0 = (zone.u0 + zone.u1 - 300) / 2;
         const int32_t v0 = (zone.v0 + zone.v1 - 300) / 2;
         const int32_t u1 = u0 + 300, v1 = v0 + 300;
@@ -892,6 +1045,13 @@ bool write_structure_svg(const adventure& world, const uint32_t node_id, const s
              << double(solid.footprint.u1 - solid.footprint.u0) / 100.0
              << "\" height=\"" << double(solid.footprint.v1 - solid.footprint.v0) / 100.0
              << "\" fill=\"#81c8da\" fill-opacity=\"0.55\"/>\n";
+    }
+    if (structure.roof_breach != 0) {
+      const plan_rect box = structure.zones[structure.roof_breach].box;
+      output << "<rect x=\"" << double(box.u0 + box.u1 - 300) / 200.0 << "\" y=\""
+             << double(box.v0 + box.v1 - 300) / 200.0
+             << "\" width=\"3\" height=\"3\" fill=\"none\" stroke=\"#d9604c\" "
+                "stroke-width=\"0.2\" stroke-dasharray=\"0.4 0.3\"/>\n";
     }
     for (const emergency_exit& door : structure.emergency_exits) {
       const double side = door.span.v0 == structure.zones[door.zone].box.v0 ? -1.0 : 1.0;

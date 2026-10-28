@@ -37,6 +37,10 @@ point normalized(const point p) {
 } // namespace
 
 surface_mesh generate_surface(const adventure& world, const chunk& volume) {
+  return generate_surface(prepare_chunk_field(world, volume.x, volume.y, volume.z), volume);
+}
+
+surface_mesh generate_surface(const field_region& region, const chunk& volume) {
   constexpr int cells = chunk::cells;
   const bool any_free = std::any_of(volume.samples.begin(), volume.samples.end(),
                                     [](const double v) { return v < 0.0; });
@@ -52,7 +56,7 @@ surface_mesh generate_surface(const adventure& world, const chunk& volume) {
     if (x >= 0 && x <= cells && y >= 0 && y <= cells && z >= 0 && z <= cells) {
       return volume.at(x, y, z);
     }
-    return density(world, add(origin, {double(x), double(y), double(z)}));
+    return density(region, add(origin, {double(x), double(y), double(z)}));
   };
   for (int z = 0; z <= cells; ++z) {
     for (int y = 0; y <= cells; ++y) {

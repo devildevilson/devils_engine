@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -18,6 +20,7 @@ struct options {
   uint32_t seeds = 64;
   double radius = 1.5;
   bool verify = false;
+  bool bench = false;
   std::string svg;
   std::string site_svg;
   std::string structure_svg;
@@ -46,8 +49,9 @@ bool parse(const int argc, char** argv, options& out) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     if (arg == "--verify") { out.verify = true; continue; }
+    if (arg == "--bench") { out.bench = true; continue; }
     if (arg == "--help") {
-      std::cout << "GN09_local_adventure [--seed=N] [--radius=R] [--verify] [--seeds=N] [--svg=PATH] "
+      std::cout << "GN09_local_adventure [--seed=N] [--radius=R] [--verify] [--bench] [--seeds=N] [--svg=PATH] "
                    "[--sector=X,Z] [--site=N --site-svg=PATH --structure-svg=PATH]\n";
       return false;
     }
@@ -152,8 +156,27 @@ void report(const gn09::adventure& world, const gn09::verification& result) {
       const auto fitted = gn09::fit_outpost_solids(world, structure);
       std::cout << ", 3D solids=" << fitted.size() << ", kept="
                 << (volume(raw) ? 100 * volume(fitted) / volume(raw) : 0) << '%';
+      uint32_t glazed = 0, modules = 0;
+      for (uint32_t zone = 3; zone < structure.zones.size(); ++zone, ++modules) {
+        glazed += (structure.glazed_roofs >> zone) & 1u;
+      }
+      std::cout << ", glazed=" << glazed << '/' << modules;
+      if (structure.kind == gn09::theme::derelict) {
+        std::cout << ", roof breach=" << (structure.roof_breach == 0 ? std::string("none")
+          : structure.zones[structure.roof_breach].purpose);
+      }
     }
     std::cout << '\n';
+  }
+  for (size_t i = 0; i < world.halls.size(); ++i) {
+    const gn09::hall& h = world.halls[i];
+    std::cout << "  hall " << i << ' ' << gn09::name(h.kind) << " region=" << h.region_x << ','
+              << h.region_z << " at (" << h.centre.x << ',' << h.centre.y << ',' << h.centre.z
+              << ") half=" << h.half_length << 'x' << h.half_width << 'x' << h.half_height
+              << " m, pillars=" << h.pillars.size() << ", ledges=" << h.ledges.size()
+              << ", creature corridor r=" << h.core_radius << " m, throat r="
+              << h.throat_radius << " m from y=" << h.throat_top.y << " to y=" << h.throat_end.y
+              << '\n';
   }
   std::cout << "field: " << result.checked_samples << " checked 3D profile samples, "
             << result.reached_rooms
@@ -163,11 +186,118 @@ void report(const gn09::adventure& world, const gn09::verification& result) {
             << (result.ok ? "verified" : result.cause) << '\n';
 }
 
+// Цена поля по видам мест. Отпечаток сэмплов и вершин сравнивается до и после
+// оптимизации: ускорение обязано давать побитово тот же мир.
+int bench(const options& opt) {
+  using clock = std::chrono::steady_clock;
+  const auto ms = [](const clock::duration d) {
+    return std::chrono::duration<double, std::milli>(d).count();
+  };
+  const auto start = clock::now();
+  const gn09::adventure world = gn09::generate(opt.seed, {-2, -2, 3, 3}, opt.radius);
+  std::cout << "GN09 bench seed=" << opt.seed << " window 5x5 sectors: "
+            << world.route.nodes.size() << " nodes/" << world.route.edges.size()
+            << " edges, generate " << ms(clock::now() - start) << " ms\n";
+  const auto pick = [&](const auto predicate) -> const gn09::node* {
+    for (const gn09::node& at : world.route.nodes) {
+      const double c = 2.5 * gn09::sector_size;
+      if (std::abs(at.centre.x - 0.5 * gn09::sector_size) < c &&
+          std::abs(at.centre.z - 0.5 * gn09::sector_size) < c && predicate(at)) return &at;
+    }
+    return nullptr;
+  };
+  std::cout << "  " << world.halls.size() << " halls reach the window\n";
+  const std::array<std::pair<const char*, const gn09::node*>, 3> places{{
+    {"base", pick([](const gn09::node& at) { return gn09::is_base(at.kind); })},
+    {"natural site", pick([](const gn09::node& at) {
+      return at.kind == gn09::theme::grotto || at.kind == gn09::theme::vent; })},
+    {"empty node", pick([](const gn09::node& at) { return at.kind == gn09::theme::empty; })},
+  }};
+  uint64_t fingerprint = 1469598103934665603ull;
+  const auto mix = [&](const uint64_t v) { fingerprint = (fingerprint ^ v) * 1099511628211ull; };
+  for (const auto& [label, at] : places) {
+    if (at == nullptr) { std::cout << "  " << label << ": none in window\n"; continue; }
+    const int cx = int(std::floor(at->centre.x / gn09::chunk::cells));
+    const int cy = int(std::floor(at->centre.y / gn09::chunk::cells));
+    const int cz = int(std::floor(at->centre.z / gn09::chunk::cells));
+    clock::duration prepare{}, field{}, surface{}, station{};
+    size_t vertices = 0, kept_edges = 0, kept_nodes = 0, kept_sites = 0;
+    uint32_t chunks = 0;
+    for (int z = cz - 1; z <= cz + 1; ++z) for (int y = cy - 1; y <= cy + 1; ++y)
+      for (int x = cx - 1; x <= cx + 1; ++x) {
+        const auto t0 = clock::now();
+        const gn09::field_region region = gn09::prepare_chunk_field(world, x, y, z);
+        const auto t1 = clock::now();
+        const gn09::chunk volume = gn09::generate_chunk(region, x, y, z);
+        const auto t2 = clock::now();
+        gn09::surface_mesh mesh = gn09::generate_surface(region, volume);
+        const auto t3 = clock::now();
+        gn09::append_outpost_surface(world, volume, mesh);
+        const auto t4 = clock::now();
+        prepare += t1 - t0;
+        kept_edges += region.edges.size();
+        kept_nodes += region.nodes.size();
+        kept_sites += region.sites.size() + region.bases.size();
+        field += t2 - t1;
+        surface += t3 - t2;
+        station += t4 - t3;
+        vertices += mesh.size();
+        ++chunks;
+        for (const double v : volume.samples) mix(std::bit_cast<uint64_t>(v));
+        for (const gn09::surface_vertex& v : mesh) {
+          mix(std::bit_cast<uint64_t>(v.position.x));
+          mix(std::bit_cast<uint64_t>(v.position.y));
+          mix(std::bit_cast<uint64_t>(v.position.z));
+          mix(std::bit_cast<uint64_t>(v.normal.x));
+          mix(v.shade);
+        }
+      }
+    std::cout << "  " << label << " node " << at->id << ": " << chunks
+              << " chunks, ms/chunk: prepare " << ms(prepare) / chunks
+              << ", field " << ms(field) / chunks << ", surface " << ms(surface) / chunks
+              << ", station " << ms(station) / chunks << "; " << vertices << " vertices; per chunk "
+              << double(kept_edges) / chunks << " edges, " << double(kept_nodes) / chunks
+              << " nodes, " << double(kept_sites) / chunks << " places of "
+              << world.route.edges.size() << '/' << world.route.nodes.size() << '\n';
+  }
+  // Зал: столб чанков через середину по вертикали, от пола до потолка и дальше в скалу.
+  if (!world.halls.empty()) {
+    const gn09::hall& h = world.halls.front();
+    const int cx = int(std::floor(h.centre.x / gn09::chunk::cells));
+    const int cz = int(std::floor(h.centre.z / gn09::chunk::cells));
+    const int y0 = int(std::floor((h.centre.y - h.half_height - 40.0) / gn09::chunk::cells));
+    const int y1 = int(std::floor((h.centre.y + h.half_height + 40.0) / gn09::chunk::cells));
+    clock::duration total{};
+    uint32_t chunks = 0, rock = 0, air = 0;
+    size_t vertices = 0;
+    for (int y = y0; y <= y1; ++y) for (int z = cz - 1; z <= cz + 1; ++z)
+      for (int x = cx - 1; x <= cx + 1; ++x) {
+        const auto t0 = clock::now();
+        const gn09::field_region region = gn09::prepare_chunk_field(world, x, y, z);
+        const int sign = gn09::uniform_sign(region);
+        rock += sign > 0;
+        air += sign < 0;
+        if (sign == 0) {
+          const gn09::chunk volume = gn09::generate_chunk(region, x, y, z);
+          vertices += gn09::generate_surface(region, volume).size();
+        }
+        total += clock::now() - t0;
+        ++chunks;
+      }
+    std::cout << "  hall 0 " << gn09::name(h.kind) << " column: " << chunks << " chunks, "
+              << air << " uniform water, " << rock << " uniform rock, "
+              << ms(total) / chunks << " ms/chunk on average, " << vertices << " vertices\n";
+  }
+  std::cout << "  fingerprint " << std::hex << fingerprint << std::dec << '\n';
+  return 0;
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
   options opt;
   if (!parse(argc, argv, opt)) return 2;
+  if (opt.bench) return bench(opt);
   if (opt.verify && (opt.sector_x != 0 || opt.sector_z != 0)) {
     std::cerr << "--sector is for inspecting a window; --verify uses its own windows\n";
     return 2;
@@ -175,6 +305,8 @@ int main(const int argc, char** argv) {
   if (opt.verify) {
     uint64_t total_rooms = 0;
     uint64_t total_wide_percent = 0;
+    uint32_t halls = 0, lairs = 0, stacked = 0, sealed = 0, pillars = 0;
+    double longest_throat = 0.0;
     uint32_t least_wide_percent = 100;
     for (uint32_t i = 0; i < opt.seeds; ++i) {
       const gn09::adventure world = gn09::generate(opt.seed + i, {}, opt.radius);
@@ -184,6 +316,15 @@ int main(const int argc, char** argv) {
         return 1;
       }
       total_rooms += result.total_rooms;
+      // Залы одного «своего» региона на seed: по нему ведётся статистика уровня.
+      const std::vector<gn09::hall> own = gn09::region_halls(world.seed, 0, 0, opt.radius, &sealed);
+      halls += uint32_t(own.size());
+      stacked += own.size() == 2;
+      for (const gn09::hall& h : own) {
+        lairs += h.kind == gn09::hall_kind::lair;
+        pillars += uint32_t(h.pillars.size());
+        longest_throat = std::max(longest_throat, std::abs(h.throat_top.y - h.throat_end.y));
+      }
       total_wide_percent += result.wide_route_percent;
       least_wide_percent = std::min(least_wide_percent, result.wide_route_percent);
     }
@@ -314,6 +455,33 @@ int main(const int argc, char** argv) {
       std::cerr << "self-check missed a solid across the docking approach\n";
       return 1;
     }
+    // Верхняя база зарыта в скалу: пролом её крыши открылся бы в породу.
+    bool buried_breach_checked = false;
+    for (uint64_t probe_seed = 0; probe_seed < 16 && !buried_breach_checked; ++probe_seed) {
+      const gn09::adventure probe = gn09::generate(probe_seed, {}, opt.radius);
+      for (const gn09::node& at : probe.route.nodes) {
+        if (at.kind != gn09::theme::derelict) continue;
+        gn09::local_structure buried = gn09::materialize_local_structure(probe, at.id);
+        if (buried.dock_axis <= 0 || buried.roof_breach != 0) continue;
+        buried.roof_breach = 3;
+        if (gn09::verify_outpost_environment(probe, buried) != "roof breach opens into solid rock") {
+          std::cerr << "self-check missed a roof breach into buried rock\n";
+          return 1;
+        }
+        buried.roof_breach = 0;
+        buried.glazed_roofs = uint16_t(1u << 3);
+        if (gn09::verify_outpost_environment(probe, buried) != "glazed roof faces solid rock") {
+          std::cerr << "self-check missed glazing under buried rock\n";
+          return 1;
+        }
+        buried_breach_checked = true;
+        break;
+      }
+    }
+    if (!buried_breach_checked) {
+      std::cerr << "self-check cannot find a buried upper derelict\n";
+      return 1;
+    }
     const auto natural = std::find_if(reference.route.nodes.begin(), reference.route.nodes.end(),
       [](const gn09::node& at) { return at.kind == gn09::theme::grotto || at.kind == gn09::theme::vent; });
     if (natural == reference.route.nodes.end()) {
@@ -329,9 +497,27 @@ int main(const int argc, char** argv) {
       return 1;
     }
     gn09::adventure clipped_turn = reference;
-    clipped_turn.route.nodes[clipped_turn.route.entry].centre.y = gn09::world_y_max - 1.0;
+    clipped_turn.route.nodes[clipped_turn.route.entry].centre.y = gn09::settled_y_max - 1.0;
     if (gn09::verify(clipped_turn).cause != "node exceeds finite Y submarine turning clearance") {
       std::cerr << "self-check missed a clipped submarine turning space\n";
+      return 1;
+    }
+    if (reference.halls.empty()) {
+      std::cerr << "self-check window has no hall\n";
+      return 1;
+    }
+    gn09::hall raised = reference.halls.front();
+    raised.centre.y = raised.centre.y < 0.0 ? gn09::settled_y_min - 10.0 : gn09::settled_y_max + 10.0;
+    if (gn09::verify_hall(reference.seed, raised, opt.radius) != "hall cuts into the settled layer") {
+      std::cerr << "self-check missed a hall cutting into the settled layer\n";
+      return 1;
+    }
+    gn09::hall short_throat = reference.halls.front();
+    short_throat.throat_end.y = short_throat.throat_top.y +
+      (short_throat.throat_end.y > short_throat.throat_top.y ? 60.0 : -60.0);
+    if (gn09::verify_hall(reference.seed, short_throat, opt.radius) !=
+        "hall throat does not open into the hall") {
+      std::cerr << "self-check missed a hall throat ending in rock\n";
       return 1;
     }
     for (const double extreme : {0.5, 3.0}) {
@@ -528,6 +714,38 @@ int main(const int argc, char** argv) {
       std::cerr << "overlapping graph windows disagree about a visible chunk\n";
       return 1;
     }
+    // Зал, видимый из двух разных окон, одинаков и даёт те же сэмплы чанка в нём.
+    const gn09::hall* shared_hall = nullptr;
+    for (const gn09::hall& a : broad.halls) {
+      for (const gn09::hall& b : shifted.halls) {
+        if (a.key == b.key && shared_hall == nullptr) {
+          if (a.centre.x != b.centre.x || a.centre.y != b.centre.y || a.centre.z != b.centre.z ||
+              a.throat_node != b.throat_node || a.pillars.size() != b.pillars.size()) {
+            std::cerr << "overlapping graph windows disagree about a hall\n";
+            return 1;
+          }
+          shared_hall = &a;
+        }
+      }
+    }
+    if (shared_hall == nullptr) {
+      std::cerr << "self-check windows share no hall\n";
+      return 1;
+    }
+    {
+      const int hx = int(std::floor(shared_hall->centre.x / gn09::chunk::cells));
+      const int hy = int(std::floor(shared_hall->centre.y / gn09::chunk::cells));
+      const int hz = int(std::floor(shared_hall->centre.z / gn09::chunk::cells));
+      if (gn09::generate_chunk(broad, hx, hy, hz).samples !=
+          gn09::generate_chunk(shifted, hx, hy, hz).samples) {
+        std::cerr << "overlapping graph windows disagree about a chunk inside a hall\n";
+        return 1;
+      }
+    }
+    std::cout << "GN09 halls: " << halls << " in region 0,0 over " << opt.seeds << " seeds ("
+              << lairs << " lairs, " << halls - lairs << " pillared with " << pillars
+              << " pillars, " << stacked << " regions with two halls, " << sealed
+              << " dropped without a safe throat), longest throat " << longest_throat << " m\n";
     std::cout << "GN09 verified " << opt.seeds << " seeds, " << total_rooms
               << " reachable rooms; wide route min=" << least_wide_percent
               << "% mean=" << (total_wide_percent / opt.seeds)
@@ -536,7 +754,7 @@ int main(const int argc, char** argv) {
                  "vertical routes, dead ends <=5, "
                  "3D profiles, overlapping windows and chunk/surface seams agree ("
               << surface.shared_vertices << " cave + " << station_surface.shared_vertices
-              << " outpost shared surface vertices); twelve corruptions refused\n";
+              << " outpost shared surface vertices); sixteen corruptions refused\n";
     return 0;
   }
 
