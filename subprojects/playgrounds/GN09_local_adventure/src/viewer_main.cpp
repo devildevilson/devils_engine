@@ -34,7 +34,8 @@ struct options {
   std::optional<uint32_t> start_cave;
   std::optional<uint32_t> start_exit;
   std::optional<uint32_t> start_hall;
-  bool hall_throat = false;
+  bool hall_entrance = false;
+  std::optional<uint32_t> hall_niche;
   int sector_x = 0, sector_z = 0;
   int window_horizontal = 3, window_vertical = 3;
 };
@@ -52,7 +53,7 @@ bool parse(const int argc, char** argv, options& result) {
       std::cout << "GN09_local_adventure_viewer [--seed=N] [--radius=R] [--frames=N] "
                    "[--view=0..3] [--start-edge=N|--start-site=N|--start-cave=N] "
                    "[--site-exterior|--site-roof|--start-exit=0..1] "
-                   "[--start-hall=N [--hall-throat]] [--window=H,V] "
+                   "[--start-hall=N [--hall-entrance|--hall-niche=K]] [--window=H,V] "
                    "[--start-sector=X,Z] [--dump=PATH] "
                    "[--grid] [--validation]\n";
       return false;
@@ -61,7 +62,7 @@ bool parse(const int argc, char** argv, options& result) {
     if (arg == "--validation") { result.validation = true; continue; }
     if (arg == "--site-exterior") { result.site_exterior = true; continue; }
     if (arg == "--site-roof") { result.site_roof = true; continue; }
-    if (arg == "--hall-throat") { result.hall_throat = true; continue; }
+    if (arg == "--hall-entrance") { result.hall_entrance = true; continue; }
     if (arg.starts_with("--start-sector=")) {
       const std::string_view pair = arg.substr(15);
       const size_t comma = pair.find(',');
@@ -93,6 +94,10 @@ bool parse(const int argc, char** argv, options& result) {
     }
     if (arg.starts_with("--start-cave=") && parse_number(arg.substr(13), edge)) {
       result.start_cave = edge;
+      continue;
+    }
+    if (arg.starts_with("--hall-niche=") && parse_number(arg.substr(13), edge)) {
+      result.hall_niche = edge;
       continue;
     }
     if (arg.starts_with("--start-hall=") && parse_number(arg.substr(13), edge)) {
@@ -339,11 +344,29 @@ int main(const int argc, char** argv) {
     };
     start = at(-0.6 * h.core_half, h.core_y + 0.3 * h.core_radius);
     target = at(0.6 * h.core_half, h.core_y);
-    if (cli.hall_throat) {
-      // Из зала вверх (или вниз) по горловине: камера чуть в стороне от оси шахты.
-      const double dir = h.throat_top.y > h.throat_end.y ? 1.0 : -1.0;
-      start = {h.throat_end.x + 6.0, h.throat_end.y - dir * 12.0, h.throat_end.z};
-      target = {h.throat_end.x, h.throat_end.y + dir * 120.0, h.throat_end.z + 4.0};
+    if (cli.hall_niche && *cli.hall_niche < h.niches.size()) {
+      // Из зала на вход ниши: отступ от входа по нормали стены внутрь зала.
+      const gn09::point right{-h.forward.z, 0, h.forward.x};
+      const auto world = [&](const gn09::point local) {
+        return gn09::point{h.centre.x + local.x * h.forward.x + local.z * right.x,
+                           h.centre.y + local.y,
+                           h.centre.z + local.x * h.forward.z + local.z * right.z};
+      };
+      const gn09::hall_niche& niche = h.niches[*cli.hall_niche];
+      const gn09::point inward{niche.mouth.x - niche.elbow.x, niche.mouth.y - niche.elbow.y,
+                               niche.mouth.z - niche.elbow.z};
+      const double span = std::sqrt(inward.x * inward.x + inward.y * inward.y + inward.z * inward.z);
+      start = world({niche.mouth.x + inward.x / span * 35.0, niche.mouth.y + inward.y / span * 35.0 + 6.0,
+                     niche.mouth.z + inward.z / span * 35.0});
+      target = world(niche.elbow);
+      std::cout << "GN09 niche " << *cli.hall_niche << (niche.overhang ? " under an overhang" : "") << '\n';
+    } else if (cli.hall_entrance) {
+      // Снаружи у входа маршрута, взгляд вдоль ребра внутрь зала.
+      const auto entrances = gn09::hall_entrances(cli.seed, h);
+      if (!entrances.empty()) {
+        start = entrances.front().first;
+        target = entrances.front().second;
+      }
     }
     std::cout << "GN09 hall " << *cli.start_hall << ' ' << gn09::name(h.kind) << " half="
               << h.half_length << 'x' << h.half_width << 'x' << h.half_height << " m\n";

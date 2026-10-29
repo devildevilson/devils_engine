@@ -71,6 +71,14 @@ double value_noise(const uint64_t seed, const point p, const double period) {
   return lerp(bottom, top, fz);
 }
 
+double layer_height(const uint64_t seed, const double x, const double z) {
+  const point p{x, 0.0, z};
+  return 200.0 * value_noise(seed + 11, p, 1500.0) + 90.0 * value_noise(seed + 12, p, 520.0) +
+         30.0 * value_noise(seed + 13, p, 190.0);
+}
+
+
+
 namespace {
 
 struct disjoint_set {
@@ -92,15 +100,6 @@ uint64_t node_key(const int x, const int z, const uint32_t direction,
                   const uint32_t step, const uint32_t branch = 0) {
   return devils_engine::utils::mix(0x474e3039ull, uint64_t(int64_t(x)),
                                    uint64_t(int64_t(z)), direction, step, branch);
-}
-
-point base_position(const uint64_t seed, const int x, const int z) {
-  const uint64_t key = node_key(x, z, 0, 0);
-  const int jx = int(devils_engine::utils::mix(seed, key, 11) % 49) - 24;
-  const int jz = int(devils_engine::utils::mix(seed, key, 29) % 49) - 24;
-  const int jy = (int(devils_engine::utils::mix(seed, key, 37) % 3) - 1) * 8;
-  return {double(x * sector_size + sector_size / 2 + jx), double(jy),
-          double(z * sector_size + sector_size / 2 + jz)};
 }
 
 uint64_t solid_volume(const std::vector<built_solid>& solids) {
@@ -130,6 +129,19 @@ double bend_distance(const point centre, const point a, const point b) {
 
 } // namespace
 
+point base_position(const uint64_t seed, const int x, const int z) {
+  const uint64_t key = node_key(x, z, 0, 0);
+  const int jx = int(devils_engine::utils::mix(seed, key, 11) % 49) - 24;
+  const int jz = int(devils_engine::utils::mix(seed, key, 29) % 49) - 24;
+  const int jy = (int(devils_engine::utils::mix(seed, key, 37) % 3) - 1) * 8;
+  const double px = double(x * sector_size + sector_size / 2 + jx);
+  const double pz = double(z * sector_size + sector_size / 2 + jz);
+  return {px, layer_height(seed, px, pz) + double(jy), pz};
+}
+
+
+
+
 // Ребро остаётся одним топологическим соединением. Ширина меняется вдоль него, а
 // две смещённые полости дают асимметричные залы без дополнительных узлов графа.
 // Всё, что не зависит от точки, считается один раз на область.
@@ -142,8 +154,9 @@ edge_shape shape_edge(const adventure& world, const node& from, const node& to) 
   out.core_radius = world.clearance_radius + surface_guard;
   const point middle = scale(add(from.centre, to.centre), 0.5);
   const cave_biome biome = biome_at(world.seed, middle);
+  // Rift — высокие ущелья, chimney — узкие высокие колодцы.
   out.vertical_gain = biome == cave_biome::karst ? 0.0 :
-                      biome == cave_biome::rift ? 4.5 : 8.0;
+                      biome == cave_biome::rift ? 14.0 : 22.0;
   out.biome_width = biome == cave_biome::chimney ? 0.82 : 1.0;
 
   const uint64_t first = std::min(from.key, to.key), second = std::max(from.key, to.key);
@@ -155,10 +168,12 @@ edge_shape shape_edge(const adventure& world, const node& from, const node& to) 
   out.up = cross(out.right, out.axis);
   out.first_t = 0.25 + 0.12 * random01(world.seed, key, 2);
   out.second_t = 0.65 + 0.12 * random01(world.seed, key, 3);
-  out.base_width = out.constriction ? 5.7 : 9.0 + 2.0 * random01(world.seed, key, 4);
+  // Сужение всё ещё шире капсулы лодки с запасом на шум, иначе ядро проступало бы
+  // в нём гладким цилиндром.
+  out.base_width = out.constriction ? 7.4 : 9.0 + 2.0 * random01(world.seed, key, 4);
   out.first_width = 3.0 + 2.0 * random01(world.seed, key, 5);
   out.second_width = 3.0 + 2.0 * random01(world.seed, key, 6);
-  out.base_roof = out.constriction ? 5.3 : 7.5 + 1.5 * random01(world.seed, key, 7);
+  out.base_roof = out.constriction ? 7.2 : 7.5 + 1.5 * random01(world.seed, key, 7);
   for (uint64_t i = 0; i < 2; ++i) {
     const double place = i == 0 ? out.first_t : out.second_t;
     const double shift = (i == 0 ? 1.0 : -1.0) *
@@ -172,6 +187,20 @@ edge_shape shape_edge(const adventure& world, const node& from, const node& to) 
     lobe.lateral = 10.0 + 3.0 * random01(world.seed, key, 16 + i);
     lobe.vertical = 7.0 + 2.0 * random01(world.seed, key, 18 + i) + out.vertical_gain * 0.8;
   }
+  // Дальность от ядра, за которой поле ребра заведомо больше фоновой скалы.
+  // Эллипсы галереи и полостей недооценивают расстояние: отрицательная и малая
+  // часть лежит внутри (k - 1) * min_radius < 3.46 + шум, т.е. k < 1 + 4.7 / min.
+  const double width = out.base_width + out.first_width + out.second_width;
+  const double roof = out.base_roof + 4.5 + out.vertical_gain;
+  const double gallery_min = std::min(out.base_width * out.biome_width, out.base_roof);
+  double extent = std::max(width, roof) * (1.0 + 4.7 / gallery_min);
+  for (const edge_shape::lobe& lobe : out.lobes) {
+    const point offset = subtract(lobe.centre, add(out.a, scale(out.axis,
+      dot(subtract(lobe.centre, out.a), out.axis))));
+    extent = std::max(extent, length(offset) +
+      std::max({lobe.axial, lobe.lateral, lobe.vertical}) * (1.0 + 4.7 / 7.0));
+  }
+  out.reach = std::max(24.0, extent + 1.0);
   return out;
 }
 
@@ -179,7 +208,7 @@ namespace {
 
 double cave_edge_field(const edge_shape& shape, const point position, const double wall_noise) {
   const double core = segment_distance(position, shape.a, shape.b) - shape.core_radius;
-  if (core > 24.0) return core;
+  if (core > shape.reach) return core;
   const double along = dot(subtract(position, shape.a), shape.axis);
   const double t = std::clamp(along / shape.distance, 0.0, 1.0);
   const point nearest = add(shape.a, scale(shape.axis, std::clamp(along, 0.0, shape.distance)));
@@ -301,20 +330,36 @@ graph generate_graph(const uint64_t seed, const graph::window area) {
     return id;
   };
   const auto connect = [&](const uint32_t a, const uint32_t b) { out.edges.push_back({a, b}); };
+  // Залы уровня регионов читаются раньше графа: сектор, чья база попала бы в зал,
+  // вместо базы получает пустой узел внутри зала, и маршруты соседей входят в зал.
+  const std::vector<hall> halls = halls_near(seed, area);
+  const auto in_any_hall = [&](const point p) {
+    return std::any_of(halls.begin(), halls.end(), [&](const hall& h) { return inside_hall(h, p); });
+  };
   // База в каждом секторе. Координаты и темы зависят от абсолютного адреса сектора,
   // поэтому один и тот же участок совпадает в разных окнах запроса.
   for (int z = area.min_z; z < area.max_z; ++z) {
     for (int x = area.min_x; x < area.max_x; ++x) {
       const uint64_t key = node_key(x, z, 0, 0);
-      const point position = base_position(seed, x, z);
       const uint8_t rank = uint8_t((x > area.min_x) + (x + 1 < area.max_x) +
                                    (z > area.min_z) + (z + 1 < area.max_z));
+      if (const hall* owner = hall_owning_sector(halls, seed, x, z)) {
+        const point base = base_position(seed, x, z);
+        append(hall_node_position(*owner, seed, base.x, base.z), theme::empty, rank, key);
+        continue;
+      }
       const theme kind = devils_engine::utils::mix(seed, key, 41) % 2 == 0
         ? theme::outpost : theme::derelict;
-      append(position, kind, rank, key);
+      append(base_position(seed, x, z), kind, rank, key);
     }
   }
+  // Вход и цель — первая и последняя база окна: сектор зала базы не имеет.
   out.destination = base_id(area.max_x - 1, area.max_z - 1);
+  for (uint32_t i = 0; i < out.nodes.size(); ++i) {
+    if (!is_base(out.nodes[i].kind)) continue;
+    if (!is_base(out.nodes[out.entry].kind)) out.entry = i;
+    out.destination = i;
+  }
 
   const auto route = [&](const int x, const int z, const uint32_t direction) {
     const uint32_t from = base_id(x, z);
@@ -352,8 +397,11 @@ graph generate_graph(const uint64_t seed, const graph::window area) {
     second.y = b.y + (a.y - b.y) * (1.0 - second_t) -
                sign * (6.0 + 4.0 * random01(seed, key, 106));
     const uint32_t landmark_step = direction == 1 ? 3 : 2;
-    const theme landmark = devils_engine::utils::mix(seed, key, 107) % 2 == 0
-      ? theme::grotto : theme::vent;
+    // Малое природное место внутри зала не имело бы стен, а на маршруте к узлу
+    // зала оно не лежало бы между двумя базами — там узел пустой.
+    const bool hall_route = !is_base(out.nodes[from].kind) || !is_base(out.nodes[to].kind);
+    const theme landmark = hall_route || in_any_hall(second) ? theme::empty :
+      devils_engine::utils::mix(seed, key, 107) % 2 == 0 ? theme::grotto : theme::vent;
     const uint32_t second_id = append(second, landmark, 2,
                                        node_key(x, z, direction, landmark_step));
     connect(previous, second_id);
@@ -379,7 +427,7 @@ graph generate_graph(const uint64_t seed, const graph::window area) {
       point position = add(first, scale(sideways, branch_sign * (12.0 + 13.0 * double(step))));
       position = add(position, scale(delta, (step % 2 ? 1.0 : -1.0) * 0.05));
       position.y = std::clamp(first.y + (step % 2 ? 5.0 : -4.0),
-                              double(settled_y_min + 6), double(settled_y_max - 6));
+                              double(world_y_min + 20), double(world_y_max - 20));
       const uint32_t id = append(position, theme::empty,
                                  uint8_t(step == branch_length ? 1 : 2),
                                  node_key(x, z, direction, 10, step));
@@ -392,6 +440,23 @@ graph generate_graph(const uint64_t seed, const graph::window area) {
       if (x + 1 < area.max_x) route(x, z, 1);
       if (z + 1 < area.max_z) route(x, z, 2);
     }
+  }
+  // Узел зала в угловом секторе (ранг 2), перенесённый внутрь зала, может лечь на
+  // хорду между соседями — сдвигаем его поперёк хорды, оставаясь в зале.
+  const uint32_t sectors = uint32_t(columns * (area.max_z - area.min_z));
+  for (uint32_t i = 0; i < sectors; ++i) {
+    if (out.nodes[i].kind != theme::empty || out.nodes[i].rank != 2) continue;
+    std::array<uint32_t, 2> around{};
+    uint32_t found = 0;
+    for (const edge link : out.edges) {
+      if (found < 2 && (link.a == i || link.b == i)) around[found++] = link.a == i ? link.b : link.a;
+    }
+    const point a = out.nodes[around[0]].centre, b = out.nodes[around[1]].centre;
+    if (found != 2 || segment_distance(out.nodes[i].centre, a, b) >= 4.0) continue;
+    const point chord = subtract(b, a);
+    const double run = std::hypot(chord.x, chord.z);
+    const point across = run > 1e-6 ? point{-chord.z / run, 0, chord.x / run} : point{1, 0, 0};
+    out.nodes[i].centre = add(out.nodes[i].centre, scale(across, 6.0));
   }
   return out;
 }
@@ -508,8 +573,8 @@ adventure canonical_context(const uint64_t seed, const point centre,
                             const double clearance_radius) {
   const int sx = int(std::floor(centre.x / sector_size));
   const int sz = int(std::floor(centre.z / sector_size));
-  return {seed, generate_graph(seed, {sx - 1, sz - 1, sx + 2, sz + 2}),
-          clearance_radius, {}, {}, {}, {}};
+  const graph::window area{sx - 1, sz - 1, sx + 2, sz + 2};
+  return {seed, generate_graph(seed, area), clearance_radius, {}, {}, {}, halls_near(seed, area)};
 }
 
 namespace {
@@ -567,24 +632,6 @@ void choose_outpost(adventure& context, const uint32_t id) {
   context.outpost_glazing[id] = finish.glazed;
 }
 
-std::vector<hall> halls_near(const uint64_t seed, const graph::window area,
-                             const double clearance_radius) {
-  // Самый длинный зал с запасом на рельеф: дальше этого его поле — фоновая скала.
-  constexpr double reach = 480.0;
-  const auto region = [](const double metres) {
-    return int(std::floor(metres / double(region_size)));
-  };
-  std::vector<hall> out;
-  for (int rz = region(area.min_z * double(sector_size) - reach);
-       rz <= region(area.max_z * double(sector_size) + reach); ++rz) {
-    for (int rx = region(area.min_x * double(sector_size) - reach);
-         rx <= region(area.max_x * double(sector_size) + reach); ++rx) {
-      for (hall& h : region_halls(seed, rx, rz, clearance_radius)) out.push_back(std::move(h));
-    }
-  }
-  return out;
-}
-
 } // namespace
 
 local_structure canonical_outpost(const uint64_t seed, const node& at,
@@ -618,7 +665,7 @@ adventure generate(const uint64_t seed, const graph::window area, const double c
   world.outpost_layout = std::move(chosen);
   world.outpost_breach = std::move(breach);
   world.outpost_glazing = std::move(glazing);
-  world.halls = halls_near(seed, area, clearance_radius);
+  world.halls = halls_near(seed, area);
   return world;
 }
 
@@ -640,8 +687,11 @@ namespace {
 // Ребро влияет на поле не дальше 24 м от ядра (ранний выход cave_edge_field) и
 // 24 м от оси маршрута (ворота кармана); дальше его слагаемые больше фоновой скалы.
 constexpr double edge_reach = 24.0;
-// Самая большая сфера узла (полость базы) плюс фон скалы 3.46 с запасом.
-constexpr double node_reach = base_cavern_radius + 4.5;
+// Неровность ядер наружу: капсула лодки до +2 * core_relief, сфера узла до +2 * node_relief.
+constexpr double core_relief = 1.5;
+constexpr double node_relief = 2.5;
+// Самая большая сфера узла (полость базы) с неровностью плюс фон скалы 3.46 с запасом.
+constexpr double node_reach = base_cavern_radius + 2.0 * node_relief + 4.5;
 // Совпадают с проверками в точке ниже: вне куба место и база не считаются вовсе.
 constexpr double site_reach = 36.0;
 constexpr double base_reach = 65.0;
@@ -665,14 +715,15 @@ double node_radius(const adventure& world, const node& at) {
 field_region prepare_field(const adventure& world, const point low, const point high,
                            const bool with_structures) {
   field_region region{&world, low, high, {}, {}, {}, {}, {}, {}, {}, {}};
-  const double core_reach = edge_reach + world.clearance_radius + surface_guard + 1.0;
   for (uint32_t i = 0; i < world.route.edges.size(); ++i) {
     const node& a = world.route.nodes[world.route.edges[i].a];
     const node& b = world.route.nodes[world.route.edges[i].b];
-    if (!overlaps(low, high, port_position(a, b), port_position(b, a), core_reach) &&
+    edge_shape shape = shape_edge(world, a, b);
+    const double core_reach = shape.reach + shape.core_radius + 1.0;
+    if (!overlaps(low, high, shape.a, shape.b, core_reach) &&
         !overlaps(low, high, a.centre, b.centre, edge_reach + 1.0)) continue;
     region.edges.push_back(i);
-    region.shapes.push_back(shape_edge(world, a, b));
+    region.shapes.push_back(std::move(shape));
     region.pockets.push_back(materialize_edge_pocket(world.seed, a, b));
   }
   for (uint32_t i = 0; i < world.halls.size(); ++i) {
@@ -715,8 +766,11 @@ double cave_density(const field_region& region, const point position) {
     field = std::min(field, cave_edge_field(region.shapes[i], position, wall_noise));
     // Сметённый объём капсульного корпуса при поступательном движении по ребру.
     // Участки корпуса за концами ребра попадают в поворотные сферы узлов.
+    // Гарантия не меньше точной капсулы; неровность только расширяет её наружу,
+    // чтобы ядро не проступало в галерее идеальным цилиндром.
     const double route_distance = segment_distance(position, a.centre, b.centre);
-    field = std::min(field, route_distance - starter_sub_path_radius);
+    field = std::min(field, route_distance - starter_sub_path_radius -
+                            core_relief * (1.0 - broad));
     if (route_distance <= edge_reach) {
       if (const auto& pocket = region.pockets[i]) {
         const double connector = segment_distance(position, pocket->mouth,
@@ -731,7 +785,8 @@ double cave_density(const field_region& region, const point position) {
   for (const uint32_t id : region.nodes) {
     // В сфере помещается корпус при ЛЮБОЙ ориентации вокруг центра узла.
     const node& at = world.route.nodes[id];
-    field = std::min(field, length(subtract(position, at.centre)) - node_radius(world, at));
+    field = std::min(field, length(subtract(position, at.centre)) - node_radius(world, at) -
+                            node_relief * (1.0 - broad));
   }
   for (const site& local : region.sites) {
     if (std::abs(position.x - local.centre.x) > site_reach ||
@@ -813,8 +868,8 @@ verification verify(const adventure& world) {
   if (route.nodes.size() < 8 || route.entry >= route.nodes.size() ||
       route.destination >= route.nodes.size()) return {false, "invalid graph size or endpoints"};
   for (const node& at : route.nodes) {
-    if (at.centre.y < settled_y_min + starter_sub_turn_radius ||
-        at.centre.y > settled_y_max - starter_sub_turn_radius) {
+    if (at.centre.y < world_y_min + starter_sub_turn_radius ||
+        at.centre.y > world_y_max - starter_sub_turn_radius) {
       return {false, "node exceeds finite Y submarine turning clearance"};
     }
   }
@@ -987,8 +1042,10 @@ verification verify(const adventure& world) {
       }
     }
   }
-  if (base_ids.size() < 2 || !is_base(route.nodes[route.entry].kind) ||
-      !is_base(route.nodes[route.destination].kind)) return {false, "missing base endpoints"};
+  // Окно может почти целиком лежать в зале; тогда баз меньше двух, но если они
+  // есть, вход и цель обязаны быть базами.
+  if (!base_ids.empty() && (!is_base(route.nodes[route.entry].kind) ||
+      !is_base(route.nodes[route.destination].kind))) return {false, "missing base endpoints"};
 
   // Неключевое место должно лежать хотя бы на одном кратчайшем пути МЕЖДУ двумя базами.
   // Его наличие само по себе не оправдывает длинный путь туда и обратно.
@@ -1191,13 +1248,17 @@ verification verify(const adventure& world) {
   }
   // Залы — чистая функция региона: каждый обязан совпасть со своим пересчётом
   // и пройти независимую проверку формы, горловины и коридора.
+  const point window_low{double(route.area.min_x * sector_size), double(world_y_min),
+                         double(route.area.min_z * sector_size)};
+  const point window_high{double(route.area.max_x * sector_size), double(world_y_max),
+                          double(route.area.max_z * sector_size)};
   for (const hall& h : world.halls) {
-    const std::vector<hall> again = region_halls(world.seed, h.region_x, h.region_z,
-                                                 world.clearance_radius);
+    if (!hall_reaches(h, window_low, window_high)) continue;
+    const std::vector<hall> again = region_halls(world.seed, h.region_x, h.region_z);
     const bool same = std::any_of(again.begin(), again.end(), [&](const hall& other) {
       return other.key == h.key && other.centre.x == h.centre.x &&
              other.centre.y == h.centre.y && other.centre.z == h.centre.z &&
-             other.throat_node == h.throat_node && other.pillars.size() == h.pillars.size();
+             other.pillars.size() == h.pillars.size() && other.niches.size() == h.niches.size();
     });
     if (!same) return {false, "hall differs from its region"};
     const std::string cause = verify_hall(world.seed, h, world.clearance_radius);

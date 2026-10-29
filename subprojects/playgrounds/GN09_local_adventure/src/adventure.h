@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gn09 {
@@ -89,9 +90,11 @@ struct edge_pocket {
 std::optional<edge_pocket> materialize_edge_pocket(uint64_t seed,
                                                     const node& a, const node& b);
 
-// Большой зал регионального уровня. Он не ребро графа: это объём пещеры со своим
-// гарантированным коридором для крупных существ и одной горловиной в обжитой слой.
-// Координаты зала локальные: u вдоль forward, y вверх, v вправо.
+// Большой зал регионального уровня. Он не ребро графа, а объём пещеры на высоте
+// слоя: сектора, чья база попала бы в зал, получают вместо базы узел внутри зала,
+// и обычные маршруты соседей входят в него через стены. В зале есть гарантированный
+// коридор для крупных существ и укрытия у стен. Координаты зала локальные: u вдоль
+// forward, y вверх, v вправо.
 enum class hall_kind : uint8_t { pillared, lair };
 const char* name(hall_kind value);
 
@@ -104,6 +107,15 @@ struct hall_ledge {
   point half;
 };
 
+// Укрытие: ниша с коленом. Вход идёт по нормали в стену, в колене помещается
+// поворот лодки, дальше отвод вдоль стены — его дно с коридора существ закрыто
+// скалой. У части ниш над входом навес.
+struct hall_niche {
+  point mouth, elbow, end; // локальные точки оси
+  double radius = 0;
+  bool overhang = false;
+};
+
 struct hall {
   uint64_t key = 0;
   int region_x = 0, region_z = 0;
@@ -114,12 +126,9 @@ struct hall {
   double floor = 0; // локальная высота плоского дна
   std::vector<hall_pillar> pillars;
   std::vector<hall_ledge> ledges;
+  std::vector<hall_niche> niches;
   // Коридор существ: капсула вдоль u на высоте core_y, |u| <= core_half.
   double core_radius = 0, core_y = 0, core_half = 0;
-  // Горловина: вертикальная шахта от пустого узла обжитого графа до зала.
-  uint64_t throat_node = 0;
-  point throat_top, throat_end;
-  double throat_radius = 0;
 };
 
 struct adventure {
@@ -138,12 +147,10 @@ struct adventure {
 };
 
 inline constexpr int sector_size = 96;
-// Полная высота мира. Граф баз и галерей занимает только обжитой слой
-// settled_y_*; выше и ниже лежат большие залы региона.
+// Полная высота мира. Граф баз и галерей идёт по рельефу слоя layer_height,
+// который поднимается и опускается на сотни метров.
 inline constexpr int world_y_min = -500;
 inline constexpr int world_y_max = 500;
-inline constexpr int settled_y_min = -40;
-inline constexpr int settled_y_max = 40;
 inline constexpr double surface_guard = 2.0; // > диагонали клетки 1 м: √3
 inline constexpr double starter_sub_length = 17.0; // временный масштаб, нос–корма
 inline constexpr double starter_sub_beam = 6.0;   // временный максимальный поперечник
@@ -176,12 +183,24 @@ adventure generate_for_view(uint64_t seed, point observer, double visibility,
 
 // Небольшой 3D value noise в [-1,1]; ключ — мировой узел решётки.
 double value_noise(uint64_t seed, point p, double period);
+// Высота пещерной сети над точкой X/Z: крупный рельеф слоя, |h| <= 320 м. Базы,
+// узлы маршрутов и залы ставятся относительно него.
+double layer_height(uint64_t seed, double x, double z);
+// Положение базы сектора: дрожание по X/Z и высота слоя.
+point base_position(uint64_t seed, int x, int z);
 
 // Залы одного региона: форма, коридор существ и горловина в обжитой граф.
-// sealed (если задан) получает число залов, отброшенных без безопасной горловины.
-std::vector<hall> region_halls(uint64_t seed, int region_x, int region_z,
-                               double clearance_radius, uint32_t* sealed = nullptr);
-// Поле зала вместе с коридором и горловиной (без природных галерей вокруг).
+// Залы одного региона — чистая функция seed и координат региона.
+std::vector<hall> region_halls(uint64_t seed, int region_x, int region_z);
+// Залы всех регионов, чьё поле может дотянуться до окна секторов.
+std::vector<hall> halls_near(uint64_t seed, graph::window area);
+// Зал, которому принадлежит сектор (его база попала бы в зал), или nullptr.
+const hall* hall_owning_sector(const std::vector<hall>& halls, uint64_t seed, int x, int z);
+// Узел маршрута сектора внутри зала: на высоте слоя, в стороне от колонн.
+point hall_node_position(const hall& h, uint64_t seed, double x, double z);
+// Точка лежит внутри номинального эллипсоида зала (без рельефа) и выше дна.
+bool inside_hall(const hall& h, point position);
+// Поле зала вместе с коридором и нишами (без природных галерей вокруг).
 double hall_field(uint64_t seed, const hall& h, point position);
 // Может ли поле зала в области [low,high] опуститься ниже фоновой скалы.
 bool hall_reaches(const hall& h, point low, point high);
@@ -190,7 +209,10 @@ bool hall_reaches(const hall& h, point low, point high);
 bool hall_contains_air(const hall& h, point low, point high);
 // Дальность по вертикали, ниже которой поле зала может быть меньше фоновой скалы.
 double hall_vertical_reach(const hall& h);
-// Независимая проверка зала: отделение от обжитого слоя, горловина, коридор.
+// Входы маршрута: рёбра графа, у которых один конец внутри зала, другой снаружи
+// (концы {снаружи, внутри}). Граф строится по окну, накрывающему зал.
+std::vector<std::pair<point, point>> hall_entrances(uint64_t seed, const hall& h);
+// Независимая проверка зала: высота мира, входы маршрута, коридор, ниши-укрытия.
 std::string verify_hall(uint64_t seed, const hall& h, double clearance_radius);
 
 // Положительное поле — скала, отрицательное — свободное пространство.

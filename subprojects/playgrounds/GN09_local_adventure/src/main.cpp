@@ -174,8 +174,8 @@ void report(const gn09::adventure& world, const gn09::verification& result) {
               << h.region_z << " at (" << h.centre.x << ',' << h.centre.y << ',' << h.centre.z
               << ") half=" << h.half_length << 'x' << h.half_width << 'x' << h.half_height
               << " m, pillars=" << h.pillars.size() << ", ledges=" << h.ledges.size()
-              << ", creature corridor r=" << h.core_radius << " m, throat r="
-              << h.throat_radius << " m from y=" << h.throat_top.y << " to y=" << h.throat_end.y
+              << ", creature corridor r=" << h.core_radius << " m, niches=" << h.niches.size()
+              << ", route entrances=" << gn09::hall_entrances(world.seed, h).size()
               << '\n';
   }
   std::cout << "field: " << result.checked_samples << " checked 3D profile samples, "
@@ -305,8 +305,9 @@ int main(const int argc, char** argv) {
   if (opt.verify) {
     uint64_t total_rooms = 0;
     uint64_t total_wide_percent = 0;
-    uint32_t halls = 0, lairs = 0, stacked = 0, sealed = 0, pillars = 0;
-    double longest_throat = 0.0;
+    uint32_t halls = 0, lairs = 0, stacked = 0, pillars = 0, niches = 0, overhangs = 0;
+    size_t fewest_entrances = SIZE_MAX, most_entrances = 0;
+    double lowest_node = 1e30, highest_node = -1e30, steepest = 0.0;
     uint32_t least_wide_percent = 100;
     for (uint32_t i = 0; i < opt.seeds; ++i) {
       const gn09::adventure world = gn09::generate(opt.seed + i, {}, opt.radius);
@@ -317,13 +318,26 @@ int main(const int argc, char** argv) {
       }
       total_rooms += result.total_rooms;
       // Залы одного «своего» региона на seed: по нему ведётся статистика уровня.
-      const std::vector<gn09::hall> own = gn09::region_halls(world.seed, 0, 0, opt.radius, &sealed);
+      const std::vector<gn09::hall> own = gn09::region_halls(world.seed, 0, 0);
       halls += uint32_t(own.size());
       stacked += own.size() == 2;
       for (const gn09::hall& h : own) {
         lairs += h.kind == gn09::hall_kind::lair;
         pillars += uint32_t(h.pillars.size());
-        longest_throat = std::max(longest_throat, std::abs(h.throat_top.y - h.throat_end.y));
+        niches += uint32_t(h.niches.size());
+        for (const gn09::hall_niche& niche : h.niches) overhangs += niche.overhang;
+        const size_t entrances = gn09::hall_entrances(world.seed, h).size();
+        fewest_entrances = std::min(fewest_entrances, entrances);
+        most_entrances = std::max(most_entrances, entrances);
+      }
+      for (const gn09::node& at : world.route.nodes) {
+        lowest_node = std::min(lowest_node, at.centre.y);
+        highest_node = std::max(highest_node, at.centre.y);
+      }
+      for (const gn09::edge link : world.route.edges) {
+        const gn09::point a = world.route.nodes[link.a].centre, b = world.route.nodes[link.b].centre;
+        const double run = std::hypot(a.x - b.x, a.z - b.z);
+        if (run > 1.0) steepest = std::max(steepest, std::abs(a.y - b.y) / run);
       }
       total_wide_percent += result.wide_route_percent;
       least_wide_percent = std::min(least_wide_percent, result.wide_route_percent);
@@ -331,8 +345,21 @@ int main(const int argc, char** argv) {
     // Проверяем сами сторожа: место на конце ветки и ветка >5 должны быть отвергнуты
     // при сохранении корректных степеней и связности графа.
     const gn09::adventure reference = gn09::generate(opt.seed, {}, opt.radius);
-    const gn09::adventure examples = gn09::generate(0, {}, opt.radius);
-    const gn09::adventure other_recipes = gn09::generate(1, {}, opt.radius);
+    // Окна примеров 4x4 сектора: часть секторов занимают залы, и в 2x2 баз мало.
+    // Пример — первый seed, у которого в окне есть все три позы стыковки.
+    const gn09::adventure examples = [&] {
+      for (uint64_t seed = 0;; ++seed) {
+        gn09::adventure candidate = gn09::generate(seed, {0, 0, 4, 4}, opt.radius);
+        std::array<bool, 3> faces{};
+        for (const gn09::node& at : candidate.route.nodes) {
+          if (gn09::is_base(at.kind)) {
+            faces[gn09::materialize_local_structure(candidate, at.id).dock_axis + 1] = true;
+          }
+        }
+        if (seed == 64 || std::find(faces.begin(), faces.end(), false) == faces.end()) return candidate;
+      }
+    }();
+    const gn09::adventure other_recipes = gn09::generate(1, {0, 0, 4, 4}, opt.radius);
     std::array<bool, 6> seen_recipes{};
     for (const gn09::adventure* sample : {&examples, &other_recipes}) {
       for (const gn09::node& at : sample->route.nodes) {
@@ -347,7 +374,7 @@ int main(const int argc, char** argv) {
     }
     uint32_t example_pockets = 0;
     for (const gn09::edge link : examples.route.edges) {
-      example_pockets += gn09::materialize_edge_pocket(0,
+      example_pockets += gn09::materialize_edge_pocket(examples.seed,
         examples.route.nodes[link.a], examples.route.nodes[link.b]).has_value();
     }
     if (example_pockets == 0 || example_pockets >= examples.route.edges.size()) {
@@ -361,7 +388,7 @@ int main(const int argc, char** argv) {
       seen_faces[structure.dock_axis + 1] = true;
     }
     if (std::find(seen_faces.begin(), seen_faces.end(), false) != seen_faces.end()) {
-      std::cerr << "seed-0 examples do not contain side, upper and lower docking faces\n";
+      std::cerr << "no example window within 64 seeds contains side, upper and lower docking faces\n";
       return 1;
     }
     std::array<bool, 3> seen_biomes{};
@@ -497,7 +524,7 @@ int main(const int argc, char** argv) {
       return 1;
     }
     gn09::adventure clipped_turn = reference;
-    clipped_turn.route.nodes[clipped_turn.route.entry].centre.y = gn09::settled_y_max - 1.0;
+    clipped_turn.route.nodes[clipped_turn.route.entry].centre.y = gn09::world_y_max - 1.0;
     if (gn09::verify(clipped_turn).cause != "node exceeds finite Y submarine turning clearance") {
       std::cerr << "self-check missed a clipped submarine turning space\n";
       return 1;
@@ -506,18 +533,49 @@ int main(const int argc, char** argv) {
       std::cerr << "self-check window has no hall\n";
       return 1;
     }
-    gn09::hall raised = reference.halls.front();
-    raised.centre.y = raised.centre.y < 0.0 ? gn09::settled_y_min - 10.0 : gn09::settled_y_max + 10.0;
-    if (gn09::verify_hall(reference.seed, raised, opt.radius) != "hall cuts into the settled layer") {
-      std::cerr << "self-check missed a hall cutting into the settled layer\n";
+    const gn09::hall& sample_hall = *std::max_element(reference.halls.begin(), reference.halls.end(),
+      [](const gn09::hall& a, const gn09::hall& b) { return a.niches.size() < b.niches.size(); });
+    gn09::hall out_of_world = sample_hall;
+    out_of_world.centre.y = gn09::world_y_max - 10.0;
+    if (gn09::verify_hall(reference.seed, out_of_world, opt.radius) !=
+        "hall exceeds the finite world height") {
+      std::cerr << "self-check missed a hall outside the world height\n";
       return 1;
     }
-    gn09::hall short_throat = reference.halls.front();
-    short_throat.throat_end.y = short_throat.throat_top.y +
-      (short_throat.throat_end.y > short_throat.throat_top.y ? 60.0 : -60.0);
-    if (gn09::verify_hall(reference.seed, short_throat, opt.radius) !=
-        "hall throat does not open into the hall") {
-      std::cerr << "self-check missed a hall throat ending in rock\n";
+    // Зал, поднятый над слоем, перестаёт быть частью маршрута.
+    gn09::hall detached = sample_hall;
+    const double lift = 2.0 * detached.half_height + 120.0;
+    detached.centre.y += detached.centre.y + lift + 200.0 < gn09::world_y_max ? lift : -lift;
+    if (gn09::verify_hall(reference.seed, detached, opt.radius) !=
+        "hall has fewer than two route entrances") {
+      std::cerr << "self-check missed a hall detached from the route\n";
+      return 1;
+    }
+    // Ниша, повёрнутая прямо в стену по нормали, видна с коридора существ.
+    if (sample_hall.niches.empty()) {
+      std::cerr << "self-check hall has no niches\n";
+      return 1;
+    }
+    gn09::hall exposed = sample_hall;
+    // Ниша, продолжающая луч от станции коридора через вход: дно видно по оси.
+    gn09::hall_niche& niche = exposed.niches.front();
+    const uint32_t stations = uint32_t(std::ceil(2.0 * exposed.core_half / 25.0));
+    double station_u = -exposed.core_half, best = 1e30;
+    for (uint32_t i = 0; i <= stations; ++i) {
+      const double u = -exposed.core_half + 2.0 * exposed.core_half * double(i) / double(stations);
+      if (std::abs(u - niche.mouth.x) < best) { best = std::abs(u - niche.mouth.x); station_u = u; }
+    }
+    const gn09::point ray{niche.mouth.x - station_u, niche.mouth.y - exposed.core_y, niche.mouth.z};
+    const double ray_length = std::sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
+    const auto along = [&](const double t) {
+      return gn09::point{niche.mouth.x + ray.x / ray_length * t, niche.mouth.y + ray.y / ray_length * t,
+                         niche.mouth.z + ray.z / ray_length * t};
+    };
+    niche.elbow = along(30.0);
+    niche.end = along(55.0);
+    if (gn09::verify_hall(reference.seed, exposed, opt.radius) !=
+        "hall niche is visible from the creature corridor") {
+      std::cerr << "self-check missed a niche visible from the creature corridor\n";
       return 1;
     }
     for (const double extreme : {0.5, 3.0}) {
@@ -720,7 +778,7 @@ int main(const int argc, char** argv) {
       for (const gn09::hall& b : shifted.halls) {
         if (a.key == b.key && shared_hall == nullptr) {
           if (a.centre.x != b.centre.x || a.centre.y != b.centre.y || a.centre.z != b.centre.z ||
-              a.throat_node != b.throat_node || a.pillars.size() != b.pillars.size()) {
+              a.niches.size() != b.niches.size() || a.pillars.size() != b.pillars.size()) {
             std::cerr << "overlapping graph windows disagree about a hall\n";
             return 1;
           }
@@ -744,8 +802,11 @@ int main(const int argc, char** argv) {
     }
     std::cout << "GN09 halls: " << halls << " in region 0,0 over " << opt.seeds << " seeds ("
               << lairs << " lairs, " << halls - lairs << " pillared with " << pillars
-              << " pillars, " << stacked << " regions with two halls, " << sealed
-              << " dropped without a safe throat), longest throat " << longest_throat << " m\n";
+              << " pillars, " << stacked << " regions with two halls; " << niches
+              << " hidden niches, " << overhangs << " under an overhang; route entrances "
+              << fewest_entrances << ".." << most_entrances << " per hall)\n"
+              << "GN09 relief: graph nodes from y=" << lowest_node << " to y=" << highest_node
+              << ", steepest edge rise/run " << steepest << '\n';
     std::cout << "GN09 verified " << opt.seeds << " seeds, " << total_rooms
               << " reachable rooms; wide route min=" << least_wide_percent
               << "% mean=" << (total_wide_percent / opt.seeds)
@@ -754,7 +815,7 @@ int main(const int argc, char** argv) {
                  "vertical routes, dead ends <=5, "
                  "3D profiles, overlapping windows and chunk/surface seams agree ("
               << surface.shared_vertices << " cave + " << station_surface.shared_vertices
-              << " outpost shared surface vertices); sixteen corruptions refused\n";
+              << " outpost shared surface vertices); seventeen corruptions refused\n";
     return 0;
   }
 

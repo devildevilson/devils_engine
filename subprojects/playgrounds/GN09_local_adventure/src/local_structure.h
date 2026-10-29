@@ -123,6 +123,7 @@ struct edge_shape {
   };
   point a, b, axis, right, up;
   double distance = 0, core_radius = 0;
+  double reach = 24; // за ядро + reach поле ребра больше фоновой скалы
   double vertical_gain = 0, biome_width = 1;
   double first_t = 0, second_t = 0;
   double base_width = 0, first_width = 0, second_width = 0, base_roof = 0;
