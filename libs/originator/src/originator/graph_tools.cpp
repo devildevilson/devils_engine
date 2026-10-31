@@ -5,6 +5,7 @@
 #include <queue>
 #include <vector>
 
+#include "devils_engine/originator/neighbourhood.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/core.h"
@@ -291,27 +292,10 @@ void tool_sphere_adjacency(const tool_call& call, const size_t begin, const size
 // одним инструментом решаются две разные задачи: сглаживание рельефа (себя больше) и диффузия
 // величины по поверхности (соседей больше).
 void tool_graph_blur(const tool_call& call, const size_t begin, const size_t end) {
-  const auto offsets = call.input(0).read();
-  const auto arcs = call.input(1).read();
   const auto values = call.input(2).read();
-  auto target = call.output(0).write();
-
-  const double self_weight = call.params->number("self_weight", 1.0);
-  const double neighbour_weight = call.params->number("neighbour_weight", 1.0);
-
-  for (size_t i = begin; i < end; ++i) {
-    double sum = self_weight * values.get(i);
-    double weight = self_weight;
-
-    const auto first = size_t(offsets.get(i));
-    const auto last = size_t(offsets.get(i + 1));
-    for (size_t k = first; k < last; ++k) {
-      sum += neighbour_weight * values.get(size_t(arcs.get(k)));
-      weight += neighbour_weight;
-    }
-
-    target.set(i, weight > 0.0 ? sum / weight : values.get(i));
-  }
+  const csr_neighbourhood around{call.input(0).read(), call.input(1).read(), {}, values.count()};
+  blur_range(around, values, call.output(0).write(), begin, end, call.params->number("self_weight", 1.0),
+             call.params->number("neighbour_weight", 1.0));
 }
 
 // graph_flood: заливка от нескольких источников по графу.
@@ -330,95 +314,15 @@ void tool_graph_blur(const tool_call& call, const size_t begin, const size_t end
 // сразу, а на отрисовке границы. Непроходимая клетка не входит в очередь вовсе, поэтому область
 // связна по построению, а не по удачно подобранной цене.
 void tool_graph_flood(const tool_call& call, const size_t begin, const size_t end) {
-  const auto offsets = call.input(0).read();
-  const auto arcs = call.input(1).read();
-  const auto seeds = call.input(2).read();
-  const auto costs = call.input(3).read();
-  const auto passable = call.input(4).read();
-  auto label_out = call.output(0).write();
-  auto distance_out = call.output(1).write();
-
   if (begin != 0) {
     utils::error{}("originator step '{}': graph_flood walks the WHOLE graph, so its range must start at 0, "
                    "got [{}, {})", call.step_name, begin, end);
   }
-
   const size_t count = end > begin ? end - begin : 0;
-  const double unreached = call.params->number("unreached", -1.0);
-  const auto capacity = size_t(std::max<int64_t>(call.params->integer("capacity", 0), 0));
-
-  struct entry {
-    double distance = 0.0;
-    uint32_t label = 0;
-    uint32_t cell = 0;
-
-    // priority_queue отдаёт МАКСИМУМ, поэтому сравнение перевёрнуто: ближе — «больше».
-    bool operator<(const entry& other) const noexcept {
-      if (distance != other.distance) {
-        return distance > other.distance;
-      }
-      if (label != other.label) {
-        return label > other.label;
-      }
-      return cell > other.cell;
-    }
-  };
-
-  std::priority_queue<entry> queue;
-  std::vector<uint32_t> assigned(count, 0);
-  std::vector<uint32_t> used;
-
-  for (size_t i = begin; i < end; ++i) {
-    label_out.set(i, 0.0);
-    distance_out.set(i, unreached);
-
-    const auto seed = uint32_t(seeds.get(i));
-    if (seed != 0 && passable.get(i) != 0.0) {
-      queue.push(entry{0.0, seed, uint32_t(i)});
-      if (used.size() <= seed) {
-        used.resize(seed + 1, 0);
-      }
-    }
-  }
-
-  while (!queue.empty()) {
-    const entry current = queue.top();
-    queue.pop();
-
-    if (assigned[current.cell] != 0) {
-      continue;
-    }
-    if (used.size() <= current.label) {
-      used.resize(size_t(current.label) + 1, 0);
-    }
-    // Метка, выбравшая свой лимит, дальше не растёт — но клетка при этом НЕ занимается: её ещё
-    // может забрать другая метка, у которой лимит остался.
-    if (capacity != 0 && used[current.label] >= capacity) {
-      continue;
-    }
-
-    assigned[current.cell] = current.label;
-    used[current.label] += 1;
-    label_out.set(current.cell, double(current.label));
-    distance_out.set(current.cell, current.distance);
-
-    const auto first = size_t(offsets.get(current.cell));
-    const auto last = size_t(offsets.get(size_t(current.cell) + 1));
-    for (size_t k = first; k < last; ++k) {
-      const auto other = uint32_t(arcs.get(k));
-      if (other >= count || assigned[other] != 0 || passable.get(other) == 0.0) {
-        continue;
-      }
-      const double step = costs.get(other);
-      if (step < 0.0) {
-        // Отрицательная стоимость превращает заливку в бесконечный цикл, поэтому это ошибка данных,
-        // а не повод «взять по модулю».
-        utils::error{}("originator step '{}': graph_flood got a negative cost {} at cell {}",
-                       call.step_name, step, other);
-      }
-      queue.push(entry{current.distance + step, current.label, other});
-    }
-  }
+  const csr_neighbourhood around{call.input(0).read(), call.input(1).read(), {}, count};
+  flood_whole(around, call.input(2).read(), call.input(3).read(), call.input(4).read(), call.output(0).write(),
+              call.output(1).write(), count, call.params->number("unreached", -1.0),
+              size_t(std::max<int64_t>(call.params->integer("capacity", 0), 0)), call.step_name);
 }
 
 // graph_frontier: клетки, у которых есть сосед с ДРУГОЙ меткой.
@@ -428,34 +332,11 @@ void tool_graph_flood(const tool_call& call, const size_t begin, const size_t en
 // графа, а не картинки. Вместе с graph_flood отсюда же получается расстояние до границы: залить от
 // фронтира и прочитать distance.
 void tool_graph_frontier(const tool_call& call, const size_t begin, const size_t end) {
-  const auto offsets = call.input(0).read();
-  const auto arcs = call.input(1).read();
-  const auto labels = call.input(2).read();
-  auto target = call.output(0).write();
-
   // Метка, которая границей не считается (обычно 0 = «нет метки»): иначе берегом оказался бы и
   // стык двух безымянных клеток.
-  const double ignored = call.params->number("ignore", -1.0);
-
-  for (size_t i = begin; i < end; ++i) {
-    const double own = labels.get(i);
-    if (own == ignored) {
-      target.set(i, 0.0);
-      continue;
-    }
-
-    const auto first = size_t(offsets.get(i));
-    const auto last = size_t(offsets.get(i + 1));
-    double frontier = 0.0;
-    for (size_t k = first; k < last; ++k) {
-      const double other = labels.get(size_t(arcs.get(k)));
-      if (other != own && other != ignored) {
-        frontier = 1.0;
-        break;
-      }
-    }
-    target.set(i, frontier);
-  }
+  const auto labels = call.input(2).read();
+  const csr_neighbourhood around{call.input(0).read(), call.input(1).read(), {}, labels.count()};
+  frontier_range(around, labels, call.output(0).write(), begin, end, call.params->number("ignore", -1.0));
 }
 
 // poisson_seeds: выбор затравок, разнесённых не ближе min_distance.
@@ -561,30 +442,9 @@ void tool_poisson_seeds(const tool_call& call, const size_t begin, const size_t 
 // Величина выходит В ЕДИНИЦАХ ПОЛЯ НА ШАГ РЕШЁТКИ, то есть зависит от разрешения; приводить её к
 // расстоянию — дело вызывающего, который один и знает шаг своей решётки.
 void tool_graph_slope(const tool_call& call, const size_t begin, const size_t end) {
-  const auto offsets = call.input(0).read();
-  const auto arcs = call.input(1).read();
   const auto values = call.input(2).read();
-  auto target = call.output(0).write();
-
-  const size_t count = values.count();
-  for (size_t i = begin; i < end; ++i) {
-    const double own = values.get(i);
-    const auto first = size_t(offsets.get(i));
-    const auto last = size_t(offsets.get(i + 1));
-
-    double total = 0.0;
-    size_t taken = 0;
-    for (size_t k = first; k < last; ++k) {
-      const auto other = size_t(arcs.get(k));
-      if (other >= count) {
-        continue;
-      }
-      total += std::abs(values.get(other) - own);
-      ++taken;
-    }
-
-    target.set(i, taken == 0 ? 0.0 : total / double(taken));
-  }
+  const csr_neighbourhood around{call.input(0).read(), call.input(1).read(), {}, values.count()};
+  slope_range(around, values, call.output(0).write(), begin, end);
 }
 
 // lookup: значение из ДРУГОГО буфера по индексу, лежащему в поле.
@@ -607,9 +467,10 @@ void tool_lookup(const tool_call& call, const size_t begin, const size_t end) {
   const auto offset = call.params->integer("offset", 0);
   const double missing = call.params->number("missing", 0.0);
   const uint32_t components = std::min(target.type().components, source.type().components);
+  const bool wide = is_wide_integer(target.type().base) && is_wide_integer(source.type().base);
 
   for (size_t i = begin; i < end; ++i) {
-    const auto raw = int64_t(indices.get(i)) + offset;
+    const auto raw = int64_t(indices.get_integer(i)) + offset;
     if (raw < 0 || size_t(raw) >= source.count()) {
       for (uint32_t component = 0; component < target.type().components; ++component) {
         target.set(i, missing, component);
@@ -617,6 +478,13 @@ void tool_lookup(const tool_call& call, const size_t begin, const size_t end) {
       continue;
     }
 
+    // Между двумя 64-битными целыми родами значение идёт целым путём, иначе ключ потерял бы биты.
+    if (wide) {
+      for (uint32_t component = 0; component < components; ++component) {
+        target.set_integer(i, source.get_integer(size_t(raw), component), component);
+      }
+      continue;
+    }
     for (uint32_t component = 0; component < components; ++component) {
       target.set(i, source.get(size_t(raw), component), component);
     }
@@ -634,43 +502,12 @@ void tool_lookup(const tool_call& call, const size_t begin, const size_t end) {
 // Порядок между клетками не важен: клетка меняет только себя и читает соседей из ВХОДНОГО поля,
 // поэтому проход остаётся параллельным gather'ом, а «время» задаётся числом проходов из тела шага.
 void tool_graph_vote(const tool_call& call, const size_t begin, const size_t end) {
-  const auto offsets = call.input(0).read();
-  const auto arcs = call.input(1).read();
   const auto labels = call.input(2).read();
-  const auto weights = call.input(3).read();
-  const auto mask = call.input(4).read();
-  auto target = call.output(0).write();
-
-  const double threshold = call.params->number("threshold", 0.0);
-
-  for (size_t i = begin; i < end; ++i) {
-    const double own = labels.get(i);
-    if (own != 0.0 || mask.get(i) == 0.0) {
-      target.set(i, own);
-      continue;
-    }
-
-    double best_label = 0.0;
-    double best_weight = threshold;
-    const auto first = size_t(offsets.get(i));
-    const auto last = size_t(offsets.get(i + 1));
-    for (size_t k = first; k < last; ++k) {
-      const size_t other = size_t(arcs.get(k));
-      const double other_label = labels.get(other);
-      if (other_label == 0.0) {
-        continue;
-      }
-      const double weight = weights.get(other);
-      // Строгое «больше» плюс тай-брейк по меньшей метке: при равных весах результат обязан быть
-      // одним и тем же, а не зависеть от того, в каком порядке лежат дуги.
-      if (weight > best_weight || (weight == best_weight && best_label != 0.0 && other_label < best_label)) {
-        best_weight = weight;
-        best_label = other_label;
-      }
-    }
-
-    target.set(i, best_label);
-  }
+  const csr_neighbourhood around{call.input(0).read(), call.input(1).read(), {}, labels.count()};
+  // Строгое «больше» плюс тай-брейк по меньшей метке (ядро vote_range): при равных весах результат обязан
+  // быть одним и тем же, а не зависеть от того, в каком порядке лежат дуги.
+  vote_range(around, labels, call.input(3).read(), call.input(4).read(), call.output(0).write(), begin, end,
+             call.params->number("threshold", 0.0));
 }
 
 // connected_components: связные куски подграфа под маской.

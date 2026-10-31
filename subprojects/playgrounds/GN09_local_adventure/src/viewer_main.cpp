@@ -1,6 +1,10 @@
 #include "adventure.h"
 #include "local_structure.h"
 #include "surface.h"
+#include "station.h"
+#include "tunnel.h"
+#include "cave.h"
+#include "world_chain.h"
 
 #include <algorithm>
 #include <charconv>
@@ -21,7 +25,7 @@ namespace {
 
 struct options {
   uint64_t seed = 0;
-  double radius = 1.5;
+  double radius = 1.0;
   uint32_t frames = 0;
   uint32_t mode = 0;
   bool grid = false;
@@ -30,6 +34,11 @@ struct options {
   bool site_roof = false;
   std::string dump;
   std::optional<uint32_t> start_edge;
+  bool cave_lair = false; // --start-cave: из хода на логово, где первая встреча
+  bool cave_hub = false; // --start-cave: из зала пещеры, а не от лодки
+  bool site_window = false;
+  std::optional<uint32_t> hall_outpost; // N-й аванпост залов стартового окна
+  std::optional<uint32_t> start_tunnel; // N-й туннель стартового окна, взгляд из тамбура
   std::optional<uint32_t> start_site;
   std::optional<uint32_t> start_cave;
   std::optional<uint32_t> start_exit;
@@ -37,7 +46,11 @@ struct options {
   bool hall_entrance = false;
   std::optional<uint32_t> hall_niche;
   int sector_x = 0, sector_z = 0;
-  int window_horizontal = 3, window_vertical = 3;
+  int window_horizontal = 4, window_vertical = 4;
+  // Атмосфера: по умолчанию тёмная вода; `--surface` возвращает солнечный вид GN03.
+  bool surface = false;
+  uint32_t lines = 1; // 0 — без графа, 1 — с глубиной, 2 — и сквозь стены
+  float fog = 0.0f, fog_density = 0.012f, lamp = 1.8f, ambient = 1.5f;
 };
 
 template <typename Number>
@@ -55,6 +68,7 @@ bool parse(const int argc, char** argv, options& result) {
                    "[--site-exterior|--site-roof|--start-exit=0..1] "
                    "[--start-hall=N [--hall-entrance|--hall-niche=K]] [--window=H,V] "
                    "[--start-sector=X,Z] [--dump=PATH] "
+                   "[--surface | --fog=M --fog-density=D --lamp=S --ambient=A] [--lines=0..2] "
                    "[--grid] [--validation]\n";
       return false;
     }
@@ -62,7 +76,21 @@ bool parse(const int argc, char** argv, options& result) {
     if (arg == "--validation") { result.validation = true; continue; }
     if (arg == "--site-exterior") { result.site_exterior = true; continue; }
     if (arg == "--site-roof") { result.site_roof = true; continue; }
+    if (arg == "--site-window") { result.site_window = true; continue; }
+    if (arg == "--cave-hub") { result.cave_hub = true; continue; }
+    if (arg == "--cave-lair") { result.cave_lair = true; continue; }
     if (arg == "--hall-entrance") { result.hall_entrance = true; continue; }
+    if (arg == "--surface") { result.surface = true; continue; }
+    if (arg.starts_with("--lines=") && parse_number(arg.substr(8), result.lines) &&
+        result.lines <= 2) continue;
+    if (arg.starts_with("--fog=") && parse_number(arg.substr(6), result.fog) &&
+        result.fog >= 0.0f) continue;
+    if (arg.starts_with("--fog-density=") && parse_number(arg.substr(14), result.fog_density) &&
+        result.fog_density >= 0.0f) continue;
+    if (arg.starts_with("--lamp=") && parse_number(arg.substr(7), result.lamp) &&
+        result.lamp >= 0.0f) continue;
+    if (arg.starts_with("--ambient=") && parse_number(arg.substr(10), result.ambient) &&
+        result.ambient >= 0.0f) continue;
     if (arg.starts_with("--start-sector=")) {
       const std::string_view pair = arg.substr(15);
       const size_t comma = pair.find(',');
@@ -80,12 +108,21 @@ bool parse(const int argc, char** argv, options& result) {
           result.window_vertical >= 1 && result.window_vertical <= 16) continue;
     }
     if (arg.starts_with("--seed=") && parse_number(arg.substr(7), result.seed)) continue;
+    if (arg.starts_with("--mods=")) { gn09::set_world_mods(arg.substr(7)); continue; }
     if (arg.starts_with("--frames=") && parse_number(arg.substr(9), result.frames)) continue;
     if (arg.starts_with("--view=") && parse_number(arg.substr(7), result.mode) &&
         result.mode <= 3) continue;
     uint32_t edge = 0;
     if (arg.starts_with("--start-edge=") && parse_number(arg.substr(13), edge)) {
       result.start_edge = edge;
+      continue;
+    }
+    if (arg.starts_with("--start-tunnel=") && parse_number(arg.substr(15), edge)) {
+      result.start_tunnel = edge;
+      continue;
+    }
+    if (arg.starts_with("--hall-outpost=") && parse_number(arg.substr(15), edge)) {
+      result.hall_outpost = edge;
       continue;
     }
     if (arg.starts_with("--start-site=") && parse_number(arg.substr(13), edge)) {
@@ -120,61 +157,107 @@ bool parse(const int argc, char** argv, options& result) {
   return true;
 }
 
-int64_t floor_div(const int64_t number, const int64_t divisor) {
-  const int64_t quotient = number / divisor;
-  return quotient - (number % divisor < 0);
+// ГРАФ МАРШРУТОВ ТОНКИМИ ЛИНИЯМИ во viewer: рёбра, крестики узлов по теме, залы с петлёй
+// патруля и нишами. Строится только граф и залы вокруг камеры — планы баз линиям не нужны, поэтому
+// источник дешевле окна чанков. Это диагностика: ничего не вырезает и не проверяет.
+uint32_t rgba(const double r, const double g, const double b) {
+  const auto byte = [](const double v) { return uint32_t(std::clamp(v, 0.0, 1.0) * 255.0 + 0.5); };
+  return byte(r) | (byte(g) << 8) | (byte(b) << 16) | (255u << 24);
+}
+
+uint32_t theme_colour(const gn09::theme kind) {
+  switch (kind) {
+    case gn09::theme::outpost: return rgba(0.37, 0.77, 0.42);
+    case gn09::theme::derelict: return rgba(0.77, 0.41, 0.25);
+    case gn09::theme::grotto: return rgba(0.31, 0.61, 0.88);
+    case gn09::theme::vent: return rgba(0.88, 0.63, 0.23);
+    default: return rgba(0.62, 0.66, 0.70);
+  }
+}
+
+uint32_t resident_colour(const gn09::creature_class resident) {
+  switch (resident) {
+    case gn09::creature_class::lord: return rgba(0.85, 0.31, 0.82);
+    case gn09::creature_class::beast: return rgba(0.91, 0.53, 0.23);
+    default: return rgba(0.44, 0.72, 0.79);
+  }
+}
+
+glm::dvec3 vec(const gn09::point p) { return {p.x, p.y, p.z}; }
+
+glm::dvec3 hall_point(const gn09::hall& h, const double u, const double y, const double v) {
+  const glm::dvec3 forward{h.forward.x, 0.0, h.forward.z};
+  const glm::dvec3 right{-h.forward.z, 0.0, h.forward.x};
+  return vec(h.centre) + forward * u + right * v + glm::dvec3(0.0, y, 0.0);
+}
+
+std::vector<devils_engine::gn03::debug_line> graph_lines(const uint64_t seed, const glm::dvec3 observer) {
+  using devils_engine::gn03::debug_line;
+  static constexpr double reach = 480.0;
+  const auto sector = [](const double v) { return int(std::floor(v / gn09::sector_size)); };
+  const gn09::graph::window area{sector(observer.x - reach), sector(observer.z - reach),
+                                 sector(observer.x + reach) + 1, sector(observer.z + reach) + 1};
+  const gn09::graph route = gn09::generate_graph(seed, area);
+  std::vector<debug_line> lines;
+  const uint32_t edge_colour = rgba(0.47, 0.78, 0.86);
+  for (const gn09::edge& e : route.edges)
+    lines.push_back({vec(route.nodes[e.a].centre), vec(route.nodes[e.b].centre), edge_colour});
+  for (const gn09::node& n : route.nodes) {
+    const double half = gn09::is_base(n.kind) ? 5.0 : n.kind == gn09::theme::empty ? 1.5 : 3.0;
+    const glm::dvec3 c = vec(n.centre);
+    const uint32_t colour = theme_colour(n.kind);
+    for (int axis = 0; axis < 3; ++axis) {
+      glm::dvec3 d{};
+      d[axis] = half;
+      lines.push_back({c - d, c + d, colour});
+    }
+  }
+  for (const gn09::hall& h : gn09::halls_near(seed, area)) {
+    const uint32_t colour = resident_colour(h.resident);
+    const auto closed = [&](const std::vector<glm::dvec3>& points, const uint32_t c) {
+      for (size_t i = 0; i < points.size(); ++i)
+        lines.push_back({points[i], points[(i + 1) % points.size()], c});
+    };
+    std::vector<glm::dvec3> loop;
+    for (const gn09::point& p : h.loop) loop.push_back(hall_point(h, p.x, p.y, p.z));
+    closed(loop, colour);
+    // Горизонтальное сечение эллипсоида на высоте центра и продольное вертикальное, тусклее.
+    const uint32_t outline = rgba(0.30, 0.42, 0.46);
+    std::vector<glm::dvec3> flat, upright;
+    for (int i = 0; i < 64; ++i) {
+      const double a = i * 6.283185307179586 / 64.0;
+      flat.push_back(hall_point(h, h.half_length * std::cos(a), 0.0, h.half_width * std::sin(a)));
+      upright.push_back(hall_point(h, h.half_length * std::cos(a), h.half_height * std::sin(a), 0.0));
+    }
+    closed(flat, outline);
+    closed(upright, outline);
+    for (const gn09::hall_niche& niche : h.niches) {
+      const uint32_t c = niche.overhang ? rgba(0.95, 0.82, 0.42) : rgba(0.62, 0.83, 0.42);
+      const glm::dvec3 mouth = hall_point(h, niche.mouth.x, niche.mouth.y, niche.mouth.z);
+      const glm::dvec3 elbow = hall_point(h, niche.elbow.x, niche.elbow.y, niche.elbow.z);
+      const glm::dvec3 end = hall_point(h, niche.end.x, niche.end.y, niche.end.z);
+      lines.push_back({mouth, elbow, c});
+      lines.push_back({elbow, end, c});
+    }
+  }
+  return lines;
 }
 
 devils_engine::gn03::factory_builder make_builder(const double radius) {
   return [radius](const std::vector<std::pair<std::string, double>>&, const uint64_t seed) {
     return [radius, seed]() -> devils_engine::gn03::chunk_generator {
-      // Мир окна строится на блок 3x3 сектора с запасом в 2 сектора: соседние чанки
-      // делят его, а поток держит несколько последних блоков. Окна разного размера
-      // дают те же сэмплы, поэтому выбор блока не меняет мир.
-      struct cached_world {
-        int block_x = 0, block_z = 0;
-        uint64_t used = 0;
-        std::shared_ptr<const gn09::adventure> world;
-      };
-      std::vector<cached_world> worlds;
-      uint64_t clock_tick = 0;
-      return [radius, seed, worlds = std::move(worlds), clock_tick]
-             (const devils_engine::originator::chunk_key& key,
-              devils_engine::gn03::chunk_mesh& mesh) mutable {
+      // Чанк — экземпляр генератора chunk_field цепочки (окно 5x5 вокруг его сектора, пещеры мест
+      // fan-in, поле `solid`). Кэш экземпляров общий для всех потоков потока чанков, поэтому соседние
+      // чанки делят окно и пещеры, а мир не зависит от того, какой поток и в каком порядке их строит.
+      return [radius, seed](const devils_engine::originator::chunk_key& key,
+                            devils_engine::gn03::chunk_mesh& mesh) {
         using clock = std::chrono::steady_clock;
         const auto begin = clock::now();
-        const int sx = int(floor_div(key.x, gn09::sector_size / gn09::chunk::cells));
-        const int sz = int(floor_div(key.z, gn09::sector_size / gn09::chunk::cells));
-        const int bx = int(floor_div(sx, 3)), bz = int(floor_div(sz, 3));
-        auto found = std::find_if(worlds.begin(), worlds.end(), [&](const cached_world& w) {
-          return w.block_x == bx && w.block_z == bz;
-        });
-        if (found == worlds.end()) {
-          if (worlds.size() >= 6) {
-            found = std::min_element(worlds.begin(), worlds.end(),
-              [](const cached_world& a, const cached_world& b) { return a.used < b.used; });
-          } else {
-            found = worlds.insert(worlds.end(), cached_world{});
-          }
-          found->block_x = bx;
-          found->block_z = bz;
-          found->world = std::make_shared<const gn09::adventure>(gn09::generate(seed,
-            {3 * bx - 2, 3 * bz - 2, 3 * bx + 5, 3 * bz + 5}, radius));
-        }
-        found->used = ++clock_tick;
-        const gn09::adventure* cached = found->world.get();
-        const gn09::field_region region = gn09::prepare_chunk_field(*cached, int(key.x),
-                                                                   int(key.y), int(key.z));
-        // Сплошная скала или вода внутри зала: поверхности нет, сэмплы не нужны.
-        const bool uniform = gn09::uniform_sign(region) != 0;
-        const gn09::chunk volume = uniform ? gn09::chunk{int(key.x), int(key.y), int(key.z), {}}
-          : gn09::generate_chunk(region, int(key.x), int(key.y), int(key.z));
+        const gn09::chunk_instance made = gn09::chunk_from_chain(seed, radius, int(key.x), int(key.y), int(key.z));
         const auto field_done = clock::now();
-        gn09::surface_mesh surface;
-        if (!uniform) {
-          surface = gn09::generate_surface(region, volume);
-          gn09::append_outpost_surface(*cached, volume, surface);
-        }
+        // Рельеф и постройки — выходы того же экземпляра chunk_field (марширующие тетраэдры библиотеки и
+        // блок structure_surface).
+        const gn09::surface_mesh surface = gn09::surface_from_chain(made);
         mesh.key = key;
         mesh.vertices.resize(surface.size());
         mesh.props.clear();
@@ -191,35 +274,25 @@ devils_engine::gn03::factory_builder make_builder(const double radius) {
           target.chunk = 0;
           target.padding = source.shade;
         }
-        // Ресурсы принадлежат конкретному чанку по мировому положению, а их имя
-        // стабильно от ключа узла и индекса залежи при повторной генерации.
-        const double origin_x = double(key.x * gn09::chunk::cells);
-        const double origin_y = double(key.y * gn09::chunk::cells);
-        const double origin_z = double(key.z * gn09::chunk::cells);
-        for (const gn09::node& at : cached->route.nodes) {
-          if (at.kind != gn09::theme::grotto && at.kind != gn09::theme::vent) continue;
-          if (std::abs(at.centre.x - origin_x) > 40.0 ||
-              std::abs(at.centre.y - origin_y) > 40.0 ||
-              std::abs(at.centre.z - origin_z) > 40.0) continue;
-          const gn09::local_structure structure = gn09::materialize_local_structure(*cached, at.id);
-          for (uint32_t i = 0; i < structure.features.size(); ++i) {
-            const gn09::local_feature& feature = structure.features[i];
-            const double x = feature.centre.x - origin_x;
-            const double y = feature.centre.y - origin_y;
-            const double z = feature.centre.z - origin_z;
-            if (x < 0.0 || x >= gn09::chunk::cells || y < 0.0 || y >= gn09::chunk::cells ||
-                z < 0.0 || z >= gn09::chunk::cells) continue;
-            devils_engine::gn03::chunk_prop prop;
-            prop.position[0] = x;
-            prop.position[1] = y;
-            prop.position[2] = z;
-            prop.normal[1] = 1.0;
-            prop.size = 1.8;
-            prop.kind = feature.kind == "egg_cluster" ? 3u :
-                        feature.kind == "thermal_crystal" ? 2u : 1u;
-            prop.origin = uint32_t(devils_engine::utils::mix(seed, at.key, i, 0x524553ull));
-            mesh.props.push_back(prop);
-          }
+        // Предметы — выход props того же экземпляра chunk_field: залежи пещер мест в коробке чанка; имя
+        // стабильно от ключа узла и номера предмета в его пещере.
+        const double origin[3]{double(key.x * gn09::chunk::cells), double(key.y * gn09::chunk::cells),
+                               double(key.z * gn09::chunk::cells)};
+        const auto& kinds = gn09::cave_feature_kinds();
+        const auto props = made.instance->field("props", "position");
+        const auto prop_kind = made.instance->field("props", "kind"), prop_node = made.instance->field("props", "node"),
+                   prop_index = made.instance->field("props", "index");
+        for (size_t i = 0, count = size_t(made.instance->field("surface_counts", "props").get(0)); i < count; ++i) {
+          devils_engine::gn03::chunk_prop prop;
+          for (int axis = 0; axis < 3; ++axis) prop.position[axis] = props.get(i, uint32_t(axis)) - origin[axis];
+          prop.normal[1] = 1.0;
+          prop.size = 1.8;
+          const std::string_view kind = kinds.at(size_t(prop_kind.get(i)));
+          prop.kind = kind == "egg_cluster" || kind == "monster_group" ? 3u :
+                      kind == "thermal_crystal" || kind == "ice_plug" ? 2u : 1u;
+          prop.origin = uint32_t(devils_engine::utils::mix(seed, devils_engine::originator::read_key_word(prop_node, i),
+                                                          uint64_t(prop_index.get(i)), 0x524553ull));
+          mesh.props.push_back(prop);
         }
         const auto done = clock::now();
         mesh.field_milliseconds = std::chrono::duration<double, std::milli>(field_done - begin).count();
@@ -261,11 +334,11 @@ int main(const int argc, char** argv) {
     std::cerr << "start hall must name one of the starting world's halls and no other start\n";
     return 2;
   }
-  if (cli.site_exterior && !cli.start_site) {
+  if (cli.site_exterior && !cli.start_site && !cli.hall_outpost) {
     std::cerr << "site exterior view requires --start-site\n";
     return 2;
   }
-  if (cli.site_roof && (!cli.start_site || cli.site_exterior || cli.start_exit)) {
+  if (cli.site_roof && ((!cli.start_site && !cli.hall_outpost) || cli.site_exterior || cli.start_exit)) {
     std::cerr << "roof view requires --start-site and no other site view\n";
     return 2;
   }
@@ -275,75 +348,155 @@ int main(const int argc, char** argv) {
   }
   gn09::point start = start_world.route.nodes[start_world.route.entry].centre;
   gn09::point target;
-  if (cli.start_site) {
-    const gn09::local_structure structure = gn09::materialize_local_structure(start_world,
-                                                                               *cli.start_site);
-    const double offset = double(structure.zones[1].box.v0 + 200) / 100.0;
-    if (cli.site_roof) {
-      // Снаружи над крышей: пролом, иначе первый застеклённый модуль, иначе модуль 3.
-      uint32_t zone = structure.roof_breach;
-      for (uint32_t i = 3; zone == 0 && i < structure.zones.size() && i < 16; ++i) {
-        if ((structure.glazed_roofs >> i) & 1u) zone = i;
+  if (cli.start_tunnel) {
+    std::vector<std::shared_ptr<const gn09::built_tunnel>> tunnels;
+    for (const gn09::station_anchor& a : gn09::station_anchors(start_world)) {
+      auto t = gn09::tunnel_for(start_world, a);
+      if (t && std::none_of(tunnels.begin(), tunnels.end(), [&](const auto& o) { return o->key == t->key; })) {
+        tunnels.push_back(std::move(t));
       }
-      if (zone == 0) zone = 3;
-      const gn09::plan_rect box = structure.zones[zone].box;
-      const double u = double(box.u0 + box.u1) / 200.0, v = double(box.v0 + box.v1) / 200.0;
-      const double roof = double(structure.level_cm) / 100.0 + 3.0 +
-                          (structure.dock_axis == 0 ? 0.6 : 2.4);
-      target = gn09::structure_to_world(structure, u, roof, v);
-      start = gn09::structure_to_world(structure, u - 6.0, roof + 5.0, v);
+    }
+    if (*cli.start_tunnel >= tunnels.size()) {
+      std::cerr << "the starting window has " << tunnels.size() << " tunnels\n";
+      return 2;
+    }
+    // Из ноги первой станции вдоль тамбура и первого пролёта.
+    const auto& pieces = tunnels[*cli.start_tunnel]->pieces;
+    const gn09::tunnel_piece& leg = pieces.front();
+    const double back = leg.hx + 2.0; // в помещении, в двух метрах перед проёмом
+    start = {leg.centre.x - leg.x.x * back, leg.centre.y + 0.2, leg.centre.z - leg.x.z * back};
+    const gn09::tunnel_piece& chamber = pieces[1];
+    target = chamber.centre;
+  } else if (cli.start_site || cli.hall_outpost) {
+    std::shared_ptr<const gn09::built_station> built;
+    std::string label;
+    if (cli.start_site) {
+      built = gn09::station_for(start_world, *cli.start_site);
+      label = "base " + std::to_string(*cli.start_site);
+    } else {
+      std::vector<gn09::station_anchor> outposts;
+      for (const gn09::station_anchor& a : gn09::station_anchors(start_world)) {
+        if (a.hall_key != 0) outposts.push_back(a);
+      }
+      if (*cli.hall_outpost >= outposts.size()) {
+        std::cerr << "the starting window has " << outposts.size() << " hall outposts\n";
+        return 2;
+      }
+      built = gn09::station_for(start_world, outposts[*cli.hall_outpost]);
+      label = "hall outpost " + std::to_string(*cli.hall_outpost);
+    }
+    if (!built) {
+      std::cerr << label << " has no station\n";
+      return 2;
+    }
+    const gn09::station_plan& plan = built->plan;
+    const gn09::station_site& site = plan.site;
+    const auto centre_of = [&](const gn09::station_room& r, const double y) {
+      return gn09::station_to_world(site, (r.u0 + r.u1) * 0.25, y, (r.v0 + r.v1) * 0.25);
+    };
+    // Самое дальнее от шлюза помещение — туда смотрит камера изнутри.
+    const gn09::station_room* far = &plan.rooms.back();
+    for (const gn09::station_room& r : plan.rooms) {
+      if (std::hypot(r.u0 + r.u1, r.v0 + r.v1) > std::hypot(far->u0 + far->u1, far->v0 + far->v1)) far = &r;
+    }
+    if (cli.site_window) {
+      // Снаружи на окно скоса: первая стеклянная клетка, камера в воде напротив неё.
+      const gn09::station_voxels& v = built->voxels;
       bool found = false;
-      for (const double lift : {5.0, 3.5, 7.0, 2.5, 9.0}) {
-        for (const double back : {6.0, 9.0, 3.0, 12.0, 0.5}) {
-          for (const double side : {0.0, 4.0, -4.0}) {
-            const gn09::point candidate = gn09::structure_to_world(structure, u - back,
-                                                                   roof + lift, v + side);
-            if (found || gn09::density(start_world, candidate) >= -0.5) continue;
-            start = candidate;
-            found = true;
+      for (int32_t y = 0; y < v.height && !found; ++y) {
+        for (int32_t k = 0; k < v.depth && !found; ++k) for (int32_t i = 0; i < v.width && !found; ++i) {
+          const size_t index = (size_t(y) * v.depth + k) * v.width + i;
+          if (!v.solid[index] || v.shade[index] != gn09::station_glass_shade) continue;
+          target = gn09::station_to_world(site, (v.i0 + i + 0.5) * gn09::station_cell,
+                                          (v.y0 + y + 0.5) * gn09::station_cell,
+                                          (v.k0 + k + 0.5) * gn09::station_cell);
+          // Наружу — от середины станции через окно, затем с отклонением.
+          gn09::point mid{};
+          for (const gn09::station_room& r : plan.rooms) {
+            const gn09::point c = centre_of(r, 1.5);
+            mid = {mid.x + c.x, mid.y + c.y, mid.z + c.z};
+          }
+          const double base_angle = std::atan2(target.z - mid.z * 1.0 / plan.rooms.size(),
+                                               target.x - mid.x * 1.0 / plan.rooms.size());
+          const auto outside_rooms = [&](const gn09::point p) {
+            const double du = (p.x - site.origin.x) * std::cos(site.yaw) + (p.z - site.origin.z) * std::sin(site.yaw);
+            const double dv = -(p.x - site.origin.x) * std::sin(site.yaw) + (p.z - site.origin.z) * std::cos(site.yaw);
+            for (const gn09::station_room& r : plan.rooms) {
+              if (du > (r.u0 - 3) * gn09::station_cell && du < (r.u1 + 3) * gn09::station_cell &&
+                  dv > (r.v0 - 3) * gn09::station_cell && dv < (r.v1 + 3) * gn09::station_cell) return false;
+            }
+            return true;
+          };
+          for (const double distance : {7.0, 5.0, 9.0, 4.0}) {
+            for (int a = 0; a < 9 && !found; ++a) {
+              const double angle = base_angle + (a % 2 ? 1 : -1) * ((a + 1) / 2) * 0.25;
+              const gn09::point candidate{target.x + distance * std::cos(angle), target.y + 1.0,
+                                          target.z + distance * std::sin(angle)};
+              if (outside_rooms(candidate) && gn09::density(start_world, candidate) < -1.0) {
+                start = candidate;
+                found = true;
+              }
+            }
+            if (found) break;
           }
         }
       }
-      std::cout << "GN09 roof view zone=" << structure.zones[zone].purpose
-                << (found ? "" : " (no open camera point found)") << '\n';
+      if (!found) {
+        std::cerr << label << " has no glazed bevel with open water in front\n";
+        return 2;
+      }
+    } else if (cli.site_roof) {
+      // Снаружи: открытая точка над станцией со стороны воды, взгляд на неё.
+      const gn09::point middle = centre_of(plan.rooms[plan.rooms.size() / 2], 1.5);
+      target = middle;
+      start = gn09::point{site.berth.x, site.berth.y + 6.0, site.berth.z};
+      for (const double lift : {6.0, 10.0, 4.0, 14.0}) {
+        const gn09::point candidate{site.berth.x, site.berth.y + lift, site.berth.z};
+        if (gn09::density(start_world, candidate) < -0.5) { start = candidate; break; }
+      }
     } else if (cli.start_exit) {
-      const gn09::emergency_exit& door = structure.emergency_exits[*cli.start_exit];
-      const double side = door.span.v0 == structure.zones[door.zone].box.v0 ? -1.0 : 1.0;
-      const gn09::point mouth{0, 0, side * 12.0};
-      const gn09::point entrance{double(door.span.u0 + door.span.u1) / 200.0,
-                                 double(structure.level_cm) / 100.0,
-                                 double(door.span.v0) / 100.0 + side * 1.2};
-      start = gn09::structure_to_world(structure,
-        mouth.x * 0.3 + entrance.x * 0.7,
-        mouth.y * 0.3 + entrance.y * 0.7,
-        mouth.z * 0.3 + entrance.z * 0.7);
-      target = gn09::structure_to_world(structure, entrance.x,
-                                        entrance.y, entrance.z - side * 1.2);
-    } else if (structure.dock_axis == 0) {
-      start = cli.site_exterior
-        ? gn09::structure_to_world(structure, 4.0, 0.0, offset)
-        : gn09::structure_to_world(structure, 19.0, 0.0, offset);
-      target = gn09::structure_to_world(structure,
-                                        cli.site_exterior ? 19.0 : 39.0, 0.0, offset);
+      std::cerr << "stations have no emergency exits yet\n";
+      return 2;
+    } else if (cli.site_exterior) {
+      // Со стороны лодки на люк.
+      start = site.berth;
+      const gn09::station_room& airlock = plan.rooms[0];
+      target = site.pose == gn09::station_pose::wall
+        ? gn09::station_to_world(site, airlock.u0 * gn09::station_cell, 1.0, 0.0)
+        : centre_of(airlock, 1.5);
     } else {
-      start = cli.site_exterior
-        ? gn09::docking_axis_point(structure, 1.0, 0.0)
-        : gn09::structure_to_world(structure, 7.0,
-                                    double(structure.level_cm) / 100.0, 0.0);
-      target = cli.site_exterior
-        ? gn09::structure_to_world(structure, 0.5,
-                                    double(structure.level_cm) / 100.0, 0.0)
-        : gn09::structure_to_world(structure, 20.0,
-                                    double(structure.level_cm) / 100.0, 0.0);
+      // Изнутри: из первой комнаты за шлюзом через её дальнюю дверь в следующую.
+      const gn09::station_door& door = plan.doors.size() > 1 ? plan.doors[1] : plan.doors[0];
+      const gn09::station_room& from = plan.rooms[door.a];
+      const gn09::station_room& into = plan.rooms[door.b];
+      const gn09::point gap = gn09::station_to_world(site, (door.u0 + door.u1) * 0.25, 1.6,
+                                                     (door.v0 + door.v1) * 0.25);
+      const gn09::point room = centre_of(from, 1.6);
+      start = gn09::point{room.x + (room.x - gap.x) * 0.6, 1.6 + site.origin.y, room.z + (room.z - gap.z) * 0.6};
+      if (gn09::station_room_quarters(from, int32_t(std::floor(((start.x - site.origin.x) * std::cos(site.yaw) +
+          (start.z - site.origin.z) * std::sin(site.yaw)) / gn09::station_cell)),
+          int32_t(std::floor((-(start.x - site.origin.x) * std::sin(site.yaw) +
+          (start.z - site.origin.z) * std::cos(site.yaw)) / gn09::station_cell))) != 0xF) start = room;
+      target = centre_of(into, 1.6);
+      (void)far;
     }
+    std::cout << "GN09 station " << gn09::name(site.pose) << " with " << plan.rooms.size()
+              << " rooms\n";
   } else if (cli.start_hall) {
     // Внутри зала на оси коридора существ, взгляд вдоль зала.
     const gn09::hall& h = start_world.halls[*cli.start_hall];
     const auto at = [&](const double u, const double y) {
       return gn09::point{h.centre.x + u * h.forward.x, h.centre.y + y, h.centre.z + u * h.forward.z};
     };
-    start = at(-0.6 * h.core_half, h.core_y + 0.3 * h.core_radius);
-    target = at(0.6 * h.core_half, h.core_y);
+    // На петле патруля, взгляд вдоль неё.
+    const gn09::point right{-h.forward.z, 0, h.forward.x};
+    const auto loop_point = [&](const gn09::point l) {
+      return gn09::point{h.centre.x + l.x * h.forward.x + l.z * right.x, h.centre.y + l.y,
+                         h.centre.z + l.x * h.forward.z + l.z * right.z};
+    };
+    start = loop_point(h.loop[0]);
+    target = loop_point(h.loop[1]);
+    (void)at;
     if (cli.hall_niche && *cli.hall_niche < h.niches.size()) {
       // Из зала на вход ниши: отступ от входа по нормали стены внутрь зала.
       const gn09::point right{-h.forward.z, 0, h.forward.x};
@@ -368,12 +521,39 @@ int main(const int argc, char** argv) {
         target = entrances.front().second;
       }
     }
-    std::cout << "GN09 hall " << *cli.start_hall << ' ' << gn09::name(h.kind) << " half="
+    std::cout << "GN09 hall " << *cli.start_hall << ' ' << gn09::name(h.kind) << ' '
+              << gn09::name(h.resident) << " body r=" << h.body_radius << " half="
               << h.half_length << 'x' << h.half_width << 'x' << h.half_height << " m\n";
   } else if (cli.start_cave) {
+    // Из полости узла, где стоит лодка, в устье пещеры; --cave-hub — из расширенного
+    // зала в первую ветку.
     const gn09::site local = gn09::materialize_site(start_world, *cli.start_cave);
-    start = local.rooms[0].centre;
-    target = local.rooms[1].centre;
+    if (!local.has_cave) {
+      std::cerr << "site " << *cli.start_cave << " has no diver cave\n";
+      return 2;
+    }
+    const gn09::point mouth = local.rooms[local.mouth].centre;
+    if (cli.cave_lair) {
+      // Из соседней по связи комнаты хода на логово.
+      uint32_t from = local.mouth;
+      for (const gn09::room_link& link : local.links) {
+        if (link.b == local.lair && link.a != 0) from = link.a;
+        if (link.a == local.lair && link.b != 0 && from == local.mouth) from = link.b;
+      }
+      start = local.rooms[from].centre;
+      target = local.rooms[local.lair].centre;
+    } else if (cli.cave_hub) {
+      uint32_t hub = 0;
+      for (uint32_t i = 0; i < local.rooms.size(); ++i) {
+        if (hub == 0 && local.rooms[i].purpose == "chamber") hub = i; // первая крупная ниша
+      }
+      start = local.rooms[hub].centre;
+      target = local.rooms[hub + 1].centre; // горловина первой ветки
+    } else {
+      start = {local.centre.x + (mouth.x - local.centre.x) * 0.35, local.centre.y + (mouth.y - local.centre.y) * 0.35,
+               local.centre.z + (mouth.z - local.centre.z) * 0.35};
+      target = mouth;
+    }
   } else if (cli.start_edge) {
     const gn09::edge link = start_world.route.edges[*cli.start_edge];
     const gn09::point a = start_world.route.nodes[link.a].centre;
@@ -392,12 +572,23 @@ int main(const int argc, char** argv) {
   viewer.window_title = "GN09 — caves and outposts";
   viewer.overlay_title = "GN09 local adventure";
   viewer.overlay_summary = "Caves, built outposts, 17 x 6 m capsule route; GN03 chunk viewer";
-  viewer.overlay_controls = "WASD/QE fly | Shift fast | M view | G chunk grid | N new seed | U overlay | Esc quit";
+  viewer.overlay_controls = "WASD/QE fly | Shift fast | M view | G chunk grid | L graph | N new seed | U overlay | Esc quit";
   viewer.seed = cli.seed;
   viewer.chunk_cells = gn09::chunk::cells;
   viewer.cell_size = 1.0;
   viewer.window.horizontal_radius = cli.window_horizontal;
   viewer.window.vertical_radius = cli.window_vertical;
+  // Подводное восприятие: туман доходит до полной плотности за чанк до края окна по любой оси,
+  // фон ровно цвета воды — подгрузка чанков не видна. Дальше видеть — шире окно (`--window`).
+  viewer.underwater = !cli.surface;
+  viewer.rock_palette = true;
+  viewer.fog_distance = cli.fog;
+  viewer.fog_density = cli.fog_density;
+  viewer.lamp = cli.lamp;
+  viewer.ambient = cli.ambient;
+  // Граф маршрутов тонкими линиями; L переключает: выкл / с глубиной / сквозь стены.
+  viewer.lines = graph_lines;
+  viewer.lines_mode = cli.lines;
   // Окно больше стартового 7^3 нужно залам; арена растёт вместе с объёмом окна.
   const size_t window_chunks = size_t(2 * cli.window_horizontal + 1) *
                                size_t(2 * cli.window_horizontal + 1) *

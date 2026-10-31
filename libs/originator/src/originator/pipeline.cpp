@@ -371,7 +371,11 @@ const buffer* step_context::find_read(const std::string_view& buffer_name) const
 }
 
 pipeline::pipeline(pipeline_description description, const size_table& sizes, const uint64_t seed) :
-  description_(std::move(description)), seed_(seed) {
+  pipeline(std::move(description), sizes, seed, {}) {}
+
+pipeline::pipeline(pipeline_description description, const size_table& sizes, const uint64_t seed,
+                   std::span<const buffer* const> linked) :
+  description_(std::move(description)), linked_(linked.begin(), linked.end()), seed_(seed) {
   build(sizes);
   validate();
 }
@@ -409,6 +413,10 @@ void pipeline::build(const size_table& sizes) {
 
     for (const auto& name : step.writes) {
       auto* target = find_buffer(name);
+      if (target == nullptr && find_readable(name) != nullptr) {
+        utils::error{}("originator step '{}': writes '{}', a buffer linked from another generator — "
+                       "linked outputs are read-only, the producer owns them", step.name, name);
+      }
       if (target == nullptr) {
         utils::error{}("originator step '{}': writes '{}', which is not a declared buffer", step.name, name);
       }
@@ -416,7 +424,7 @@ void pipeline::build(const size_table& sizes) {
     }
 
     for (const auto& name : step.reads) {
-      auto* source = find_buffer(name);
+      const auto* source = find_readable(name);
       if (source == nullptr) {
         utils::error{}("originator step '{}': reads '{}', which is not a declared buffer", step.name, name);
       }
@@ -446,7 +454,20 @@ void pipeline::validate() const {
   // Объявляется это в точке входа (`inputs = [ ... ]`), а не выводится: «буфер, который читают, но
   // никто не пишет» — это ровно то, о чём библиотека обязана кричать, и отличить приход извне от
   // опечатки в имени можно только по объявлению автора.
-  std::vector<const buffer*> written;
+  // Связанный буфер объявлен у производителя. Второе объявление того же имени здесь — либо
+  // забытый остаток старой раскладки, либо попытка переопределить чужую; ни то, ни другое не должно
+  // молча выбрать одну из двух.
+  for (const auto* linked : linked_) {
+    for (const auto& own : buffers_) {
+      if (own->name() == linked->name()) {
+        utils::error{}("originator pipeline '{}': buffer '{}' is linked from another generator and declared here "
+                       "too; the producer owns its layout, remove the local declaration",
+                       description_.name, linked->name());
+      }
+    }
+  }
+
+  std::vector<const buffer*> written(linked_.begin(), linked_.end());
   for (const auto& name : description_.inputs) {
     const auto found = std::find_if(buffers_.begin(), buffers_.end(),
                                     [&name](const auto& candidate) { return candidate->name() == name; });
@@ -555,7 +576,9 @@ void pipeline::set_chunk(const chunk_key& key) noexcept {
 
 void pipeline::clear_buffers() noexcept {
   for (auto& candidate : buffers_) {
-    candidate->clear();
+    if (candidate != nullptr) {
+      candidate->clear();
+    }
   }
 }
 
@@ -569,17 +592,50 @@ buffer& pipeline::buffer_at(const size_t index) noexcept {
 
 buffer* pipeline::find_buffer(const std::string_view& buffer_name) noexcept {
   for (auto& candidate : buffers_) {
-    if (candidate->name() == buffer_name) {
+    if (candidate != nullptr && candidate->name() == buffer_name) {
       return candidate.get();
     }
   }
   return nullptr;
 }
 
+const buffer* pipeline::find_readable(const std::string_view& buffer_name) const noexcept {
+  for (const auto& candidate : buffers_) {
+    if (candidate != nullptr && candidate->name() == buffer_name) {
+      return candidate.get();
+    }
+  }
+  for (const auto* candidate : linked_) {
+    if (candidate->name() == buffer_name) {
+      return candidate;
+    }
+  }
+  return nullptr;
+}
+
+std::unique_ptr<buffer> pipeline::take(const std::string_view& buffer_name) {
+  for (auto& candidate : buffers_) {
+    if (candidate != nullptr && candidate->name() == buffer_name) {
+      return std::move(candidate);
+    }
+  }
+  utils::error{}("originator pipeline '{}': has no own buffer '{}' to hand out", description_.name, buffer_name);
+  return nullptr;
+}
+
+void pipeline::set_links(std::vector<step_link> links) {
+  links_ = std::move(links);
+}
+
+void pipeline::set_instance(const std::array<uint64_t, 3>& words, const uint64_t world_seed) noexcept {
+  instance_ = words;
+  world_seed_ = world_seed;
+}
+
 size_t pipeline::total_byte_size() const noexcept {
   size_t total = 0;
   for (const auto& candidate : buffers_) {
-    total += candidate->byte_size();
+    total += candidate != nullptr ? candidate->byte_size() : 0;
   }
   return total;
 }
@@ -622,6 +678,9 @@ void pipeline::run_step(const size_t index, const step_invoker& invoker) {
   context.programs = step.programs;
   context.writes = step_writes_[index];
   context.reads = step_reads_[index];
+  context.links = links_;
+  context.instance = instance_;
+  context.world_seed = world_seed_;
 
   invoker(context);
 }

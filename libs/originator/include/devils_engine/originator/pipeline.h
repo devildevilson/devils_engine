@@ -1,6 +1,7 @@
 #ifndef DEVILS_ENGINE_ORIGINATOR_PIPELINE_H
 #define DEVILS_ENGINE_ORIGINATOR_PIPELINE_H
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -149,6 +150,13 @@ private:
   std::vector<std::pair<std::string, size_t>> entries_;
 };
 
+// Связь цепочки генераторов, как её видит тело шага: экземпляры по порядку ключей, у каждого — его
+// выходные буферы (только чтение). Одиночная связь — список из одного экземпляра.
+struct step_link {
+  std::string name;
+  std::vector<std::vector<const buffer*>> instances;
+};
+
 // Что тело шага видит на входе.
 struct step_context {
   std::string_view name;
@@ -172,6 +180,12 @@ struct step_context {
   // Привязки шага. Буфер в writes доступен и на чтение, буфер в reads — только на чтение.
   std::span<buffer* const> writes;
   std::span<const buffer* const> reads;
+  // Связи цепочки (generator_chain.h). Пусто у пайплайна, запущенного вне цепочки.
+  std::span<const step_link> links;
+  // Ключ экземпляра цепочки, слово за словом, и зерно МИРА (не сборки): правилу, повторяющему хеши
+  // хоста, нужно именно оно. Нули вне цепочки.
+  std::array<uint64_t, 3> instance{};
+  uint64_t world_seed = 0;
 
   buffer* find_write(const std::string_view& buffer_name) const noexcept;
   const buffer* find_read(const std::string_view& buffer_name) const noexcept;
@@ -182,6 +196,11 @@ using step_invoker = std::function<void(const step_context&)>;
 class pipeline {
 public:
   pipeline(pipeline_description description, const size_table& sizes, const uint64_t seed);
+  // СВЯЗАННЫЕ БУФЕРЫ — выходы другого генератора цепочки. Пайплайн их не владеет и не пишет: шаг может
+  // их только читать, а объявлять их у себя второй раз нельзя — раскладка принадлежит производителю,
+  // и вторая её запись однажды разошлась бы с первой. Считаются записанными с самого начала, как входы.
+  pipeline(pipeline_description description, const size_table& sizes, const uint64_t seed,
+           std::span<const buffer* const> linked);
 
   const std::string& name() const noexcept;
   uint64_t seed() const noexcept;
@@ -200,7 +219,16 @@ public:
   size_t buffer_count() const noexcept;
   buffer& buffer_at(const size_t index) noexcept;
   buffer* find_buffer(const std::string_view& buffer_name) noexcept;
+  // Свой буфер или связанный — то, что шаг может прочитать под этим именем.
+  const buffer* find_readable(const std::string_view& buffer_name) const noexcept;
   size_t total_byte_size() const noexcept;
+
+  // Забирает свой буфер целиком: так выход генератора уходит в кэш цепочки без копии. После этого
+  // пайплайн исполнять нельзя — шаги, привязанные к буферу, остались бы без него.
+  std::unique_ptr<buffer> take(const std::string_view& buffer_name);
+
+  void set_links(std::vector<step_link> links);
+  void set_instance(const std::array<uint64_t, 3>& words, const uint64_t world_seed) noexcept;
 
   size_t step_count() const noexcept;
   const step_description& step_at(const size_t index) const noexcept;
@@ -225,6 +253,10 @@ private:
   std::vector<parameters> step_params_;
   uint64_t seed_ = 0;
   std::vector<std::unique_ptr<buffer>> buffers_;
+  std::vector<const buffer*> linked_;
+  std::vector<step_link> links_;
+  std::array<uint64_t, 3> instance_{};
+  uint64_t world_seed_ = 0;
   std::vector<std::vector<buffer*>> step_writes_;
   std::vector<std::vector<const buffer*>> step_reads_;
 };

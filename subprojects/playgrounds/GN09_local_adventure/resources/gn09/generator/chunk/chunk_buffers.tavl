@@ -1,0 +1,6 @@
+// Ключ окна чанка: (min_x, min_z, ширина | высота << 32).
+{
+  name = home
+  format = [ area = ul3 ]
+  size = one
+}

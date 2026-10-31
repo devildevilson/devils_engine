@@ -1,0 +1,24 @@
+{
+  name = creature_meta
+  // 0 none, 1 beast, 2 lord
+  format = [ hall = ul1, resident = ui1, body_radius = d1 ]
+  size = one
+}
+
+{ name = creature_halls, format = [ key = ul1 ], size = creature_capacity }
+{ name = creature_nodes, format = [ key = ul1 ], size = creature_capacity }
+{ name = creature_passages, format = [ a = ul1, b = ul1 ], size = creature_capacity }
+{ name = creature_refuges, format = [ key = ul1 ], size = creature_capacity }
+
+{
+  name = creature_counts
+  format = [ halls = ui1, nodes = ui1, passages = ui1, refuges = ui1 ]
+  size = one
+}
+
+// Пробы тела в проходе: точки и значения поля в них.
+{
+  name = probes
+  format = [ position = d3, value = d1 ]
+  size = creature_probe_capacity
+}

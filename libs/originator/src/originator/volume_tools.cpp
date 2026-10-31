@@ -626,6 +626,174 @@ void tool_marching_cubes(const tool_call& call, const size_t, const size_t) {
   bound.out_count.set(0, double(running));
 }
 
+// marching_tetrahedra: поверхность уровня по решётке, куб клетки — шесть тетраэдров вокруг главной
+// диагонали (углы 0 и 6). Разбиение фиксировано и одно на все клетки, поэтому общая грань двух соседних
+// клеток (и двух соседних чанков) режется одинаково, а вершина на общем ребре считается от концов в
+// КАНОНИЧЕСКОМ порядке (лексикографически по мировой позиции) — то есть одними и теми же числами.
+//
+// Входы: 0 — значение (одна компонента), 1 — позиция узла (три компоненты), обе на одной решётке с
+// полосой `border` узлов с каждой стороны (не меньше одного: у КАЖДОГО угла клетки градиент —
+// центральная разность, и нормаль на шве совпадает точно). «Внутри» — значение СТРОГО меньше `iso`.
+// Нормаль вершины — нормированный градиент (смотрит в сторону роста значения), смешанный вдоль ребра;
+// где градиент равен нулю, нормаль — ось +Y: нулевая нормаль дала бы чёрное пятно.
+//
+// Выходы: 0 — позиция вершины, 1 — нормаль, 2 — номер середины её клетки, 3 — середина поверхности
+// клетки (среднее вершин клетки; суммируется относительно первого внутреннего узла, чтобы не терять
+// точность на больших координатах), 4 — число вершин, 5 — число середин. Порядок — клетки по x, затем
+// y, затем z, в клетке тетраэдры по порядку: от него зависит только порядок треугольников.
+void tool_marching_tetrahedra(const tool_call& call, const size_t, const size_t) {
+  const auto& value_ref = call.input(0);
+  const auto& position_ref = call.input(1);
+  if (value_ref.type().components != 1 || position_ref.type().components < 3) {
+    utils::error{}("originator step '{}': marching_tetrahedra needs a single-component value and a 3-component "
+                   "position, got '{}.{}' ({}) and '{}.{}' ({})",
+                   call.step_name, value_ref.buffer_name(), value_ref.field_name(), value_ref.type().components,
+                   position_ref.buffer_name(), position_ref.field_name(), position_ref.type().components);
+  }
+  const auto shape = resolve_extent(call, value_ref, "size_x", "size_y", "size_z");
+  const size_t size[3]{shape.x, shape.y, shape.z};
+  if (size[0] * size[1] * size[2] != value_ref.count() || position_ref.count() != value_ref.count()) {
+    utils::error{}("originator step '{}': marching_tetrahedra grid {}x{}x{} does not match '{}' ({}) and '{}' ({})",
+                   call.step_name, size[0], size[1], size[2], value_ref.buffer_name(), value_ref.count(),
+                   position_ref.buffer_name(), position_ref.count());
+  }
+  const auto border_value = call.params->integer("border", 1);
+  if (border_value < 1) {
+    utils::error{}("originator step '{}': marching_tetrahedra needs border >= 1 for central differences, got {}",
+                   call.step_name, border_value);
+  }
+  const auto border = size_t(border_value);
+  for (uint32_t axis = 0; axis < 3; ++axis) {
+    if (size[axis] < 2 * border + 2) {
+      utils::error{}("originator step '{}': marching_tetrahedra needs at least {} nodes along axis {} for border {}, "
+                     "got {}",
+                     call.step_name, 2 * border + 2, axis, border, size[axis]);
+    }
+  }
+  const double iso = call.params->number("iso", 0.0);
+  for (const size_t j : {size_t(0), size_t(1), size_t(3)}) {
+    if (call.output(j).type().components < 3) {
+      utils::error{}("originator step '{}': marching_tetrahedra writes 3-component '{}.{}'", call.step_name,
+                     call.output(j).buffer_name(), call.output(j).field_name());
+    }
+  }
+  const auto values = value_ref.read();
+  const auto positions = position_ref.read();
+  auto out_position = call.output(0).write();
+  auto out_normal = call.output(1).write();
+  auto out_cell = call.output(2).write();
+  auto out_middle = call.output(3).write();
+  auto out_vertices = call.output(4).write();
+  auto out_middles = call.output(5).write();
+  const size_t vertex_capacity = std::min({out_position.count(), out_normal.count(), out_cell.count()});
+  const size_t middle_capacity = out_middle.count();
+
+  using vec = std::array<double, 3>;
+  const auto index_of = [&](const size_t x, const size_t y, const size_t z) { return x + size[0] * (y + size[1] * z); };
+  const auto position_at = [&](const size_t index) {
+    return vec{positions.get(index, 0), positions.get(index, 1), positions.get(index, 2)};
+  };
+  const auto normalized = [](const vec v) {
+    const double length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(length > 0.0)) return vec{0.0, 1.0, 0.0};
+    const double inverse = 1.0 / length;
+    return vec{v[0] * inverse, v[1] * inverse, v[2] * inverse};
+  };
+  // Нормированный градиент в каждом узле, кроме внешнего слоя полосы (ему не с кем считать разность).
+  std::vector<vec> gradients(values.count());
+  for (size_t z = 1; z + 1 < size[2]; ++z) {
+    for (size_t y = 1; y + 1 < size[1]; ++y) {
+      for (size_t x = 1; x + 1 < size[0]; ++x) {
+        const size_t at[3]{x, y, z};
+        vec g{};
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+          size_t low[3]{at[0], at[1], at[2]}, high[3]{at[0], at[1], at[2]};
+          low[axis] -= 1;
+          high[axis] += 1;
+          const size_t li = index_of(low[0], low[1], low[2]), hi = index_of(high[0], high[1], high[2]);
+          const double distance = positions.get(hi, axis) - positions.get(li, axis);
+          g[axis] = distance != 0.0 ? (values.get(hi) - values.get(li)) / distance : 0.0;
+        }
+        gradients[index_of(x, y, z)] = normalized(g);
+      }
+    }
+  }
+
+  static constexpr std::array<std::array<size_t, 3>, 8> corners{{
+    {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}};
+  static constexpr std::array<std::array<int, 4>, 6> tetrahedra{{
+    {0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6}, {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}}};
+  const vec origin = position_at(index_of(border, border, border));
+  size_t vertices = 0, middles = 0;
+  for (size_t z = border; z + border + 1 < size[2]; ++z) {
+    for (size_t y = border; y + border + 1 < size[1]; ++y) {
+      for (size_t x = border; x + border + 1 < size[0]; ++x) {
+        std::array<vec, 8> world{}, normal{};
+        std::array<double, 8> level{};
+        for (size_t i = 0; i < 8; ++i) {
+          const size_t node = index_of(x + corners[i][0], y + corners[i][1], z + corners[i][2]);
+          world[i] = position_at(node);
+          normal[i] = gradients[node];
+          level[i] = values.get(node) - iso;
+        }
+        const size_t first = vertices;
+        vec sum{};
+        const auto emit = [&](int a, int b) {
+          const vec& pa0 = world[a];
+          const vec& pb0 = world[b];
+          if (pa0[0] > pb0[0] || (pa0[0] == pb0[0] && pa0[1] > pb0[1]) ||
+              (pa0[0] == pb0[0] && pa0[1] == pb0[1] && pa0[2] > pb0[2])) std::swap(a, b);
+          const double t = level[a] / (level[a] - level[b]);
+          vec point{}, blend{};
+          for (uint32_t axis = 0; axis < 3; ++axis) {
+            point[axis] = world[a][axis] + (world[b][axis] - world[a][axis]) * t;
+            blend[axis] = normal[a][axis] * (1.0 - t) + normal[b][axis] * t;
+          }
+          if (vertices >= vertex_capacity) {
+            utils::error{}("originator step '{}': marching_tetrahedra needs more than {} vertices in '{}' — raise "
+                           "the declared capacity; a truncated surface reads as a hole in the world",
+                           call.step_name, vertex_capacity, call.output(0).buffer_name());
+          }
+          const vec n = normalized(blend);
+          for (uint32_t axis = 0; axis < 3; ++axis) {
+            out_position.set(vertices, point[axis], axis);
+            out_normal.set(vertices, n[axis], axis);
+            sum[axis] += point[axis] - origin[axis];
+          }
+          out_cell.set(vertices, double(middles));
+          ++vertices;
+        };
+        for (const auto& tet : tetrahedra) {
+          std::array<int, 4> inside{}, outside{};
+          int in_count = 0, out_count = 0;
+          for (const int corner : tet) {
+            if (level[corner] < 0.0) inside[in_count++] = corner;
+            else outside[out_count++] = corner;
+          }
+          if (in_count == 1) {
+            emit(inside[0], outside[0]); emit(inside[0], outside[1]); emit(inside[0], outside[2]);
+          } else if (in_count == 3) {
+            emit(outside[0], inside[0]); emit(outside[0], inside[2]); emit(outside[0], inside[1]);
+          } else if (in_count == 2) {
+            emit(inside[0], outside[0]); emit(inside[0], outside[1]); emit(inside[1], outside[0]);
+            emit(inside[0], outside[1]); emit(inside[1], outside[1]); emit(inside[1], outside[0]);
+          }
+        }
+        if (vertices == first) continue;
+        if (middles >= middle_capacity) {
+          utils::error{}("originator step '{}': marching_tetrahedra needs more than {} cell middles in '{}'",
+                         call.step_name, middle_capacity, call.output(3).buffer_name());
+        }
+        const double share = 1.0 / double(vertices - first);
+        for (uint32_t axis = 0; axis < 3; ++axis) out_middle.set(middles, origin[axis] + sum[axis] * share, axis);
+        ++middles;
+      }
+    }
+  }
+  out_vertices.set(0, double(vertices));
+  out_middles.set(0, double(middles));
+}
+
 } // namespace
 
 // polyline_distance: расстояние от элемента до НАБОРА ЛОМАНЫХ.
@@ -789,6 +957,15 @@ void tool_polyline_distance(const tool_call& call, const size_t begin, const siz
 }
 
 void tool_registry::add_volume_tools() {
+  add(tool_description{.name = "marching_tetrahedra",
+                       .shape = aperture::sequential,
+                       .input_count = 2,
+                       .output_count = 6,
+                       .body = tool_marching_tetrahedra,
+                       // Нормированный градиент на узел живёт ровно на время вызова.
+                       .footprint = [](const tool_call& call) {
+                         return (call.input(0).valid() ? call.input(0).count() : 0) * 3 * sizeof(double);
+                       }});
   add(tool_description{.name = "marching_cubes",
                        .shape = aperture::scatter,
                        .input_count = 2,

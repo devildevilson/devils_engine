@@ -1,0 +1,12 @@
+// Ключи мест (сектор, узел) — те же, что у генераторов place и cave.
+{
+  name = places
+  format = [ sector = ul2, node = ul1 ]
+  size = place_capacity
+}
+
+{
+  name = chunk_counts
+  format = [ places = ui1 ]
+  size = one
+}

@@ -228,6 +228,21 @@ double load_component(const void* ptr, const field_base::values base) noexcept {
       std::memcpy(&value, ptr, sizeof(value));
       return double(value) / 255.0;
     }
+    case field_base::d: {
+      double value = 0.0;
+      std::memcpy(&value, ptr, sizeof(value));
+      return value;
+    }
+    case field_base::ul: {
+      uint64_t value = 0;
+      std::memcpy(&value, ptr, sizeof(value));
+      return double(value);
+    }
+    case field_base::l: {
+      int64_t value = 0;
+      std::memcpy(&value, ptr, sizeof(value));
+      return double(value);
+    }
     default: return 0.0;
   }
 }
@@ -286,8 +301,51 @@ void store_component(void* ptr, const field_base::values base, const double valu
       std::memcpy(ptr, &v, sizeof(v));
       return;
     }
+    case field_base::d: {
+      std::memcpy(ptr, &value, sizeof(value));
+      return;
+    }
+    // 2^64 и 2^63 точно представимы в double, а приведение значения на границе и выше — UB.
+    case field_base::ul: {
+      const uint64_t v = !(value > 0.0) ? 0 : (value >= 18446744073709551616.0 ? UINT64_MAX : uint64_t(value));
+      std::memcpy(ptr, &v, sizeof(v));
+      return;
+    }
+    case field_base::l: {
+      const int64_t v = value != value ? 0
+                        : value < -9223372036854775808.0 ? INT64_MIN
+                        : value >= 9223372036854775808.0 ? INT64_MAX
+                                                         : int64_t(value);
+      std::memcpy(ptr, &v, sizeof(v));
+      return;
+    }
     default: return;
   }
+}
+
+bool is_wide_integer(const field_base::values base) noexcept {
+  return base == field_base::ul || base == field_base::l;
+}
+
+int64_t load_integer(const void* ptr, const field_base::values base) noexcept {
+  if (base == field_base::ul || base == field_base::l) {
+    int64_t value = 0;
+    std::memcpy(&value, ptr, sizeof(value));
+    return value;
+  }
+  const double value = load_component(ptr, base);
+  if (!(value == value)) return 0;
+  if (value < -9223372036854775808.0) return INT64_MIN;
+  if (value >= 9223372036854775808.0) return INT64_MAX;
+  return int64_t(value);
+}
+
+void store_integer(void* ptr, const field_base::values base, const int64_t value) noexcept {
+  if (base == field_base::ul || base == field_base::l) {
+    std::memcpy(ptr, &value, sizeof(value));
+    return;
+  }
+  store_component(ptr, base, double(value));
 }
 
 } // namespace originator

@@ -19,7 +19,11 @@ add_library(devils_originator
   src/originator/motif_geometry.cpp
   src/originator/volume_tools.cpp
   src/originator/graph_tools.cpp
+  src/originator/skeleton_tools.cpp
   src/originator/pipeline.cpp
+  src/originator/generator_chain.cpp
+  src/originator/primitive_field.cpp
+  src/originator/neighbourhood_tools.cpp
   src/originator/computation_queue.cpp
   src/originator/execution_profile.cpp
   src/originator/noise_field.cpp
@@ -28,9 +32,13 @@ add_library(devils_originator
   include/devils_engine/originator/buffer.h
   include/devils_engine/originator/tools.h
   include/devils_engine/originator/motif_layout.h
+  include/devils_engine/originator/skeleton.h
   include/devils_engine/originator/motif_path.h
   include/devils_engine/originator/motif_geometry.h
   include/devils_engine/originator/pipeline.h
+  include/devils_engine/originator/generator_chain.h
+  include/devils_engine/originator/primitive_field.h
+  include/devils_engine/originator/neighbourhood.h
   include/devils_engine/originator/computation_queue.h
   include/devils_engine/originator/execution_profile.h
   include/devils_engine/originator/device_form.h

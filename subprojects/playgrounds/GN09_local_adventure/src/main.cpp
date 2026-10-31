@@ -1,14 +1,24 @@
+#include <cstdio>
+#include <map>
 #include "adventure.h"
+#include "graph_view.h"
 #include "local_structure.h"
+#include "station.h"
 #include "surface.h"
+#include "tunnel.h"
+#include "cave.h"
+#include "world_chain.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <charconv>
 #include <chrono>
+#include <optional>
+#include <tuple>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -18,12 +28,16 @@ namespace {
 struct options {
   uint64_t seed = 0;
   uint32_t seeds = 64;
-  double radius = 1.5;
+  double radius = 1.0;
   bool verify = false;
   bool bench = false;
   std::string svg;
   std::string site_svg;
   std::string structure_svg;
+  std::string station_svg;
+  bool station_stats = false;
+  std::string graph_html;
+  uint64_t graph_sectors = 6;
   uint32_t site_id = 0;
   int sector_x = 0, sector_z = 0;
 };
@@ -50,9 +64,13 @@ bool parse(const int argc, char** argv, options& out) {
     const std::string_view arg = argv[i];
     if (arg == "--verify") { out.verify = true; continue; }
     if (arg == "--bench") { out.bench = true; continue; }
+    if (arg == "--station-stats") { out.station_stats = true; continue; }
+    if (arg.starts_with("--mods=")) { gn09::set_world_mods(arg.substr(7)); continue; }
+
     if (arg == "--help") {
       std::cout << "GN09_local_adventure [--seed=N] [--radius=R] [--verify] [--bench] [--seeds=N] [--svg=PATH] "
-                   "[--sector=X,Z] [--site=N --site-svg=PATH --structure-svg=PATH]\n";
+                   "[--sector=X,Z] [--site=N --site-svg=PATH --structure-svg=PATH] "
+                   "[--graph-html=PATH [--graph-sectors=N]] [--mods=FOLDER,...]\n";
       return false;
     }
     const auto value = [&](const std::string_view prefix) {
@@ -76,6 +94,16 @@ bool parse(const int argc, char** argv, options& out) {
     }
     if (arg.starts_with("--site-svg=") && !value("--site-svg=").empty()) {
       out.site_svg = value("--site-svg=");
+      continue;
+    }
+    if (arg.starts_with("--graph-html=") && !value("--graph-html=").empty()) {
+      out.graph_html = value("--graph-html=");
+      continue;
+    }
+    if (arg.starts_with("--graph-sectors=") && number(value("--graph-sectors="), out.graph_sectors) &&
+        out.graph_sectors >= 1 && out.graph_sectors <= 16) continue;
+    if (arg.starts_with("--station-svg=") && !value("--station-svg=").empty()) {
+      out.station_svg = value("--station-svg=");
       continue;
     }
     if (arg.starts_with("--structure-svg=") && !value("--structure-svg=").empty()) {
@@ -130,43 +158,33 @@ void report(const gn09::adventure& world, const gn09::verification& result) {
               << (gn09::is_base(local.kind) ? " cave links, module programme:" : " room links, rooms:");
     for (const gn09::room& chamber : local.rooms) std::cout << ' ' << chamber.purpose;
     std::cout << '\n';
-    const gn09::local_structure structure = gn09::materialize_local_structure(world, i);
-    std::cout << "    local structure: " << structure.zones.size() << " built zones, "
-              << structure.openings.size() << " openings, "
-              << structure.ports.size() << " dock ports, "
-              << structure.features.size() << " local features";
-    if (gn09::is_base(structure.kind)) {
-      std::cout << ", forward=(" << structure.forward.x << ',' << structure.forward.z << ')';
-      std::cout << ", dock=" << (structure.dock_axis > 0 ? "floor" :
-                                 structure.dock_axis < 0 ? "roof" : "side")
-                << ':' << gn09::name(structure.dock_hatch)
-                << ", level=" << double(structure.level_cm) / 100.0 << 'm'
-                << ", emergency=" << structure.emergency_exits.size()
-                << ", body rock=" << gn09::outpost_body_rock_percent(world, structure) << '%';
-      const auto volume = [](const std::vector<gn09::built_solid>& solids) {
-        uint64_t total = 0;
-        for (const gn09::built_solid& solid : solids) {
-          total += uint64_t(solid.footprint.u1 - solid.footprint.u0) *
-                   uint64_t(solid.footprint.v1 - solid.footprint.v0) *
-                   uint64_t(solid.y1 - solid.y0);
-        }
-        return total;
-      };
-      const auto raw = gn09::materialize_outpost_solids(structure);
-      const auto fitted = gn09::fit_outpost_solids(world, structure);
-      std::cout << ", 3D solids=" << fitted.size() << ", kept="
-                << (volume(raw) ? 100 * volume(fitted) / volume(raw) : 0) << '%';
-      uint32_t glazed = 0, modules = 0;
-      for (uint32_t zone = 3; zone < structure.zones.size(); ++zone, ++modules) {
-        glazed += (structure.glazed_roofs >> zone) & 1u;
+    if (!gn09::is_base(local.kind)) {
+      const gn09::local_structure structure = gn09::materialize_local_structure(world, i);
+      std::cout << "    local structure: " << structure.features.size() << " local features\n";
+      if (local.has_cave) {
+        static constexpr const char* lairs[4] = {"in a niche", "side pocket", "empty dead end", "?"};
+        bool vestibule = false;
+        for (const gn09::room& r : local.rooms) vestibule = vestibule || r.purpose == "vestibule";
+        std::cout << "    cave: N " << local.radio_target << " m, lair "
+                  << lairs[local.lair_kind % 4] << " at " << gn09::cave_room_depth(local, local.lair) << " m, "
+                  << local.entrances.size() << " entrances" << (vestibule ? ", vestibule" : "") << ", "
+                  << local.pillars.size() << " pillars, tour " << gn09::cave_tour_length(local) << " m\n";
       }
-      std::cout << ", glazed=" << glazed << '/' << modules;
-      if (structure.kind == gn09::theme::derelict) {
-        std::cout << ", roof breach=" << (structure.roof_breach == 0 ? std::string("none")
-          : structure.zones[structure.roof_breach].purpose);
-      }
+    } else if (const auto built = gn09::station_for(world, i)) {
+      const gn09::built_station& station = *built;
+      const gn09::station_site& site = station.plan.site;
+      uint32_t inner = 0;
+      for (const gn09::station_room& r : station.plan.rooms) inner += r.inner;
+      std::cout << "    station: pose=" << gn09::name(site.pose) << " yaw="
+                << site.yaw * 57.29577951308232 << " deg, floor y=" << site.origin.y
+                << ", tilt=" << site.tilt_deg << " deg, residual=" << site.residual << " m, rooms="
+                << station.plan.rooms.size() << " (inner " << inner << "), doors="
+                << station.plan.doors.size() << ", triangles=" << station.mesh.size() << ":";
+      for (const gn09::station_room& r : station.plan.rooms) std::cout << ' ' << r.purpose;
+      std::cout << '\n';
+    } else {
+      std::cout << "    station: no site found\n";
     }
-    std::cout << '\n';
   }
   for (size_t i = 0; i < world.halls.size(); ++i) {
     const gn09::hall& h = world.halls[i];
@@ -174,9 +192,34 @@ void report(const gn09::adventure& world, const gn09::verification& result) {
               << h.region_z << " at (" << h.centre.x << ',' << h.centre.y << ',' << h.centre.z
               << ") half=" << h.half_length << 'x' << h.half_width << 'x' << h.half_height
               << " m, pillars=" << h.pillars.size() << ", ledges=" << h.ledges.size()
-              << ", creature corridor r=" << h.core_radius << " m, niches=" << h.niches.size()
+              << ", resident " << gn09::name(h.resident) << " body r=" << h.body_radius
+              << " m, niches=" << h.niches.size()
               << ", route entrances=" << gn09::hall_entrances(world.seed, h).size()
               << '\n';
+    for (const gn09::station_anchor& anchor : gn09::hall_station_anchors(world.seed, h)) {
+      const auto station = gn09::station_for(world, anchor);
+      std::cout << "    hall outpost " << std::hex << anchor.key << std::dec << ' ' << gn09::name(anchor.kind)
+                << '/' << gn09::name(anchor.recipe) << " at (" << anchor.centre.x << ',' << anchor.centre.y
+                << ',' << anchor.centre.z << "): ";
+      if (station) {
+        std::cout << "pose=" << gn09::name(station->plan.site.pose) << ", rooms=" << station->plan.rooms.size()
+                  << ", triangles=" << station->mesh.size() << '\n';
+      } else {
+        std::cout << "no site found\n";
+      }
+    }
+  }
+  {
+    std::vector<uint64_t> seen;
+    for (const gn09::station_anchor& anchor : gn09::station_anchors(world)) {
+      const auto tunnel = gn09::tunnel_for(world, anchor);
+      if (!tunnel || std::find(seen.begin(), seen.end(), tunnel->key) != seen.end()) continue;
+      seen.push_back(tunnel->key);
+      std::cout << "  tunnel " << std::hex << tunnel->first_key << " <-> " << tunnel->second_key << std::dec
+                << ": span " << tunnel->span << " m, slope " << tunnel->slope_deg << " deg, triangles "
+                << tunnel->mesh.size() << '\n';
+    }
+    if (seen.empty()) std::cout << "  no dry tunnels between stations in this window\n";
   }
   std::cout << "field: " << result.checked_samples << " checked 3D profile samples, "
             << result.reached_rooms
@@ -237,7 +280,7 @@ int bench(const options& opt) {
         prepare += t1 - t0;
         kept_edges += region.edges.size();
         kept_nodes += region.nodes.size();
-        kept_sites += region.sites.size() + region.bases.size();
+        kept_sites += region.sites + region.stations;
         field += t2 - t1;
         surface += t3 - t2;
         station += t4 - t3;
@@ -289,15 +332,172 @@ int bench(const options& opt) {
               << ms(total) / chunks << " ms/chunk on average, " << vertices << " vertices\n";
   }
   std::cout << "  fingerprint " << std::hex << fingerprint << std::dec << '\n';
+
+  // Те же чанки из цепочки (chunk_field: окно 5x5 вокруг сектора чанка, пещеры fan-in, поле `solid` из
+  // словаря форм). Эталон — поле, собранное хостом на окне 7x7 вокруг сектора чанка: окно бенча у своего
+  // края обрезает рёбра соседних секторов и эталоном там быть не может.
+  std::map<std::pair<int, int>, gn09::adventure> wide_windows;
+  const auto wide_window = [&](const int x, const int z) -> const gn09::adventure& {
+    const int sx = int(std::floor(x * double(gn09::chunk::cells) / gn09::sector_size));
+    const int sz = int(std::floor(z * double(gn09::chunk::cells) / gn09::sector_size));
+    auto found = wide_windows.find({sx, sz});
+    if (found == wide_windows.end()) {
+      found = wide_windows.emplace(std::pair{sx, sz}, gn09::generate(opt.seed, {sx - 3, sz - 3, sx + 4, sz + 4}, opt.radius)).first;
+    }
+    return found->second;
+  };
+  uint64_t chain_print = 1469598103934665603ull;
+  const auto chain_mix = [&](const uint64_t v) { chain_print = (chain_print ^ v) * 1099511628211ull; };
+  clock::duration chain_time{}, rebuild_time{};
+  uint32_t chain_chunks = 0;
+  size_t differing = 0, rebuilt_differ = 0, surface_differ = 0, props_seen = 0, props_differ = 0;
+  auto& chain = gn09::world_chain(opt.radius);
+  for (const auto& [label, at] : places) {
+    if (at == nullptr) continue;
+    const int cx = int(std::floor(at->centre.x / gn09::chunk::cells));
+    const int cy = int(std::floor(at->centre.y / gn09::chunk::cells));
+    const int cz = int(std::floor(at->centre.z / gn09::chunk::cells));
+    for (int z = cz - 1; z <= cz + 1; ++z) for (int y = cy - 1; y <= cy + 1; ++y)
+      for (int x = cx - 1; x <= cx + 1; ++x) {
+        const auto t0 = clock::now();
+        const gn09::chunk_instance made = gn09::chunk_from_chain(opt.seed, opt.radius, x, y, z);
+        const gn09::surface_mesh mesh = gn09::surface_from_chain(made);
+        chain_time += clock::now() - t0;
+        // Поверхность хоста по тому же полю: марширующие тетраэдры и обрезка построек на C++.
+        gn09::surface_mesh host = gn09::generate_surface(made.region, made.volume);
+        gn09::append_outpost_surface(*made.region.world, made.volume, host);
+        surface_differ += host.size() != mesh.size();
+        // Предметы хоста (прежний отбор вьювера: места окна в cave_reach от угла чанка) против выхода props.
+        {
+          std::vector<std::tuple<uint64_t, uint64_t, uint64_t, uint64_t, uint64_t>> wanted, got;
+          const double origin[3]{double(x * gn09::chunk::cells), double(y * gn09::chunk::cells),
+                                 double(z * gn09::chunk::cells)};
+          const auto& kinds = gn09::cave_feature_kinds();
+          for (const gn09::node& at : made.region.world->route.nodes) {
+            if (at.kind != gn09::theme::grotto && at.kind != gn09::theme::vent) continue;
+            if (std::abs(at.centre.x - origin[0]) > gn09::cave_reach || std::abs(at.centre.y - origin[1]) > gn09::cave_reach ||
+                std::abs(at.centre.z - origin[2]) > gn09::cave_reach) continue;
+            const auto structure = gn09::materialize_local_structure(*made.region.world, at.id);
+            for (uint64_t i = 0; i < structure.features.size(); ++i) {
+              const auto& f = structure.features[i];
+              const double l[3]{f.centre.x - origin[0], f.centre.y - origin[1], f.centre.z - origin[2]};
+              if (l[0] < 0.0 || l[0] >= gn09::chunk::cells || l[1] < 0.0 || l[1] >= gn09::chunk::cells ||
+                  l[2] < 0.0 || l[2] >= gn09::chunk::cells) continue;
+              const auto code = uint64_t(std::find(kinds.begin(), kinds.end(), f.kind) - kinds.begin());
+              wanted.emplace_back(std::bit_cast<uint64_t>(f.centre.x), std::bit_cast<uint64_t>(f.centre.z), code, at.key, i);
+            }
+          }
+          const auto pos = made.instance->field("props", "position"), kind = made.instance->field("props", "kind"),
+                     node = made.instance->field("props", "node"), index = made.instance->field("props", "index");
+          for (size_t i = 0, n = size_t(made.instance->field("surface_counts", "props").get(0)); i < n; ++i) {
+            got.emplace_back(std::bit_cast<uint64_t>(pos.get(i, 0)), std::bit_cast<uint64_t>(pos.get(i, 2)),
+                             uint64_t(kind.get(i)), devils_engine::originator::read_key_word(node, i), uint64_t(index.get(i)));
+          }
+          props_seen += got.size();
+          props_differ += wanted != got;
+        }
+        for (size_t i = 0; i < std::min(host.size(), mesh.size()); ++i) {
+          const auto& a = host[i]; const auto& b = mesh[i];
+          surface_differ += std::bit_cast<uint64_t>(a.position.x) != std::bit_cast<uint64_t>(b.position.x) ||
+                            std::bit_cast<uint64_t>(a.position.y) != std::bit_cast<uint64_t>(b.position.y) ||
+                            std::bit_cast<uint64_t>(a.position.z) != std::bit_cast<uint64_t>(b.position.z) ||
+                            std::bit_cast<uint64_t>(a.normal.x) != std::bit_cast<uint64_t>(b.normal.x) ||
+                            std::bit_cast<uint64_t>(a.normal.y) != std::bit_cast<uint64_t>(b.normal.y) ||
+                            std::bit_cast<uint64_t>(a.normal.z) != std::bit_cast<uint64_t>(b.normal.z) || a.shade != b.shade;
+        }
+        // Пересборка мимо кэша при готовых связях: цена самого поля чанка и проверка повторяемости.
+        const devils_engine::originator::instance_key key{{uint64_t(int64_t(x)), uint64_t(int64_t(y)), uint64_t(int64_t(z))}};
+        const auto t1 = clock::now();
+        rebuilt_differ += !chain.verify("chunk_field", opt.seed, key).empty();
+        rebuild_time += clock::now() - t1;
+        ++chain_chunks;
+        const gn09::chunk reference =
+          gn09::generate_chunk(gn09::prepare_chunk_field(wide_window(x, z), x, y, z), x, y, z);
+        for (size_t i = 0; i < reference.samples.size(); ++i) {
+          differing += std::bit_cast<uint64_t>(reference.samples[i]) != std::bit_cast<uint64_t>(made.volume.samples[i]);
+        }
+        for (const double v : made.volume.samples) chain_mix(std::bit_cast<uint64_t>(v));
+        for (const gn09::surface_vertex& v : mesh) {
+          chain_mix(std::bit_cast<uint64_t>(v.position.x));
+          chain_mix(std::bit_cast<uint64_t>(v.position.y));
+          chain_mix(std::bit_cast<uint64_t>(v.position.z));
+          chain_mix(std::bit_cast<uint64_t>(v.normal.x));
+          chain_mix(v.shade);
+        }
+      }
+  }
+  const double n = std::max(chain_chunks, 1u);
+  std::cout << "  chain chunks: " << chain_chunks << ", cold " << ms(chain_time) / n
+            << " ms/chunk (links + field + surface), field rebuild " << ms(rebuild_time) / n << " ms/chunk ("
+            << rebuilt_differ << " rebuilds differ), " << differing
+            << " samples differ from the 7x7 window, " << surface_differ
+            << " surface vertices differ from the host mesh, " << props_seen << " props (" << props_differ
+            << " chunks differ from the host list), fingerprint " << std::hex << chain_print << std::dec << '\n';
   return 0;
 }
 
 } // namespace
 
+// Станции второго поколения на всех базах seed'ов: экземпляры генератора station, независимая проверка.
+int station_stats(const options& opt) {
+  uint32_t bases = 0, none = 0, refused = 0;
+  std::array<uint32_t, 3> poses{};
+  // Предпочтение рецепта (0 стена, 1 пол, 2 свод) -> что построилось (3 — ничего).
+  std::array<std::array<uint32_t, 4>, 3> preferred{};
+  uint64_t rooms = 0, inner = 0, voxels = 0, triangles = 0, glass = 0, glazed = 0;
+  const auto start = std::chrono::steady_clock::now();
+  for (uint32_t i = 0; i < opt.seeds; ++i) {
+    const gn09::adventure world = gn09::generate(opt.seed + i, {}, opt.radius);
+    for (const gn09::node& at : world.route.nodes) {
+      if (!gn09::is_base(at.kind)) continue;
+      ++bases;
+      const int8_t axis = gn09::preferred_dock_axis(world.seed, at);
+      const uint32_t wish = axis == 0 ? 0u : axis < 0 ? 1u : 2u;
+      const auto station = gn09::station_for(world, at.id);
+      ++preferred[wish][station ? uint32_t(station->plan.site.pose) : 3u];
+      if (!station) { ++none; continue; }
+      const gn09::adventure context = gn09::canonical_context(world.seed, at.centre, opt.radius);
+      const std::string cause = gn09::verify_station_plan(context, station->anchor, station->plan);
+      if (!cause.empty()) {
+        ++refused;
+        std::cerr << "seed " << world.seed << " base " << at.id << ": " << cause << '\n';
+        continue;
+      }
+      ++poses[uint8_t(station->plan.site.pose)];
+      rooms += station->plan.rooms.size();
+      for (const gn09::station_room& r : station->plan.rooms) inner += r.inner;
+      uint64_t panes = 0;
+      for (size_t c = 0; c < station->voxels.solid.size(); ++c) {
+        voxels += station->voxels.solid[c] != 0;
+        panes += station->voxels.solid[c] != 0 && station->voxels.shade[c] == gn09::station_glass_shade;
+      }
+      glass += panes;
+      glazed += panes != 0;
+      triangles += station->mesh.size();
+    }
+  }
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  const uint32_t built = poses[0] + poses[1] + poses[2];
+  std::cout << "bases " << bases << ": built " << built << " (wall " << poses[0] << ", floor "
+            << poses[1] << ", ceiling " << poses[2] << "), no site or programme did not fit " << none
+            << ", verify refused " << refused << '\n'
+            << "rooms per station " << (built ? double(rooms) / built : 0.0) << ", inner "
+            << (built ? double(inner) / built : 0.0) << ", solid voxels " << (built ? voxels / built : 0)
+            << ", triangles " << (built ? triangles / built : 0) << ", glazed stations " << glazed
+            << " (" << glass << " glass cells), " << seconds << " s\n";
+  static constexpr const char* pose_names[3] = {"wall", "floor", "ceiling"};
+  for (uint32_t w = 0; w < 3; ++w) {
+    std::cout << "preferred " << pose_names[w] << ": built wall " << preferred[w][0] << ", floor "
+              << preferred[w][1] << ", ceiling " << preferred[w][2] << ", none " << preferred[w][3] << '\n';
+  }
+  return refused ? 1 : 0;
+}
+
 int main(const int argc, char** argv) {
   options opt;
   if (!parse(argc, argv, opt)) return 2;
   if (opt.bench) return bench(opt);
+  if (opt.station_stats) return station_stats(opt);
   if (opt.verify && (opt.sector_x != 0 || opt.sector_z != 0)) {
     std::cerr << "--sector is for inspecting a window; --verify uses its own windows\n";
     return 2;
@@ -307,8 +507,24 @@ int main(const int argc, char** argv) {
     uint64_t total_wide_percent = 0;
     uint32_t halls = 0, lairs = 0, stacked = 0, pillars = 0, niches = 0, overhangs = 0;
     size_t fewest_entrances = SIZE_MAX, most_entrances = 0;
+    uint32_t lords = 0, beasts = 0, lord_refuges = 0, beast_passages = 0, beast_reach = 0, shared = 0;
     double lowest_node = 1e30, highest_node = -1e30, steepest = 0.0;
+    // Вертикальность по рёбрам и узлам: доля крутых рёбер (подъём больше пробега), рёбер с
+    // перепадом больше 30 м, средний перепад и разброс узлов относительно рельефа слоя.
+    uint64_t edge_count = 0, steep_edges = 0, tall_edges = 0, node_count = 0;
+    double total_rise = 0.0, layer_spread = 0.0;
     uint32_t least_wide_percent = 100;
+    std::array<uint64_t, 3> station_poses{};
+    uint64_t without_station = 0, station_rooms = 0, station_inner = 0, station_chamfered = 0;
+    uint64_t hall_outposts = 0, tunnels = 0, caves = 0, sites_without_cave = 0;
+    uint64_t cave_pockets = 0, cave_shelters = 0, cave_plugs = 0, nest_caves = 0;
+    std::array<uint64_t, 4> cave_soft{};
+    uint64_t cave_entrances = 0, vestibules = 0, cave_chambers = 0, cave_pillars = 0, cave_dead_ends = 0;
+    double tour_sum = 0.0, tour_min = 1e30, tour_max = 0.0;
+    std::array<uint64_t, 4> lair_kinds{};
+    double cave_depth_sum = 0.0, cave_depth_min = 1e30, goal_depth_sum = 0.0, goal_depth_min = 1e30;
+    uint64_t goals = 0, lucky = 0;
+    std::optional<uint64_t> tunnel_seed; // первое окно с туннелем — для порчи
     for (uint32_t i = 0; i < opt.seeds; ++i) {
       const gn09::adventure world = gn09::generate(opt.seed + i, {}, opt.radius);
       const gn09::verification result = gn09::verify(world);
@@ -317,8 +533,73 @@ int main(const int argc, char** argv) {
         return 1;
       }
       total_rooms += result.total_rooms;
+      without_station += result.bases_without_station;
+      tunnels += result.tunnels;
+      caves += result.caves;
+      sites_without_cave += result.sites_without_cave;
+      for (size_t k = 0; k < cave_soft.size(); ++k) cave_soft[k] += result.cave_soft[k];
+      for (const gn09::node& at : world.route.nodes) {
+        if (at.kind != gn09::theme::grotto && at.kind != gn09::theme::vent) continue;
+        const gn09::site local = gn09::materialize_site(world, at.id);
+        if (!local.has_cave) continue;
+        for (const gn09::room& r : local.rooms) {
+          cave_pockets += r.purpose.starts_with("pocket:");
+          cave_shelters += r.purpose.starts_with("shelter:");
+        }
+        cave_plugs += local.plugs.size();
+        cave_entrances += local.entrances.size();
+        ++lair_kinds[local.lair_kind % 4];
+        for (const gn09::room& r : local.rooms) {
+          vestibules += r.purpose == "vestibule";
+          cave_chambers += r.purpose == "chamber" || r.purpose == "nest" || r.purpose == "lair";
+          cave_dead_ends += r.purpose == "dead_end";
+        }
+        cave_pillars += local.pillars.size();
+        const double tour = gn09::cave_tour_length(local);
+        tour_sum += tour;
+        tour_min = std::min(tour_min, tour);
+        tour_max = std::max(tour_max, tour);
+        cave_depth_sum += gn09::cave_room_depth(local, local.lair);
+        cave_depth_min = std::min(cave_depth_min, gn09::cave_room_depth(local, local.lair));
+        for (uint32_t r = 0; r < local.rooms.size(); ++r) {
+          const bool goal = local.rooms[r].purpose.starts_with("pocket:") ||
+                            (local.recipe == gn09::site_recipe::nest_cave && r == local.nest);
+          if (!goal) continue;
+          const double depth = gn09::cave_room_depth(local, r);
+          goal_depth_sum += depth;
+          goal_depth_min = std::min(goal_depth_min, depth);
+          ++goals;
+          // Повезло: по прямой от узла лодки цель ближе радиосвязи.
+          lucky += std::hypot(local.rooms[r].centre.x - local.centre.x, local.rooms[r].centre.y - local.centre.y,
+                              local.rooms[r].centre.z - local.centre.z) < local.radio_target;
+        }
+        nest_caves += local.recipe == gn09::site_recipe::nest_cave;
+      }
+      if (result.tunnels && !tunnel_seed) tunnel_seed = world.seed;
+      for (const gn09::node& at : world.route.nodes) {
+        const auto station = gn09::station_for(world, at.id);
+        if (!station) continue;
+        ++station_poses[uint8_t(station->plan.site.pose)];
+        station_rooms += station->plan.rooms.size();
+        for (const gn09::station_room& r : station->plan.rooms) {
+          station_inner += r.inner;
+          station_chamfered += r.chamfer[0] || r.chamfer[1] || r.chamfer[2] || r.chamfer[3];
+        }
+      }
       // Залы одного «своего» региона на seed: по нему ведётся статистика уровня.
       const std::vector<gn09::hall> own = gn09::region_halls(world.seed, 0, 0);
+      // Аванпосты этих залов: окно 2x2 сектора почти никогда не накрывает уступ зала.
+      for (const gn09::hall& h : own) {
+        for (const gn09::station_anchor& anchor : gn09::hall_station_anchors(world.seed, h)) {
+          const auto station = gn09::station_for(world, anchor);
+          if (!station) continue;
+          ++hall_outposts;
+          if (const std::string cause = gn09::verify_built_station(world, *station); !cause.empty()) {
+            std::cerr << "seed " << world.seed << " hall outpost " << anchor.key << " refused: " << cause << '\n';
+            return 1;
+          }
+        }
+      }
       halls += uint32_t(own.size());
       stacked += own.size() == 2;
       for (const gn09::hall& h : own) {
@@ -326,18 +607,35 @@ int main(const int argc, char** argv) {
         pillars += uint32_t(h.pillars.size());
         niches += uint32_t(h.niches.size());
         for (const gn09::hall_niche& niche : h.niches) overhangs += niche.overhang;
+        const gn09::creature_presence presence = gn09::creature_of(world.seed, h);
+        lords += h.resident == gn09::creature_class::lord;
+        beasts += h.resident == gn09::creature_class::beast;
+        shared += presence.halls.size() > 1;
+        if (h.resident == gn09::creature_class::lord) lord_refuges += uint32_t(presence.refuges.size());
+        if (h.resident == gn09::creature_class::beast) {
+          beast_passages += uint32_t(presence.passages.size());
+          beast_reach += uint32_t(presence.nodes.size());
+        }
         const size_t entrances = gn09::hall_entrances(world.seed, h).size();
         fewest_entrances = std::min(fewest_entrances, entrances);
         most_entrances = std::max(most_entrances, entrances);
       }
       for (const gn09::node& at : world.route.nodes) {
+        const double above = at.centre.y - gn09::layer_height(world.seed, at.centre.x, at.centre.z);
+        layer_spread += above * above;
+        ++node_count;
         lowest_node = std::min(lowest_node, at.centre.y);
         highest_node = std::max(highest_node, at.centre.y);
       }
       for (const gn09::edge link : world.route.edges) {
         const gn09::point a = world.route.nodes[link.a].centre, b = world.route.nodes[link.b].centre;
         const double run = std::hypot(a.x - b.x, a.z - b.z);
-        if (run > 1.0) steepest = std::max(steepest, std::abs(a.y - b.y) / run);
+        const double rise = std::abs(a.y - b.y);
+        if (run > 1.0) steepest = std::max(steepest, rise / run);
+        ++edge_count;
+        steep_edges += rise > run;
+        tall_edges += rise > 30.0;
+        total_rise += rise;
       }
       total_wide_percent += result.wide_route_percent;
       least_wide_percent = std::min(least_wide_percent, result.wide_route_percent);
@@ -352,11 +650,9 @@ int main(const int argc, char** argv) {
         gn09::adventure candidate = gn09::generate(seed, {0, 0, 4, 4}, opt.radius);
         std::array<bool, 3> faces{};
         for (const gn09::node& at : candidate.route.nodes) {
-          if (gn09::is_base(at.kind)) {
-            faces[gn09::materialize_local_structure(candidate, at.id).dock_axis + 1] = true;
-          }
+          if (const auto station = gn09::station_for(candidate, at.id)) faces[uint8_t(station->plan.site.pose)] = true;
         }
-        if (seed == 64 || std::find(faces.begin(), faces.end(), false) == faces.end()) return candidate;
+        if (seed == 64 || std::count(faces.begin(), faces.end(), true) >= 2) return candidate;
       }
     }();
     const gn09::adventure other_recipes = gn09::generate(1, {0, 0, 4, 4}, opt.radius);
@@ -383,12 +679,10 @@ int main(const int argc, char** argv) {
     }
     std::array<bool, 3> seen_faces{};
     for (const gn09::node& at : examples.route.nodes) {
-      if (!gn09::is_base(at.kind)) continue;
-      const gn09::local_structure structure = gn09::materialize_local_structure(examples, at.id);
-      seen_faces[structure.dock_axis + 1] = true;
+      if (const auto station = gn09::station_for(examples, at.id)) seen_faces[uint8_t(station->plan.site.pose)] = true;
     }
-    if (std::find(seen_faces.begin(), seen_faces.end(), false) != seen_faces.end()) {
-      std::cerr << "no example window within 64 seeds contains side, upper and lower docking faces\n";
+    if (std::count(seen_faces.begin(), seen_faces.end(), true) < 2) {
+      std::cerr << "no example window within 64 seeds contains stations in two poses\n";
       return 1;
     }
     std::array<bool, 3> seen_biomes{};
@@ -401,121 +695,132 @@ int main(const int argc, char** argv) {
       std::cerr << "regional cave biomes do not cover all three profiles\n";
       return 1;
     }
-    const gn09::site built_site = gn09::materialize_site(reference, reference.route.entry);
-    gn09::local_structure broken_hatch = gn09::materialize_local_structure(reference, reference.route.entry);
-    ++broken_hatch.openings[0].span.u0;
-    ++broken_hatch.openings[0].span.u1;
-    if (gn09::verify_local_structure(reference, built_site, broken_hatch) !=
-        "outpost opening does not lie on a shared wall") {
-      std::cerr << "self-check missed a displaced outpost hatch\n";
-      return 1;
-    }
-    const auto vertical = std::find_if(examples.route.nodes.begin(), examples.route.nodes.end(),
+    // Порча станции: каждую должна отвергнуть независимая проверка плана.
+    const auto station_at = std::find_if(examples.route.nodes.begin(), examples.route.nodes.end(),
       [&](const gn09::node& at) {
-        return gn09::is_base(at.kind) &&
-          gn09::materialize_local_structure(examples, at.id).dock_axis != 0;
-      });
-    gn09::local_structure broken_level = gn09::materialize_local_structure(examples,
-                                                                            vertical->id);
-    broken_level.level_cm += 100;
-    if (gn09::verify_local_structure(examples,
-          gn09::materialize_site(examples, vertical->id), broken_level) !=
-        "outpost has an invalid docking face") {
-      std::cerr << "self-check missed a displaced vertical docking hatch\n";
-      return 1;
-    }
-    gn09::local_structure broken_exit = gn09::materialize_local_structure(reference,
-                                                                          reference.route.entry);
-    broken_exit.emergency_exits[0].span.v0 += 100;
-    broken_exit.emergency_exits[0].span.v1 += 100;
-    if (gn09::verify_local_structure(reference, built_site, broken_exit) !=
-        "emergency exit is not on an outer module wall") {
-      std::cerr << "self-check missed an emergency door outside its module wall\n";
-      return 1;
-    }
-    const auto military = std::find_if(examples.route.nodes.begin(), examples.route.nodes.end(),
-      [&](const gn09::node& at) {
-        return gn09::is_base(at.kind) &&
-          gn09::materialize_site(examples, at.id).recipe == gn09::site_recipe::military_base;
-      });
-    if (military == examples.route.nodes.end()) {
-      std::cerr << "seed-0 examples have no military base for the geometry check\n";
-      return 1;
-    }
-    gn09::local_structure bulky_military = gn09::materialize_local_structure(examples,
-                                                                               military->id);
-    bulky_military.zones[3].box.v1 += 400;
-    if (gn09::verify_local_structure(examples,
-          gn09::materialize_site(examples, military->id), bulky_military) !=
-        "outpost recipe does not make its declared body shape") {
-      std::cerr << "self-check missed a military base stretched beyond its recipe\n";
-      return 1;
-    }
-    gn09::local_structure broken_port = gn09::materialize_local_structure(reference, reference.route.entry);
-    broken_port.ports[0].edge_index = UINT32_MAX;
-    if (gn09::verify_local_structure(reference, built_site, broken_port) !=
-        "outpost dock port disagrees with a graph link") {
-      std::cerr << "self-check missed a dock port detached from the graph\n";
-      return 1;
-    }
-    const gn09::local_structure base_structure = gn09::materialize_local_structure(reference,
-                                                                                   reference.route.entry);
-    std::vector<gn09::built_solid> broken_solids = gn09::fit_outpost_solids(reference, base_structure);
-    broken_solids.push_back({{-900, -100, -700, 100}, -100, 100, 103});
-    if (!gn09::verify_outpost_solids(reference, base_structure, broken_solids)
-          .starts_with("outpost solid intersects submarine turn")) {
-      std::cerr << "self-check missed a solid across submarine turning space\n";
-      return 1;
-    }
-    std::vector<gn09::built_solid> blocked_dock =
-      gn09::fit_outpost_solids(reference, base_structure);
-    if (base_structure.dock_axis == 0) {
-      const int32_t berth_v = base_structure.zones[1].box.v0 + 200;
-      const int32_t far_v = berth_v + (berth_v > 0 ? 900 : -1000);
-      blocked_dock.push_back({{600, far_v, 700, far_v + 100}, -100, 100, 103});
-    } else {
-      const int32_t y = base_structure.dock_axis * 500;
-      blocked_dock.push_back({{-50, 950, 50, 1050}, y - 50, y + 50, 103});
-    }
-    if (gn09::verify_outpost_solids(reference, base_structure, blocked_dock) !=
-        "outpost solid intersects docking sweep") {
-      std::cerr << "self-check missed a solid across the docking approach\n";
-      return 1;
-    }
-    // Верхняя база зарыта в скалу: пролом её крыши открылся бы в породу.
-    bool buried_breach_checked = false;
-    for (uint64_t probe_seed = 0; probe_seed < 16 && !buried_breach_checked; ++probe_seed) {
-      const gn09::adventure probe = gn09::generate(probe_seed, {}, opt.radius);
-      for (const gn09::node& at : probe.route.nodes) {
-        if (at.kind != gn09::theme::derelict) continue;
-        gn09::local_structure buried = gn09::materialize_local_structure(probe, at.id);
-        if (buried.dock_axis <= 0 || buried.roof_breach != 0) continue;
-        buried.roof_breach = 3;
-        if (gn09::verify_outpost_environment(probe, buried) != "roof breach opens into solid rock") {
-          std::cerr << "self-check missed a roof breach into buried rock\n";
-          return 1;
+        const auto station = gn09::station_for(examples, at.id);
+        if (!station) return false;
+        bool outer = false, inner = false;
+        for (const gn09::station_room& r : station->plan.rooms) {
+          outer = outer || (!r.inner && r.purpose != "airlock" && r.purpose != "corridor" &&
+                            r.purpose != "entry_hall" && r.purpose != "guard_post");
+          inner = inner || r.inner;
         }
-        buried.roof_breach = 0;
-        buried.glazed_roofs = uint16_t(1u << 3);
-        if (gn09::verify_outpost_environment(probe, buried) != "glazed roof faces solid rock") {
-          std::cerr << "self-check missed glazing under buried rock\n";
-          return 1;
-        }
-        buried_breach_checked = true;
-        break;
+        return outer && inner && station->plan.rooms.size() >= 4;
+      });
+    if (station_at == examples.route.nodes.end()) {
+      std::cerr << "examples have no station with outer and inner rooms\n";
+      return 1;
+    }
+    const gn09::adventure station_context =
+      gn09::canonical_context(examples.seed, station_at->centre, opt.radius);
+    const uint32_t station_id = uint32_t(std::find_if(station_context.route.nodes.begin(),
+      station_context.route.nodes.end(), [&](const gn09::node& n) { return n.key == station_at->key; })
+      - station_context.route.nodes.begin());
+    const auto good_station = gn09::station_for(examples, station_at->id);
+    const gn09::station_plan& good_plan = good_station->plan;
+    if (const std::string cause = gn09::verify_station_plan(station_context, station_id, good_plan);
+        !cause.empty()) {
+      std::cerr << "example station refused before corruption: " << cause << '\n';
+      return 1;
+    }
+    const auto expect_refusal = [&](gn09::station_plan plan, const auto& corrupt,
+                                    const std::string_view cause, const char* what) {
+      corrupt(plan);
+      const std::string got = gn09::verify_station_plan(station_context, station_id, plan);
+      if (got != cause) {
+        std::cerr << "self-check missed " << what << " (got '" << got << "')\n";
+        return false;
+      }
+      return true;
+    };
+    if (!expect_refusal(good_plan, [](gn09::station_plan& p) { ++p.doors[0].u0; ++p.doors[0].u1;
+          ++p.doors[0].v0; ++p.doors[0].v1; }, "station door does not join two rooms",
+          "a station door off its shared wall") ||
+        !expect_refusal(good_plan, [](gn09::station_plan& p) {
+          p.rooms[2].u0 = p.rooms[1].u0; p.rooms[2].v0 = p.rooms[1].v0;
+          p.rooms[2].u1 = p.rooms[1].u1; p.rooms[2].v1 = p.rooms[1].v1; },
+          "station rooms share space without a wall", "two station rooms without a wall") ||
+        !expect_refusal(good_plan, [](gn09::station_plan& p) {
+          for (gn09::station_room& r : p.rooms) {
+            if (!r.inner && r.purpose != "airlock" && r.purpose != "corridor" &&
+                r.purpose != "entry_hall" && r.purpose != "guard_post") { r.inner = true; break; }
+          } }, "inner station room is not enclosed in rock", "an inner room standing in water") ||
+        !expect_refusal(good_plan, [](gn09::station_plan& p) {
+          p.hatch_v0 = p.rooms[0].v1 + 4; p.hatch_v1 = p.hatch_v0 + 2; },
+          "station hatch is off the airlock", "a hatch off the airlock") ||
+        !expect_refusal(good_plan, [](gn09::station_plan& p) { p.doors.clear(); },
+          "station room is unreachable from the airlock", "a station without doors") ||
+        !expect_refusal(good_plan, [](gn09::station_plan& p) {
+          gn09::station_room& r = p.rooms.back();
+          r.chamfer[0] = uint8_t(std::min(r.u1 - r.u0, r.v1 - r.v0)); },
+          "station chamfer is too deep", "a chamfer deeper than its room")) {
+      return 1;
+    }
+    {
+      // Причал, сдвинутый в шлюз: корпус лодки занимает место постройки.
+      gn09::station_plan blocked = good_plan;
+      const gn09::station_room& airlock = blocked.rooms[0];
+      blocked.site.berth = gn09::station_to_world(blocked.site, (airlock.u0 + airlock.u1) * 0.25, 1.5,
+                                                  (airlock.v0 + airlock.v1) * 0.25);
+      const std::string got = gn09::verify_station_plan(station_context, station_id, blocked);
+      if (got != "station column meets the route, a turn or the berth" &&
+          got != "station berth is not naturally open") {
+        std::cerr << "self-check missed a berth inside the airlock (got '" << got << "')\n";
+        return 1;
       }
     }
-    if (!buried_breach_checked) {
-      std::cerr << "self-check cannot find a buried upper derelict\n";
-      return 1;
+    {
+      // Туннель, у которого средний пролёт опущен на 30 м: такой выемки в поле нет,
+      // и независимая проверка по итоговому полю обязана это увидеть. Первый туннель
+      // ищется по зёрнам с начала.
+      std::shared_ptr<const gn09::built_tunnel> sample;
+      gn09::adventure tunnel_world;
+      // Окно с туннелем из уже проверенных (туннели в кэше), иначе — дальше по seed'ам.
+      for (uint64_t probe = tunnel_seed.value_or(opt.seed + opt.seeds);
+           probe < opt.seed + opt.seeds + 64 && !sample; ++probe) {
+        tunnel_world = gn09::generate(probe, {}, opt.radius);
+        for (const gn09::station_anchor& anchor : gn09::station_anchors(tunnel_world)) {
+          if ((sample = gn09::tunnel_for(tunnel_world, anchor))) break;
+        }
+      }
+      if (!sample) {
+        std::cerr << "self-check cannot find a dry tunnel\n";
+        return 1;
+      }
+      gn09::built_tunnel sunk = *sample;
+      sunk.pieces[sunk.pieces.size() / 2].centre.y -= 30.0;
+      // Опущенный пролёт может попасть и в воду чужой полости (пещера места крупнее у мода) — тогда
+      // его ловит раньше проверка породы вокруг; обе причины значат, что порча замечена.
+      if (const std::string got = gn09::verify_tunnel(tunnel_world, sunk);
+          got != "tunnel interior is not carved" && got != "tunnel is not enclosed in rock") {
+        std::cerr << "self-check missed a tunnel span outside its carve (got '" << got << "')\n";
+        return 1;
+      }
     }
     const auto natural = std::find_if(reference.route.nodes.begin(), reference.route.nodes.end(),
-      [](const gn09::node& at) { return at.kind == gn09::theme::grotto || at.kind == gn09::theme::vent; });
+      [&](const gn09::node& at) {
+        if (at.kind != gn09::theme::grotto && at.kind != gn09::theme::vent) return false;
+        const gn09::site local = gn09::materialize_site(reference, at.id);
+        return local.has_cave && !(gn09::verify_cave(reference, local).soft & gn09::cave_check::nest_visible);
+      });
     if (natural == reference.route.nodes.end()) {
-      std::cerr << "self-check cannot find a natural local site\n";
+      std::cerr << "self-check cannot find a natural site with a cave\n";
       return 1;
     }
     const gn09::site natural_site = gn09::materialize_site(reference, natural->id);
+    {
+      // Гнездо, перенесённое к устью: его видно из лодки, и проверка по итоговому
+      // полю (где вырезана настоящая пещера) обязана это заметить — как мягкое
+      // нарушение, у пещеры, где его не было.
+      gn09::site exposed = natural_site;
+      exposed.rooms[exposed.nest].centre = exposed.rooms[exposed.mouth].centre;
+      const gn09::cave_check got = gn09::verify_cave(reference, exposed);
+      if (!(got.soft & gn09::cave_check::nest_visible)) {
+        std::cerr << "self-check missed a cave nest at the mouth (refusal '" << got.refusal << "')\n";
+        return 1;
+      }
+    }
     gn09::local_structure misplaced_feature = gn09::materialize_local_structure(reference, natural->id);
     misplaced_feature.features[0].centre.x += 100.0;
     if (gn09::verify_local_structure(reference, natural_site, misplaced_feature) !=
@@ -557,15 +862,15 @@ int main(const int argc, char** argv) {
       return 1;
     }
     gn09::hall exposed = sample_hall;
-    // Ниша, продолжающая луч от станции коридора через вход: дно видно по оси.
+    // Ниша, продолжающая луч от ближайшей станции петли через вход: дно видно по оси.
     gn09::hall_niche& niche = exposed.niches.front();
-    const uint32_t stations = uint32_t(std::ceil(2.0 * exposed.core_half / 25.0));
-    double station_u = -exposed.core_half, best = 1e30;
-    for (uint32_t i = 0; i <= stations; ++i) {
-      const double u = -exposed.core_half + 2.0 * exposed.core_half * double(i) / double(stations);
-      if (std::abs(u - niche.mouth.x) < best) { best = std::abs(u - niche.mouth.x); station_u = u; }
+    gn09::point station{};
+    double best = 1e30;
+    for (const gn09::point p : gn09::loop_stations(exposed)) {
+      const double d = std::hypot(p.x - niche.mouth.x, p.y - niche.mouth.y, p.z - niche.mouth.z);
+      if (d < best) { best = d; station = p; }
     }
-    const gn09::point ray{niche.mouth.x - station_u, niche.mouth.y - exposed.core_y, niche.mouth.z};
+    const gn09::point ray{niche.mouth.x - station.x, niche.mouth.y - station.y, niche.mouth.z - station.z};
     const double ray_length = std::sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
     const auto along = [&](const double t) {
       return gn09::point{niche.mouth.x + ray.x / ray_length * t, niche.mouth.y + ray.y / ray_length * t,
@@ -574,8 +879,33 @@ int main(const int argc, char** argv) {
     niche.elbow = along(30.0);
     niche.end = along(55.0);
     if (gn09::verify_hall(reference.seed, exposed, opt.radius) !=
-        "hall niche is visible from the creature corridor") {
-      std::cerr << "self-check missed a niche visible from the creature corridor\n";
+        "hall niche is visible from the creature loop") {
+      std::cerr << "self-check missed a niche visible from the creature loop\n";
+      return 1;
+    }
+    // Повелитель: честная запись проходит, а домен, закрывший обход, отвергается.
+    bool found_lord = false;
+    for (uint64_t seed = 0; seed < 64 && !found_lord; ++seed) {
+      for (const gn09::hall& lord : gn09::region_halls(seed, 0, 0)) {
+        if (found_lord || lord.resident != gn09::creature_class::lord) continue;
+        const gn09::creature_presence honest = gn09::creature_of(seed, lord);
+        if (honest.refuges.size() < 2) continue;
+        found_lord = true;
+        const std::string cause = gn09::verify_creature(seed, lord, honest);
+        if (!cause.empty()) {
+          std::cerr << "honest lord presence refused: " << cause << '\n';
+          return 1;
+        }
+        gn09::creature_presence closed = honest;
+        closed.nodes.insert(closed.nodes.end(), honest.refuges.begin(), honest.refuges.end());
+        if (gn09::verify_creature(seed, lord, closed) != "creature domain leaves no detour around the hall") {
+          std::cerr << "self-check missed a lord domain that closes the detour: " << gn09::verify_creature(seed, lord, closed) << "\n";
+          return 1;
+        }
+      }
+    }
+    if (!found_lord) {
+      std::cerr << "no lord hall with a detour among 64 seeds\n";
       return 1;
     }
     for (const double extreme : {0.5, 3.0}) {
@@ -723,29 +1053,33 @@ int main(const int argc, char** argv) {
         return 1;
       }
     }
-    const gn09::local_structure original_plan = gn09::materialize_local_structure(broad, common->id);
-    const gn09::local_structure repeated_plan = gn09::materialize_local_structure(shifted, matching->id);
-    const auto same_rect = [](const gn09::plan_rect a, const gn09::plan_rect b) {
-      return a.u0 == b.u0 && a.v0 == b.v0 && a.u1 == b.u1 && a.v1 == b.v1;
+    const auto same_station = [](const std::shared_ptr<const gn09::built_station>& a,
+                                 const std::shared_ptr<const gn09::built_station>& b) {
+      if (!a || !b) return !a && !b;
+      const gn09::station_plan& x = a->plan;
+      const gn09::station_plan& y = b->plan;
+      if (x.site.yaw != y.site.yaw || x.site.origin.x != y.site.origin.x ||
+          x.site.origin.y != y.site.origin.y || x.site.origin.z != y.site.origin.z ||
+          x.rooms.size() != y.rooms.size() || x.doors.size() != y.doors.size() ||
+          a->mesh.size() != b->mesh.size()) return false;
+      for (size_t j = 0; j < x.rooms.size(); ++j) {
+        if (x.rooms[j].u0 != y.rooms[j].u0 || x.rooms[j].v0 != y.rooms[j].v0 ||
+            x.rooms[j].u1 != y.rooms[j].u1 || x.rooms[j].v1 != y.rooms[j].v1 ||
+            x.rooms[j].purpose != y.rooms[j].purpose) return false;
+      }
+      return true;
     };
-    if (original_plan.forward.x != repeated_plan.forward.x ||
-        original_plan.forward.z != repeated_plan.forward.z ||
-        original_plan.zones.size() != repeated_plan.zones.size() ||
-        original_plan.openings.size() != repeated_plan.openings.size() ||
-        original_plan.ports.size() != repeated_plan.ports.size()) {
-      std::cerr << "overlapping graph windows disagree about an outpost plan\n";
+    if (!same_station(gn09::station_for(broad, common->id), gn09::station_for(shifted, matching->id))) {
+      std::cerr << "overlapping graph windows disagree about a station\n";
       return 1;
     }
-    for (size_t j = 0; j < original_plan.zones.size(); ++j) {
-      if (!same_rect(original_plan.zones[j].box, repeated_plan.zones[j].box) ||
-          original_plan.zones[j].purpose != repeated_plan.zones[j].purpose) {
-        std::cerr << "overlapping graph windows disagree about outpost zones\n";
-        return 1;
-      }
-    }
-    for (size_t j = 0; j < original_plan.openings.size(); ++j) {
-      if (!same_rect(original_plan.openings[j].span, repeated_plan.openings[j].span)) {
-        std::cerr << "overlapping graph windows disagree about outpost openings\n";
+    // Станция — экземпляр цепочки по ключу якоря, поэтому окна совпадают по построению. Проверяем
+    // другое: пересборка мимо кэша даёт те же выходы побайтно.
+    {
+      const gn09::node& base = *station_at;
+      const auto key = gn09::station_key(gn09::anchor_of(examples, base.id));
+      if (const std::string differs = gn09::world_chain(opt.radius).verify("station", examples.seed, key); !differs.empty()) {
+        std::cerr << "station differs when rebuilt past the chain cache: " << differs << '\n';
         return 1;
       }
     }
@@ -756,12 +1090,8 @@ int main(const int argc, char** argv) {
       const auto other = std::find_if(large_window.route.nodes.begin(), large_window.route.nodes.end(),
         [&](const gn09::node& candidate) { return candidate.key == base.key; });
       if (other == large_window.route.nodes.end()) return 1;
-      const gn09::local_structure a = gn09::materialize_local_structure(small_window, base.id);
-      const gn09::local_structure b = gn09::materialize_local_structure(large_window, other->id);
-      if (a.forward.x != b.forward.x || a.forward.z != b.forward.z ||
-          a.zones.size() != b.zones.size() ||
-          !same_rect(a.zones[1].box, b.zones[1].box)) {
-        std::cerr << "outpost turns when graph window grows around it\n";
+      if (!same_station(gn09::station_for(small_window, base.id), gn09::station_for(large_window, other->id))) {
+        std::cerr << "station changes when graph window grows around it\n";
         return 1;
       }
     }
@@ -805,8 +1135,49 @@ int main(const int argc, char** argv) {
               << " pillars, " << stacked << " regions with two halls; " << niches
               << " hidden niches, " << overhangs << " under an overhang; route entrances "
               << fewest_entrances << ".." << most_entrances << " per hall)\n"
+              << "GN09 creatures: " << lords << " lords (" << lord_refuges
+              << " detour refuges at their entrances), " << beasts << " beasts ("
+              << beast_passages << " passages their bodies fit, " << beast_reach
+              << " route nodes in their domains), " << shared << " domains spanning several halls\n"
               << "GN09 relief: graph nodes from y=" << lowest_node << " to y=" << highest_node
-              << ", steepest edge rise/run " << steepest << '\n';
+              << ", steepest edge rise/run " << steepest << "; edges steeper than 45 deg "
+              << 100.0 * double(steep_edges) / double(edge_count) << "%, rising over 30 m "
+              << 100.0 * double(tall_edges) / double(edge_count) << "%, mean rise "
+              << total_rise / double(edge_count) << " m; nodes vs layer RMS "
+              << std::sqrt(layer_spread / double(node_count)) << " m\n";
+    const uint64_t stations = station_poses[0] + station_poses[1] + station_poses[2];
+    std::cout << "GN09 stations: " << stations << " built (wall " << station_poses[0] << ", floor "
+              << station_poses[1] << ", ceiling " << station_poses[2] << "), " << without_station
+              << " bases without a site; " << double(station_rooms) / double(std::max<uint64_t>(stations, 1))
+              << " rooms per station, " << double(station_inner) / double(std::max<uint64_t>(stations, 1))
+              << " inner, " << station_chamfered << " rooms with 45-degree corners; " << hall_outposts
+              << " hall outposts on ledges of region 0,0 halls; " << tunnels << " dry tunnels between stations of the windows\n";
+    std::cout << "GN09 caves: " << caves << " diver caves at natural sites (" << nest_caves << " nest caves), "
+              << sites_without_cave << " sites without room for one; " << cave_pockets << " resource pockets, "
+              << cave_shelters << " shelters, " << cave_plugs << " future ice plugs; along the cave: first monsters mean "
+              << cave_depth_sum / double(std::max<uint64_t>(caves, 1)) << " m (min " << cave_depth_min
+              << "), goals mean " << goal_depth_sum / double(std::max<uint64_t>(goals, 1)) << " m (min " << goal_depth_min
+              << "); " << lucky << " of " << goals << " goals within radio range of the boat in a straight line\n";
+    std::cout << "GN09 cave layouts: " << cave_entrances << " entrances (" << cave_entrances - caves
+              << " second ones), " << vestibules << " vestibules the boat can nose into; ~" << cave_chambers
+              << " niches (incl. lairs/nests), " << cave_pillars << " pillars, " << cave_dead_ends
+              << " empty dead ends; monsters in a niche " << lair_kinds[0] << ", a side pocket " << lair_kinds[1]
+              << ", an empty dead end " << lair_kinds[2] << "; tour of all goals and back mean "
+              << tour_sum / double(std::max<uint64_t>(caves, 1)) << " m (" << tour_min << ".." << tour_max << ")\n";
+    // Обещания пещер мягкие: нарушение допустимо, пока оно у меньшинства пещер.
+    static constexpr const char* soft_names[4] = {"lair closer than 0.4 N", "goal closer than 3/4 N",
+                                                  "nest visible from the boat", "wall opens into other water"};
+    std::cout << "GN09 cave soft promises broken:";
+    bool too_many = false;
+    for (size_t k = 0; k < cave_soft.size(); ++k) {
+      std::cout << ' ' << soft_names[k] << ' ' << cave_soft[k] << (k + 1 < cave_soft.size() ? "," : "");
+      too_many = too_many || 4 * cave_soft[k] > caves;
+    }
+    std::cout << " of " << caves << " caves\n";
+    if (too_many) {
+      std::cerr << "a cave promise is broken by a quarter of caves or more\n";
+      return 1;
+    }
     std::cout << "GN09 verified " << opt.seeds << " seeds, " << total_rooms
               << " reachable rooms; wide route min=" << least_wide_percent
               << "% mean=" << (total_wide_percent / opt.seeds)
@@ -815,12 +1186,14 @@ int main(const int argc, char** argv) {
                  "vertical routes, dead ends <=5, "
                  "3D profiles, overlapping windows and chunk/surface seams agree ("
               << surface.shared_vertices << " cave + " << station_surface.shared_vertices
-              << " outpost shared surface vertices); seventeen corruptions refused\n";
+              << " station polygons cut by chunks); eighteen corruptions refused\n";
     return 0;
   }
 
+  // Визуализатору графа нужно окно шире двух секторов: связи видны на масштабе зала.
+  const int span = opt.graph_html.empty() ? 2 : int(opt.graph_sectors);
   const gn09::adventure world = gn09::generate(opt.seed,
-    {opt.sector_x, opt.sector_z, opt.sector_x + 2, opt.sector_z + 2}, opt.radius);
+    {opt.sector_x, opt.sector_z, opt.sector_x + span, opt.sector_z + span}, opt.radius);
   const gn09::verification result = gn09::verify(world);
   report(world, result);
   if (!result.ok) return 1;
@@ -831,12 +1204,26 @@ int main(const int argc, char** argv) {
     }
     std::cout << "SVG: " << opt.svg << '\n';
   }
+  if (!opt.graph_html.empty()) {
+    if (!gn09::write_graph_html(world, opt.graph_html)) {
+      std::cerr << "cannot write graph HTML: " << opt.graph_html << '\n';
+      return 1;
+    }
+    std::cout << "graph HTML: " << opt.graph_html << '\n';
+  }
   if (!opt.site_svg.empty()) {
     if (!gn09::write_site_svg(world, opt.site_id, opt.site_svg)) {
       std::cerr << "cannot write site SVG: " << opt.site_svg << '\n';
       return 1;
     }
     std::cout << "site SVG: " << opt.site_svg << '\n';
+  }
+  if (!opt.station_svg.empty()) {
+    if (!gn09::write_station_svg(world, opt.site_id, opt.station_svg)) {
+      std::cerr << "cannot write station SVG: " << opt.station_svg << '\n';
+      return 1;
+    }
+    std::cout << "station SVG: " << opt.station_svg << '\n';
   }
   if (!opt.structure_svg.empty()) {
     if (!gn09::write_structure_svg(world, opt.site_id, opt.structure_svg)) {

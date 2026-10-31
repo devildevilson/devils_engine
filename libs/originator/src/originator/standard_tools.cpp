@@ -2,6 +2,7 @@
 #include <cmath>
 #include <limits>
 
+#include "devils_engine/originator/neighbourhood.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/utils/core.h"
 
@@ -480,39 +481,9 @@ void tool_classify(const tool_call& call, const size_t begin, const size_t end) 
 // Апертура gather: читает окно вокруг элемента, пишет только свой. Источник и приёмник обязаны быть
 // разными полями — это проверяется в check_dispatch, здесь можно на это опираться.
 void tool_box_blur(const tool_call& call, const size_t begin, const size_t end) {
-  const auto source = call.input(0).read();
-  auto target = call.output(0).write();
-
   const auto shape = resolve_extent(call, call.output(0), "width");
-  const size_t width = shape.x;
   const auto radius = size_t(std::clamp<int64_t>(call.params->integer("radius", 1), 0, 64));
-  const size_t count = source.count();
-  const size_t height = shape.y;
-
-  for (size_t i = begin; i < end; ++i) {
-    const size_t x = i % width;
-    const size_t y = i / width;
-
-    double sum = 0.0;
-    size_t taken = 0;
-    const size_t x0 = x >= radius ? x - radius : 0;
-    const size_t x1 = std::min(x + radius, width - 1);
-    const size_t y0 = y >= radius ? y - radius : 0;
-    const size_t y1 = height == 0 ? y : std::min(y + radius, height - 1);
-
-    for (size_t sy = y0; sy <= y1; ++sy) {
-      for (size_t sx = x0; sx <= x1; ++sx) {
-        const size_t index = sy * width + sx;
-        if (index >= count) {
-          continue;
-        }
-        sum += source.get(index);
-        ++taken;
-      }
-    }
-
-    target.set(i, taken == 0 ? 0.0 : sum / double(taken));
-  }
+  box_mean_range(call.input(0).read(), call.output(0).write(), shape.x, shape.y, radius, begin, end);
 }
 
 double reduce_min_partial(const tool_call& call, const size_t begin, const size_t end) {

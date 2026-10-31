@@ -8,6 +8,7 @@
 
 #include "devils_engine/demiurg/resource_base.h"
 
+#include "generator_chain.h"
 #include "pipeline.h"
 
 // Генератор как РЕСУРС: точка входа, которую можно назвать одним id, и всё, что она за собой тянет.
@@ -88,6 +89,20 @@ generator_config load_generator(const demiurg::resource_system& resources, const
 // пайплайна — например перф-стенду, сравнивающему два уровня исполнения на одном и том же правиле:
 // такой скрипт не является шагом, поэтому точка входа его и не называет.
 std::string read_generator_source(const demiurg::resource_system& resources, const std::string_view& id);
+
+// Цепочка генераторов по id её документа (generator_chain.h). Каждый генератор-пайплайн собирается
+// load_generator по своему `entry`, у нативного разбирается документ `buffers`; пути считаются от
+// документа цепочки. Размеры и значения цепочки остаются хосту: они говорят о мире, а не о файлах.
+struct loaded_chain {
+  chain_description description;
+  chain_setup setup;
+  // Собранные генераторы-пайплайны по имени генератора: у них есть ещё диапазоны настройки и тексты.
+  std::vector<std::pair<std::string, generator_config>> generators;
+
+  const generator_config& config(const std::string_view& generator) const;
+};
+
+loaded_chain load_chain(const demiurg::resource_system& resources, const std::string_view& chain_id);
 
 } // namespace originator
 } // namespace devils_engine

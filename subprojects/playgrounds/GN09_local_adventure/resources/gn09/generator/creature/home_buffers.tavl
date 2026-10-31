@@ -1,0 +1,6 @@
+// area — ключ окна (min_x, min_z, ширина | высота << 32), hall — номер зала в его регионе.
+{
+  name = creature_home
+  format = [ area = ul3, hall = ui1 ]
+  size = one
+}

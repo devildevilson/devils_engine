@@ -1,0 +1,8 @@
+// mutual = 0 — пара не взаимна, туннеля нет. corner/size — ключ канонического окна середины пары.
+{
+  name = tunnel_link
+  format = [ mutual = ui1, first_station = ul3, first = ul1, second = ul1, corner = ul2, size = ul1, pairs = ui1 ]
+  size = one
+}
+// Станции пары: первая, вторая.
+{ name = tunnel_pair, format = [ station = ul3, anchor = ul1, centre = d3 ], size = two }

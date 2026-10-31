@@ -1,0 +1,22 @@
+{
+  name = regions
+  format = [ key = ul2 ]
+  size = region_capacity
+}
+// Концы маршрутов сектора по порядку: свой сектор, восточный (x + 1), южный (z + 1).
+{
+  name = ends
+  format = [ key = ul2 ]
+  size = three
+}
+// Окрестность 4x4 (x - 1 .. x + 2, z - 1 .. z + 2) по строкам.
+{
+  name = around
+  format = [ key = ul2 ]
+  size = sixteen
+}
+{
+  name = sector_counts
+  format = [ regions = ui1, ends = ui1, around = ui1 ]
+  size = one
+}

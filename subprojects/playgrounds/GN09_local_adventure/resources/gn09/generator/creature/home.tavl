@@ -1,0 +1,10 @@
+// Существо зала — ЛОКАТОР (ключ — регион x, z и ключ зала): окно графа вокруг области влияния зала
+// с запасом в два сектора. Все генераторы существа связаны по тому же ключу.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = creature_home
+buffers = ./home_buffers.tavl
+steps = [
+  { name = locate, body = ./scripts/home.lua, reads = [ halls, hall_counts ], writes = [ creature_home ] }
+]

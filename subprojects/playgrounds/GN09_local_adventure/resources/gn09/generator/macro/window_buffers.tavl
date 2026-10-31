@@ -1,0 +1,75 @@
+// Буферы нативного генератора window: обещания хоста о месте — константы, на которые опираются
+// отсечения по коробке. Скрипт их читает, но не задаёт. Сам мир окна (граф и залы как C++-структура)
+// идёт нативным потребителям объектом хоста.
+{
+  name = limits
+  format = [
+    // Ядро прохода: R + охранный слой.
+    core = v1
+    // Насколько стены гарантированного ядра уходят наружу.
+    relief = v1
+    // Радиус полости узла (комната 0 пещеры).
+    main_radius = v1
+    // Граница места: стены с кольцом породы не дальше от узла.
+    extent = v1
+    // Дальше этого центры двух мест не могут дотянуться пещерами друг до друга.
+    reach = v1
+    // Радиус гарантированно проходящей сферы (ныряльщик), метры.
+    clearance = d1
+  ]
+  size = one
+}
+
+// ОКРУЖЕНИЕ ДЛЯ ЛОДКИ — формы природного поля окна, из которых собирается поле из примитивов
+// (originator primitive_field): галерея на каждом ребре (сечение, вздутия, гарантированная капсула
+// хода, декоративный карман) и шар поворота в каждом узле. Форму ребра пока считает C++ (shape_edge).
+{
+  name = galleries
+  format = [
+    // центры узлов ребра: от них — гарантированная капсула хода и карман
+    ends_a = d3
+    ends_b = d3
+    // порты галереи и её базис
+    port_a = d3
+    port_b = d3
+    axis = d3
+    right = d3
+    up = d3
+    distance = d1
+    core_radius = d1
+    reach = d1
+    first_t = d1
+    second_t = d1
+    base_width = d1
+    first_width = d1
+    second_width = d1
+    base_roof = d1
+    vertical_gain = d1
+    biome_width = d1
+    constriction = ub1
+    biome = ui1
+    // две смещённые полости: центр и полуоси (вдоль, поперёк, вверх)
+    lobe0 = d3
+    lobe0_size = d3
+    lobe1 = d3
+    lobe1_size = d3
+    pocket = ub1
+    pocket_mouth = d3
+    pocket_centre = d3
+    pocket_radius = d1
+  ]
+  size = gallery_capacity
+}
+
+{
+  name = turns
+  // rock — вид породы для палитры (rock_kind хоста)
+  format = [ centre = d3, radius = d1, rock = ui1 ]
+  size = turn_capacity
+}
+
+{
+  name = environment_counts
+  format = [ galleries = ui1, turns = ui1 ]
+  size = one
+}

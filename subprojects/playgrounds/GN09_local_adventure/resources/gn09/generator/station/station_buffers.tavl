@@ -1,0 +1,92 @@
+// Буферы генератора станции. Клетка плана — 0.5 м; оси станции: u — в породу, v — вправо, y — вверх от
+// пола.
+
+// Станция целиком: место (поза, опора, причал), люк, якорь и коробка всего, что она строит и вырезает.
+// built = 0 — места нет или программа не уместилась.
+{
+  name = station_meta
+  format = [
+    built = ui1
+    // 0 wall, 1 floor, 2 ceiling
+    pose = ui1
+    outer_cells = i1
+    origin = d3
+    yaw = d1
+    node_centre = d3
+    berth = d3
+    berth_axis = d3
+    tilt = d1
+    residual = d1
+    reach = d1
+    rock_distance = d1
+    hatch = i4
+    anchor_key = ul1
+    anchor_centre = d3
+    kind = ui1
+    recipe = ui1
+    preferred = i1
+    hall_key = ul1
+    rooms = ui1
+    doors = ui1
+    triangles = ui1
+    voxel_origin = i3
+    voxel_size = i3
+    voxels = ui1
+    // прямоугольник ленивой маски плана в клетках: i0, k0, ширина, глубина
+    mask = i4
+    low = d3
+    high = d3
+  ]
+  size = one
+}
+
+// Помещение: внутренность [u0,u1)x[v0,v1) в клетках, срезы углов, назначение (номер в словаре),
+// внутреннее ли, родитель по росту.
+{
+  name = station_rooms
+  format = [ rect = i4, chamfer = ub4, purpose = ui1, inner = ui1, parent = ui1 ]
+  size = station_room_capacity
+}
+
+// Проём — клетки стены между помещениями a и b.
+{
+  name = station_doors
+  format = [ a = ui1, b = ui1, rect = i4 ]
+  size = station_door_capacity
+}
+
+{
+  name = station_mesh
+  format = [ a = d3, b = d3, c = d3, normal = d3, shade = ub1 ]
+  size = station_triangle_capacity
+}
+
+{
+  name = station_voxels
+  format = [ solid = ub1, shade = ub1 ]
+  size = station_voxel_capacity
+}
+
+// Запретная геометрия в осях станции (u, y, v): маршруты, шары поворота, путь лодки, коридоры залов.
+{ name = keep_routes, format = [ a = d3, b = d3 ], size = station_keep_capacity }
+{ name = keep_turns, format = [ centre = d3 ], size = station_keep_capacity }
+{ name = keep_berth, format = [ a = d3, b = d3 ], size = station_keep_capacity }
+{ name = keep_tubes, format = [ a = d3, b = d3, radius = d1 ], size = station_keep_capacity }
+
+// Ленивая маска плана (112 x 96 клеток): классы считаются при первом запросе и запоминаются здесь.
+{ name = mask_band, format = [ value = ub1 ], size = station_mask_cells }
+{ name = mask_held, format = [ value = ub1 ], size = station_mask_cells }
+{ name = mask_margin, format = [ value = ub1 ], size = station_mask_cells }
+{ name = mask_cells, format = [ value = ub1 ], size = station_mask_cells }
+
+// Ответ блока station_room_cells: отказ (запретная клетка или вода без опоры рядом), клеток внутри,
+// из них в породе, глубоко в породе, в воде с опорой.
+{
+  name = station_probe
+  format = [ refused = ui1, total = ui1, solid = ui1, deep = ui1, water = ui1 ]
+  size = one
+}
+
+// Лучи и пробы поля.
+{ name = rays, format = [ origin = d3, direction = d3, hit = d1 ], size = station_probe_capacity }
+{ name = samples, format = [ position = d3, value = d1 ], size = station_probe_capacity }

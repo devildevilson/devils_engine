@@ -1,0 +1,10 @@
+// Туннель: пара якоря, если она взаимна (ключ — ключ станции якоря). Туннель пары строит генератор tunnel
+// с ключом станции ПЕРВОГО якоря (меньший ключ) в канонической окрестности середины пары.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = tunnel_link
+buffers = ./link_buffers.tavl
+steps = [
+  { name = link, body = ./scripts/link.lua, reads = [ tunnel_self, tunnel_partner ], writes = [ tunnel_link, tunnel_pair ] }
+]

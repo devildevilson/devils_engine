@@ -1,0 +1,11 @@
+// Окно макрографа — ТОЧКА ВХОДА генератора window (ключ — ключ окна): обещания хоста о месте (`limits`) и
+// ОКРУЖЕНИЕ для лодки — формы природного поля буферами (галереи рёбер с карманами, шары поворота).
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = window
+buffers = ./window_buffers.tavl
+steps = [
+  { name = environment, body = ./scripts/window.lua, reads = [ nodes, edges, graph_meta ],
+    writes = [ limits, galleries, turns, environment_counts ] }
+]

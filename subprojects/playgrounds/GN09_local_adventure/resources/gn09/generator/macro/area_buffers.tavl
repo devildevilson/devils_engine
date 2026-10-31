@@ -1,0 +1,15 @@
+{
+  name = cells
+  format = [ key = ul2 ]
+  size = cell_capacity
+}
+{
+  name = area_regions
+  format = [ key = ul2 ]
+  size = region_capacity
+}
+{
+  name = area_counts
+  format = [ cells = ui1, regions = ui1, min_x = i1, min_z = i1, max_x = i1, max_z = i1 ]
+  size = one
+}

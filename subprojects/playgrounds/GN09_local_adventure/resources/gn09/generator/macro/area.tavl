@@ -1,0 +1,10 @@
+// Окно макрографа — ЛОКАТОР: из ключа окна (min_x, min_z, ширина | высота << 32) считает его сектора
+// по строкам и регионы залов, способных дотянуться до окна.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = area
+buffers = ./area_buffers.tavl
+steps = [
+  { name = locate, body = ./scripts/area.lua, writes = [ cells, area_regions, area_counts ] }
+]

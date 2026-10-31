@@ -1,0 +1,10 @@
+// Туннель: станции у середины пары (ключ — ключ станции первого якоря): туннель обходит их вырез и путь
+// лодки к причалу.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = tunnel_scope
+buffers = ./scope_buffers.tavl
+steps = [
+  { name = scope, body = ./scripts/scope.lua, reads = [ tunnel_pair, nodes, graph_meta ], writes = [ tunnel_around, around_counts ] }
+]

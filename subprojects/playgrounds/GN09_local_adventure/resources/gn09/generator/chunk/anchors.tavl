@@ -1,0 +1,10 @@
+// Якоря станций, которые могут коснуться чанка: базы и аванпосты окна чанка не дальше station_reach от
+// коробки чанка (с соседним слоем сэмплов) по каждой оси. Их станции и туннели — fan-in поля чанка.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = chunk_anchors
+buffers = ./anchors_buffers.tavl
+steps = [
+  { name = select, body = ./scripts/anchors.lua, reads = [ nodes, graph_meta ], writes = [ anchors, anchor_counts ] }
+]

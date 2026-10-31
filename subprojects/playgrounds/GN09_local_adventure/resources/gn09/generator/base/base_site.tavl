@@ -1,0 +1,11 @@
+// Место базы — ТОЧКА ВХОДА генератора base_site (ключ — сектор базы x, z и ключ узла): назначения
+// модулей по рецепту. Геометрию строит станция; здесь — только программа места.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = base_site
+values = ./base_values.tavl
+buffers = ./base_buffers.tavl
+steps = [
+  { name = programme, body = ./scripts/base_site.lua, reads = [ nodes, graph_meta ], writes = [ base_rooms, base_counts ] }
+]

@@ -299,6 +299,37 @@ std::string format_profile(const execution_profile& profile, const size_t top_ca
                           milliseconds(summary.script_microseconds),
                           share(summary.script_microseconds, summary.total_microseconds)));
 
+  // УРОВНИ ИСПОЛНЕНИЯ: на что тратятся часы — нативные инструменты, программы devils_script или
+  // очереди (их время не раскладывается по элементам). Нужно до любого разговора об ускорении ds:
+  // ускорять уровень, у которого нет часов, — работа без выигрыша.
+  {
+    uint64_t native = 0, scripts = 0, queues = 0;
+    size_t script_elements = 0, queue_calls = 0, queue_scripts = 0;
+    {
+      for (const auto& record : profile.records()) {
+        if (record.queue_size != 0) {
+          queues += record.microseconds;
+          queue_calls += record.queue_size;
+          queue_scripts += record.queue_scripts;
+        } else if (record.script) {
+          scripts += record.microseconds;
+          script_elements += record.elements;
+        } else {
+          native += record.microseconds;
+        }
+      }
+    }
+    text.append("\nУРОВНИ ИСПОЛНЕНИЯ:\n");
+    text.append(std::format("  нативные инструменты {:9.2f} мс  {:5.1f}%\n", milliseconds(native),
+                            share(native, summary.total_microseconds)));
+    text.append(std::format("  программы ds         {:9.2f} мс  {:5.1f}%   {} элементов, {:.1f} нс на элемент\n",
+                            milliseconds(scripts), share(scripts, summary.total_microseconds), script_elements,
+                            script_elements == 0 ? 0.0 : double(scripts) * 1000.0 / double(script_elements)));
+    text.append(std::format("  очереди              {:9.2f} мс  {:5.1f}%   {} вызовов, из них программ ds {}\n",
+                            milliseconds(queues), share(queues, summary.total_microseconds), queue_calls,
+                            queue_scripts));
+  }
+
   text.append("\nГОДНОСТЬ К УСТРОЙСТВУ (доля стенных часов ГЕНЕРАТОРА):\n");
   static constexpr std::string_view fitness_notes[device_fitness::count] = {
     "апертура пускается, тело есть",

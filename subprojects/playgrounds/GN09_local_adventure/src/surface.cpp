@@ -1,5 +1,11 @@
 #include "surface.h"
 #include "local_structure.h"
+#include "station.h"
+#include "tunnel.h"
+#include "world_chain.h"
+
+#include "devils_engine/originator/generator_chain.h"
+#include "devils_engine/utils/core.h"
 
 #include <algorithm>
 #include <array>
@@ -7,6 +13,7 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <string_view>
 
 namespace gn09 {
 namespace {
@@ -98,6 +105,7 @@ surface_mesh generate_surface(const field_region& region, const chunk& volume) {
           mesh.push_back(b);
           mesh.push_back(c);
         };
+        const size_t first_vertex = mesh.size();
         for (const auto& tet : tetrahedra) {
           std::array<int, 4> inside{}, outside{};
           int in_count = 0, out_count = 0;
@@ -120,8 +128,104 @@ surface_mesh generate_surface(const field_region& region, const chunk& volume) {
             triangle(b, d, c);
           }
         }
+        // Порода клетки — вид полости, чьё слагаемое поля даёт минимум у середины её
+        // поверхности. Граница видов идёт по клеткам: там, где начинается другая пещера.
+        if (mesh.size() > first_vertex) {
+          point middle{};
+          for (size_t i = first_vertex; i < mesh.size(); ++i) middle = add(middle, mesh[i].position);
+          middle = add(origin, scale(middle, 1.0 / double(mesh.size() - first_vertex)));
+          const uint8_t shade = uint8_t(rock_at(region, middle));
+          for (size_t i = first_vertex; i < mesh.size(); ++i) mesh[i].shade = shade;
+        }
       }
     }
+  }
+  return mesh;
+}
+
+namespace {
+
+namespace originator = devils_engine::originator;
+
+originator::instance_key key_at(const originator::const_field_accessor& keys, const size_t row) {
+  return {{originator::read_key_word(keys, row, 0), originator::read_key_word(keys, row, 1),
+           originator::read_key_word(keys, row, 2)}};
+}
+
+// Блок генератора chunk_field: треугольники станций якорей чанка (без проёмов их туннеля) и туннелей
+// чанка, обрезанные по коробке чанка [low, high). Станции и туннели — экземпляры цепочки по ключам
+// (вход 0 — станции якорей, 1 — туннели, 2 — зерно мира); их же поле чанка взяло fan-in-ом.
+void tool_structure_surface(const originator::tool_call& call, const size_t, const size_t) {
+  const auto stations = call.input(0).read(), tunnels = call.input(1).read();
+  const uint64_t seed = originator::read_key_word(call.input(2).read(), 0);
+  auto& chain = world_chain(call.params->number("clearance"));
+  const double side = call.params->number("cells");
+  const point low{call.params->number("x") * side, call.params->number("y") * side, call.params->number("z") * side};
+  const point high{low.x + side, low.y + side, low.z + side};
+  auto position = call.output(0).write(), normal = call.output(1).write(), shade = call.output(2).write();
+  size_t made = 0;
+  const auto emit = [&](const point* polygon, const size_t count, const point n, const uint8_t material) {
+    for (size_t i = 1; i + 1 < count; ++i) {
+      for (const point& p : {polygon[0], polygon[i], polygon[i + 1]}) {
+        if (made >= position.count()) {
+          devils_engine::utils::error{}("GN09 structure_surface: more than {} vertices", position.count());
+        }
+        position.set(made, p.x, 0); position.set(made, p.y, 1); position.set(made, p.z, 2);
+        normal.set(made, n.x, 0); normal.set(made, n.y, 1); normal.set(made, n.z, 2);
+        shade.set(made, double(material));
+        ++made;
+      }
+    }
+  };
+  for (int64_t i = 0; i < call.params->integer("anchors"); ++i) {
+    const auto key = key_at(stations, size_t(i));
+    const auto station = station_view(*chain.get("station", seed, key));
+    if (!station || !station_reaches(*station, low, high)) continue;
+    // Проём туннеля: треугольники стены станции внутри его ноги не выводятся.
+    const auto tunnel = tunnel_of_station(chain, seed, key);
+    const uint64_t anchor = key.words[2];
+    clip_triangles(station->mesh, low, high, emit, [&](const station_triangle& t) {
+      return tunnel && in_tunnel_doorway(*tunnel, anchor, scale(add(add(t.a, t.b), t.c), 1.0 / 3.0));
+    });
+  }
+  for (int64_t i = 0; i < call.params->integer("tunnels"); ++i) {
+    const auto tunnel = tunnel_view(*chain.get("tunnel", seed, key_at(tunnels, size_t(i))));
+    if (!tunnel || !tunnel_reaches(*tunnel, low, high)) continue;
+    clip_triangles(tunnel->mesh, low, high, emit);
+  }
+  call.output(3).write().set(0, double(made));
+}
+
+} // namespace
+
+void add_surface_tools(devils_engine::originator::tool_registry& tools) {
+  tools.add(originator::tool_description{.name = "structure_surface", .shape = originator::aperture::sequential,
+                                         .input_count = 3, .output_count = 4, .body = tool_structure_surface,
+                                         .footprint = originator::no_temporary_memory});
+}
+
+surface_mesh surface_from_chain(const chunk_instance& made) {
+  surface_mesh mesh;
+  const auto& instance = *made.instance;
+  const auto counts = [&](const std::string_view name) { return size_t(instance.field("surface_counts", name).get(0)); };
+  const point origin{double(made.volume.x * chunk::cells), double(made.volume.y * chunk::cells),
+                     double(made.volume.z * chunk::cells)};
+  const auto read = [](const originator::const_field_accessor& f, const size_t i) {
+    return point{f.get(i, 0), f.get(i, 1), f.get(i, 2)};
+  };
+  {
+    const auto position = instance.field("surface", "position"), normal = instance.field("surface", "normal"),
+               shade = instance.field("surface", "shade");
+    const size_t count = counts("vertices");
+    mesh.reserve(count + counts("structure"));
+    for (size_t i = 0; i < count; ++i) {
+      mesh.push_back({subtract(read(position, i), origin), read(normal, i), uint8_t(shade.get(i))});
+    }
+  }
+  const auto position = instance.field("structure_surface", "position"),
+             normal = instance.field("structure_surface", "normal"), shade = instance.field("structure_surface", "shade");
+  for (size_t i = 0, count = counts("structure"); i < count; ++i) {
+    mesh.push_back({subtract(read(position, i), origin), read(normal, i), uint8_t(shade.get(i))});
   }
   return mesh;
 }
@@ -131,54 +235,27 @@ void append_outpost_surface(const adventure& world, const chunk& volume, surface
   const point chunk_low{double(volume.x) * side, double(volume.y) * side,
                         double(volume.z) * side};
   const point chunk_high{chunk_low.x + side, chunk_low.y + side, chunk_low.z + side};
-  const auto component = [](const point p, const uint32_t axis) {
-    return axis == 0 ? p.x : axis == 1 ? p.y : p.z;
-  };
-  for (const node& at : world.route.nodes) {
-    if (!is_base(at.kind)) continue;
-    if (at.centre.x < chunk_low.x - 64.0 || at.centre.x > chunk_high.x + 64.0 ||
-        at.centre.y < chunk_low.y - 32.0 || at.centre.y > chunk_high.y + 32.0 ||
-        at.centre.z < chunk_low.z - 64.0 || at.centre.z > chunk_high.z + 64.0) continue;
-    const local_structure structure = materialize_local_structure(world, at.id);
-    for (const built_solid& solid : fit_outpost_solids(world, structure)) {
-      const point first = structure_to_world(structure, double(solid.footprint.u0) / 100.0,
-                                             double(solid.y0) / 100.0,
-                                             double(solid.footprint.v0) / 100.0);
-      const point last = structure_to_world(structure, double(solid.footprint.u1) / 100.0,
-                                            double(solid.y1) / 100.0,
-                                            double(solid.footprint.v1) / 100.0);
-      const point low{std::min(first.x, last.x), std::min(first.y, last.y),
-                      std::min(first.z, last.z)};
-      const point high{std::max(first.x, last.x), std::max(first.y, last.y),
-                       std::max(first.z, last.z)};
-      if (low.x >= chunk_high.x || high.x <= chunk_low.x ||
-          low.y >= chunk_high.y || high.y <= chunk_low.y ||
-          low.z >= chunk_high.z || high.z <= chunk_low.z) continue;
-      for (uint32_t axis = 0; axis < 3; ++axis) {
-        const uint32_t a = (axis + 1) % 3, b = (axis + 2) % 3;
-        const double a0 = std::max(component(low, a), component(chunk_low, a));
-        const double a1 = std::min(component(high, a), component(chunk_high, a));
-        const double b0 = std::max(component(low, b), component(chunk_low, b));
-        const double b1 = std::min(component(high, b), component(chunk_high, b));
-        if (a0 >= a1 || b0 >= b1) continue;
-        for (uint32_t side_id = 0; side_id < 2; ++side_id) {
-          const double plane = component(side_id == 0 ? low : high, axis);
-          if (plane < component(chunk_low, axis) || plane >= component(chunk_high, axis)) continue;
-          const double sign = side_id == 0 ? -1.0 : 1.0;
-          const auto vertex = [&](const double av, const double bv) {
-            point p{};
-            point n{};
-            if (axis == 0) { p = {plane, av, bv}; n.x = sign; }
-            else if (axis == 1) { p = {bv, plane, av}; n.y = sign; }
-            else { p = {av, bv, plane}; n.z = sign; }
-            return surface_vertex{subtract(p, chunk_low), n, solid.shade};
-          };
-          const surface_vertex p0 = vertex(a0, b0), p1 = vertex(a1, b0);
-          const surface_vertex p2 = vertex(a1, b1), p3 = vertex(a0, b1);
-          mesh.insert(mesh.end(), {p0, p1, p2, p0, p2, p3});
-        }
-      }
+  const auto emit = [&](const point* polygon, const size_t count, const point normal, const uint8_t shade) {
+    for (size_t i = 1; i + 1 < count; ++i) {
+      mesh.push_back({subtract(polygon[0], chunk_low), normal, shade});
+      mesh.push_back({subtract(polygon[i], chunk_low), normal, shade});
+      mesh.push_back({subtract(polygon[i + 1], chunk_low), normal, shade});
     }
+  };
+  for (const station_anchor& at : station_anchors(world)) {
+    if (std::abs(at.centre.x - chunk_low.x) > station_reach + side ||
+        std::abs(at.centre.y - chunk_low.y) > station_reach + side ||
+        std::abs(at.centre.z - chunk_low.z) > station_reach + side) continue;
+    const auto station = station_for(world, at);
+    if (!station || !station_reaches(*station, chunk_low, chunk_high)) continue;
+    // Проём туннеля: треугольники стены станции внутри его ноги не выводятся.
+    const auto tunnel = tunnel_for(world, at);
+    clip_triangles(station->mesh, chunk_low, chunk_high, emit, [&](const station_triangle& t) {
+      return tunnel && in_tunnel_doorway(*tunnel, at.key, scale(add(add(t.a, t.b), t.c), 1.0 / 3.0));
+    });
+  }
+  for (const auto& tunnel : tunnels_near(world, chunk_low, chunk_high)) {
+    clip_triangles(tunnel->mesh, chunk_low, chunk_high, emit);
   }
 }
 
@@ -240,46 +317,51 @@ surface_seam_result verify_surface_seam(const adventure& world) {
   return {false, "no surface crosses a sampled chunk face"};
 }
 
+// Швы станции: каждый треугольник её сетки разрезается по чанкам, и куски всех
+// чанков вместе должны иметь ровно ту же площадь — ни один не потерян на грани и
+// не попал в два соседних чанка (грань на верхней плоскости достаётся соседу).
 surface_seam_result verify_outpost_surface_seam(const adventure& world) {
-  for (const node& at : world.route.nodes) {
-    if (!is_base(at.kind)) continue;
-    const int cx = int(std::floor(at.centre.x / chunk::cells));
-    const int cy = int(std::floor(at.centre.y / chunk::cells));
-    const int cz = int(std::floor(at.centre.z / chunk::cells));
-    for (int z = cz - 2; z <= cz + 2; ++z) {
-      for (int y = cy - 1; y <= cy + 1; ++y) {
-        for (int x = cx - 2; x <= cx + 2; ++x) {
-          const chunk left{x, y, z, {}}, right{x + 1, y, z, {}};
-          surface_mesh first, second;
-          append_outpost_surface(world, left, first);
-          append_outpost_surface(world, right, second);
-          const double plane = double((x + 1) * chunk::cells);
-          const auto border = [&](const surface_mesh& mesh, const chunk& owner) {
-            std::set<std::array<int64_t, 6>> vertices;
-            const point origin{double(owner.x * chunk::cells), double(owner.y * chunk::cells),
-                               double(owner.z * chunk::cells)};
-            for (const surface_vertex& vertex : mesh) {
-              const point p = add(vertex.position, origin);
-              if (std::abs(p.x - plane) > 1e-8 || std::abs(vertex.normal.x) > 0.5) continue;
-              vertices.insert({int64_t(std::llround(p.y * 1000000.0)),
-                               int64_t(std::llround(p.z * 1000000.0)),
-                               int64_t(std::lround(vertex.normal.x * 127.0)),
-                               int64_t(std::lround(vertex.normal.y * 127.0)),
-                               int64_t(std::lround(vertex.normal.z * 127.0)),
-                               vertex.shade});
-            }
-            return vertices;
-          };
-          const auto a = border(first, left), b = border(second, right);
-          if (a.empty() && b.empty()) continue;
-          if (a != b) return {false, "outpost mesh disagrees across chunk face",
-                              (first.size() + second.size()) / 3, a.size()};
-          return {true, {}, (first.size() + second.size()) / 3, a.size()};
+  const auto area = [](const point a, const point b, const point c) {
+    const point ab = subtract(b, a), ac = subtract(c, a);
+    const point n{ab.y * ac.z - ab.z * ac.y, ab.z * ac.x - ab.x * ac.z, ab.x * ac.y - ab.y * ac.x};
+    return 0.5 * std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+  };
+  size_t triangles = 0, pieces = 0;
+  const auto conserved = [&](const std::vector<station_triangle>& mesh, const point box_low, const point box_high) {
+    double whole = 0.0, cut = 0.0;
+    for (const station_triangle& t : mesh) whole += area(t.a, t.b, t.c);
+    constexpr double side = chunk::cells;
+    for (int z = int(std::floor(box_low.z / side)); z <= int(std::floor(box_high.z / side)); ++z) {
+      for (int y = int(std::floor(box_low.y / side)); y <= int(std::floor(box_high.y / side)); ++y) {
+        for (int x = int(std::floor(box_low.x / side)); x <= int(std::floor(box_high.x / side)); ++x) {
+          const point low{x * side, y * side, z * side};
+          clip_triangles(mesh, low, {low.x + side, low.y + side, low.z + side},
+            [&](const point* polygon, const size_t count, point, uint8_t) {
+              ++pieces;
+              for (size_t i = 1; i + 1 < count; ++i) cut += area(polygon[0], polygon[i], polygon[i + 1]);
+            });
         }
       }
     }
+    triangles += mesh.size();
+    return std::abs(whole - cut) <= 1e-6 * std::max(1.0, whole);
+  };
+  std::vector<uint64_t> seen_tunnels;
+  for (const station_anchor& at : station_anchors(world)) {
+    const auto station = station_for(world, at);
+    if (!station) continue;
+    if (!conserved(station->mesh, station->low, station->high)) {
+      return {false, "station mesh area changes when cut by chunks", triangles, pieces};
+    }
+    const auto tunnel = tunnel_for(world, at);
+    if (!tunnel || std::find(seen_tunnels.begin(), seen_tunnels.end(), tunnel->key) != seen_tunnels.end()) continue;
+    seen_tunnels.push_back(tunnel->key);
+    if (!conserved(tunnel->mesh, tunnel->low, tunnel->high)) {
+      return {false, "tunnel mesh area changes when cut by chunks", triangles, pieces};
+    }
   }
-  return {false, "no outpost mesh crosses a sampled chunk face"};
+  if (triangles == 0) return {false, "no station mesh to cut by chunks"};
+  return {true, {}, triangles, pieces};
 }
 
 } // namespace gn09

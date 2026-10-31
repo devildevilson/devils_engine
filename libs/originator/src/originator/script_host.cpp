@@ -1,4 +1,5 @@
 #include "devils_engine/originator/script_host.h"
+#include "devils_engine/originator/generator_chain.h"
 
 #include "devils_engine/originator/script_translate.h"
 
@@ -10,6 +11,8 @@
 #include <functional>
 #include <cstring>
 #include <format>
+#include <map>
+#include <atomic>
 
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/core.h"
@@ -76,16 +79,56 @@ char script_host_registry_key = 0;
 // стейта, а порядок захвата решал, упадёт оно или испортит память молча. У функции тип называется её
 // собственным именем, поэтому ошибка перестаёт быть ВЫРАЗИМОЙ, а не менее вероятной.
 
-double field_get(const field_ref& self, const size_t index, const sol::optional<uint32_t> component) {
-  return self.read().get(index, component.value_or(0));
+// ЧТЕНИЕ И ЗАПИСЬ ПОЛЯ — сырые функции lua: 64-битный целый род (`ul`/`l`) отдаётся целым lua (его 64
+// бита проходят без потерь, у `ul` — как биты i64), остальные — числом. Запись смотрит на само значение:
+// целое lua пишется целым путём, дробное — через double. Через sol::object это стоило бы ссылки в
+// реестре на каждый элемент, а через variant-аргумент дробное молча усекалось бы в целое.
+const field_ref& field_self(lua_State* L) {
+  const auto self = sol::stack::check_get<field_ref*>(L, 1);
+  if (!self || *self == nullptr) luaL_error(L, "originator: field method called without a field");
+  return **self;
 }
 
-void field_set(const field_ref& self, const size_t index, const double value, const sol::optional<uint32_t> component) {
+uint32_t field_component_arg(lua_State* L, const int index) {
+  if (lua_isnoneornil(L, index)) return 0;
+  const auto value = luaL_checkinteger(L, index);
+  if (value < 0) luaL_error(L, "originator: component %d is negative", int(value));
+  return uint32_t(value);
+}
+
+int field_get(lua_State* L) {
+  const auto& self = field_self(L);
+  const auto index = luaL_checkinteger(L, 2);
+  const uint32_t component = field_component_arg(L, 3);
+  const auto read = self.read();
+  if (index < 0) {
+    lua_pushnumber(L, 0.0);
+    return 1;
+  }
+  if (is_wide_integer(read.type().base)) {
+    lua_pushinteger(L, read.get_integer(size_t(index), component));
+  } else {
+    lua_pushnumber(L, read.get(size_t(index), component));
+  }
+  return 1;
+}
+
+int field_set(lua_State* L) {
+  const auto& self = field_self(L);
+  const auto index = luaL_checkinteger(L, 2);
+  const uint32_t component = field_component_arg(L, 4);
   if (!self.writable()) {
     utils::error{}("originator: field '{}.{}' is bound for reading and cannot be written",
                    self.buffer_name(), self.field_name());
   }
-  self.write().set(index, value, component.value_or(0));
+  if (index < 0) return 0;
+  // У 64-битного рода дробное значение — громкий отказ: через double ключ потерял бы биты молча.
+  if (lua_isinteger(L, 3) || is_wide_integer(self.type().base)) {
+    self.write().set_integer(size_t(index), luaL_checkinteger(L, 3), component);
+  } else {
+    self.write().set(size_t(index), luaL_checknumber(L, 3), component);
+  }
+  return 0;
 }
 
 uint32_t field_components(const field_ref& self) {
@@ -595,7 +638,7 @@ void script_host::run_program(const sol::table args) {
     const size_t workers = pool_ == nullptr ? 1 : pool_->size() + 1;
     account(*program_name, uint64_t(now_us() - started), end > begin ? end - begin : 0,
             touched_fields(inputs, outputs), program.shape(), fitness, 0, false, translation,
-            script_footprint(program, workers), true);
+            script_footprint(program, workers), true, true);
   }
 }
 
@@ -880,6 +923,7 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
       record.translation_microseconds = pending_translation_us_;
       pending_translation_us_ = 0;
       record.queue_size = queue.calls.size();
+      for (const auto& call : queue.calls) record.queue_scripts += call.tool == nullptr ? 1 : 0;
       std::copy(std::begin(by_fitness), std::end(by_fitness), std::begin(record.queue_fitness));
       record.footprint = footprint;
       record.declared_footprint = declared_footprint;
@@ -927,6 +971,40 @@ void script_host::load_body(const std::string_view& step_name, const std::string
   bodies_.push_back(body_entry{std::string(step_name), returned.as<sol::protected_function>()});
 }
 
+namespace {
+int module_write_refused(lua_State* L) {
+  return luaL_error(L, "originator: a chain module is read-only (tried to set '%s')", luaL_tolstring(L, 2, nullptr));
+}
+} // namespace
+
+// Модуль — кусок lua, возвращающий таблицу; кладётся в `modules.<имя>` окружения. Таблица модуля
+// запирается от записи: модуль один на хост, а хост переживает экземпляры, и запись в него стала бы
+// состоянием между сборками — то есть зависимостью мира от порядка.
+void script_host::load_module(const std::string_view& module_name, const std::string_view& source,
+                              const std::string_view& chunk_name) {
+  sol::table modules = env_["modules"].get_or_create<sol::table>();
+  if (modules[std::string(module_name)].valid()) {
+    utils::error{}("originator: module '{}' is loaded twice", module_name);
+  }
+  const auto result = lua_.safe_script(source, env_, sol::script_pass_on_error, std::string(chunk_name));
+  if (!result.valid()) {
+    const sol::error err = result;
+    utils::error{}("originator: could not load module '{}' ({}): {}", module_name, chunk_name, err.what());
+  }
+  const sol::object returned = result;
+  if (returned.get_type() != sol::type::table) {
+    utils::error{}("originator: module '{}' ({}) must return a table, got '{}'", module_name, chunk_name,
+                   sol::type_name(lua_.lua_state(), returned.get_type()));
+  }
+  sol::table module = returned.as<sol::table>();
+  sol::table locked = lua_.create_table();
+  locked[sol::meta_function::new_index] = &module_write_refused;
+  locked[sol::meta_function::index] = module;
+  sol::table front = lua_.create_table();
+  front[sol::metatable_key] = locked;
+  modules[std::string(module_name)] = front;
+}
+
 void script_host::load_program(const std::string_view& program_name, const std::string_view& source) {
   for (auto& entry : program_sources_) {
     if (entry.name == program_name) {
@@ -966,7 +1044,8 @@ void script_host::account(std::string label,
                           const bool on_device,
                           const uint64_t translation_microseconds,
                           const size_t footprint,
-                          const bool declared_footprint) {
+                          const bool declared_footprint,
+                          const bool script) {
   if (profile_ == nullptr) {
     return;
   }
@@ -987,6 +1066,7 @@ void script_host::account(std::string label,
   record.on_device = on_device;
   record.footprint = footprint;
   record.declared_footprint = declared_footprint;
+  record.script = script;
   profile_->add(std::move(record));
 }
 
@@ -1165,6 +1245,27 @@ sol::table script_host::make_step_table(const step_context& context) {
   }
   step["reads"] = reads;
 
+  // Связи цепочки: у каждой — список экземпляров, у экземпляра — его выходы по именам, только чтение.
+  // Одиночная связь — список из одного; её буферы вдобавок видны в reads, если шаг их там назвал.
+  sol::table links(lua_, sol::create);
+  for (const auto& link : context.links) {
+    sol::table instances(lua_, sol::create);
+    for (size_t i = 0; i < link.instances.size(); ++i) {
+      sol::table outputs(lua_, sol::create);
+      for (const auto* source : link.instances[i]) {
+        outputs[source->name()] = script_buffer_view{source, nullptr};
+      }
+      instances[i + 1] = outputs;
+    }
+    links[link.name] = instances;
+  }
+  step["links"] = links;
+  // Ключ экземпляра словами: целые lua, 64 бита как есть (сравнение без знака — math.ult).
+  sol::table key(lua_, sol::create);
+  for (size_t w = 0; w < context.instance.size(); ++w) key[w + 1] = std::bit_cast<int64_t>(context.instance[w]);
+  step["key"] = key;
+  step["world_seed"] = std::bit_cast<int64_t>(context.world_seed);
+
   return step;
 }
 
@@ -1237,6 +1338,68 @@ step_invoker script_host::invoker() {
     if (profile_ != nullptr) {
       profile_->end_step(uint64_t(now_us() - step_started));
     }
+  };
+}
+
+namespace {
+
+struct chain_hosts_state {
+  uint64_t id = 0;
+  const generator_chain* chain = nullptr;
+  std::function<void(tool_registry&)> add_tools;
+  thread::atomic_pool* pool = nullptr;
+};
+
+struct thread_host {
+  tool_registry tools;
+  std::unique_ptr<script_host> host;
+  bool busy = false;
+};
+
+std::atomic<uint64_t> next_chain_hosts_id{1};
+
+} // namespace
+
+invoker_source make_chain_invokers(const generator_chain& chain, std::function<void(tool_registry&)> add_tools,
+                                   thread::atomic_pool* pool) {
+  auto state = std::make_shared<chain_hosts_state>();
+  // Номер, а не адрес цепочки: адрес освобождённой цепочки может достаться новой, и поток взял бы
+  // хост со старыми телами.
+  state->id = next_chain_hosts_id.fetch_add(1);
+  state->chain = &chain;
+  state->add_tools = std::move(add_tools);
+  state->pool = pool;
+  return [state](const chain_generator& generator) -> step_invoker {
+    thread_local std::map<std::pair<uint64_t, std::string>, std::unique_ptr<thread_host>> hosts;
+    auto& slot = hosts[{state->id, generator.name}];
+    if (slot == nullptr) {
+      slot = std::make_unique<thread_host>();
+      if (state->add_tools) state->add_tools(slot->tools);
+      slot->host = std::make_unique<script_host>(slot->tools, state->pool);
+      for (const auto& module : state->chain->modules()) slot->host->load_module(module.name, module.text, module.id);
+      for (const auto& script : state->chain->scripts(generator.name)) {
+        if (script.program) {
+          slot->host->load_program(script.name, script.text);
+        } else {
+          slot->host->load_body(script.name, script.text, script.id);
+        }
+      }
+    }
+    thread_host* host = slot.get();
+    auto inner = host->host->invoker();
+    return [host, inner = std::move(inner), name = generator.name](const step_context& context) {
+      // Связи разрешаются ДО шагов, поэтому повторный вход в тот же хост означает, что шаг сам
+      // попросил экземпляр того же генератора — у однопоточного lua это порча состояния, а не рекурсия.
+      if (host->busy) {
+        utils::error{}("originator chain generator '{}': a step re-entered its own lua host", name);
+      }
+      host->busy = true;
+      struct release {
+        thread_host* h;
+        ~release() { h->busy = false; }
+      } released{host};
+      inner(context);
+    };
   };
 }
 

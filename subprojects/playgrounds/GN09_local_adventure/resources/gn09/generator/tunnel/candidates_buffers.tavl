@@ -1,0 +1,4 @@
+// Сам якорь: ключ станции, ключ якоря, центр.
+{ name = tunnel_self, format = [ station = ul3, anchor = ul1, centre = d3 ], size = one }
+{ name = tunnel_candidates, format = [ station = ul3, anchor = ul1, centre = d3 ], size = tunnel_candidate_capacity }
+{ name = candidate_counts, format = [ candidates = ui1 ], size = one }

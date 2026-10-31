@@ -1,12 +1,17 @@
 #include "adventure.h"
 #include "local_structure.h"
+#include "world_chain.h"
+
+#include "devils_engine/originator/tools.h"
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <functional>
 #include <numbers>
 #include <optional>
 
+#include "devils_engine/utils/core.h"
 #include "devils_engine/utils/prng.h"
 
 // Уровень залов. Регион 768 м решает, где в нём лежат большие залы, а граф секторов
@@ -25,9 +30,6 @@ double dot(const point a, const point b) { return a.x * b.x + a.y * b.y + a.z * 
 double length(const point a) { return std::sqrt(dot(a, a)); }
 point normalize(const point a) { return scale(a, 1.0 / length(a)); }
 
-double random01(const uint64_t seed, const uint64_t a, const uint64_t b = 0) {
-  return devils_engine::utils::prng_normalize(devils_engine::utils::mix(seed, a, b));
-}
 
 double segment_distance(const point p, const point a, const point b) {
   const point ab = subtract(b, a);
@@ -87,9 +89,6 @@ double ellipsoid_distance(const hall& h, const point local) {
   return k1 > 0.0 ? k0 * (k0 - 1.0) / k1 : -smallest_radius(h);
 }
 
-double ellipse_level(const hall& h, const double u, const double v) {
-  return 1.0 - (u / h.half_length) * (u / h.half_length) - (v / h.half_width) * (v / h.half_width);
-}
 
 // Твёрдая часть зала без шума: стены, дно, колонны, уступы. Отрицательно — вода.
 double hall_solid(const hall& h, const point local) {
@@ -104,9 +103,17 @@ double hall_solid(const hall& h, const point local) {
   return air;
 }
 
-double core_distance(const hall& h, const point local) {
-  return segment_distance(local, {-h.core_half, h.core_y, 0}, {h.core_half, h.core_y, 0});
+// Расстояние до оси петли патруля (замкнутая ломаная).
+double loop_distance(const hall& h, const point local) {
+  double best = 1e30;
+  for (size_t i = 0; i < h.loop.size(); ++i) {
+    best = std::min(best, segment_distance(local, h.loop[i], h.loop[(i + 1) % h.loop.size()]));
+  }
+  return best;
 }
+
+// Петля вырезана под тело с охранным слоем сетки; неровность только наружу.
+double loop_clearance(const hall& h) { return h.body_radius + surface_guard; }
 
 // Расстояние до поверхности трубки ниши: сечение вытянуто по высоте (вертикальная
 // составляющая смещения сжата), у входа раструб. Оба приёма только расширяют
@@ -134,7 +141,7 @@ double niche_distance(const hall_niche& niche, const point local) {
 bool certainly_rock(const hall& h, const point local) {
   constexpr double margin = 0.5;
   if (hall_solid(h, local) <= relief_bound + margin) return false;
-  if (core_distance(h, local) <= h.core_radius + 2.0 * core_relief + margin) return false;
+  if (loop_distance(h, local) <= loop_clearance(h) + 2.0 * core_relief + margin) return false;
   for (const hall_niche& niche : h.niches) {
     if (niche_distance(niche, local) <= 2.0 * niche_relief + margin) return false;
   }
@@ -147,17 +154,20 @@ point niche_target(const hall_niche& niche) {
   return subtract(niche.end, scale(axis, 5.0));
 }
 
-// Каждый луч от оси коридора до укрытия упирается в скалу.
+// Каждый луч от станции петли до укрытия упирается в скалу.
 bool niche_hidden(const hall& h, const hall_niche& niche,
                   const std::function<bool(const point& local)>& rock) {
   const point target = niche_target(niche);
-  const uint32_t stations = uint32_t(std::ceil(2.0 * h.core_half / 25.0));
-  for (uint32_t s = 0; s <= stations; ++s) {
-    const point from{-h.core_half + 2.0 * h.core_half * double(s) / double(stations), h.core_y, 0};
+  // Ближние к нише станции первыми: видимую нишу они отбрасывают быстрее всего.
+  std::vector<point> stations = loop_stations(h);
+  std::sort(stations.begin(), stations.end(), [&](const point a, const point b) {
+    return length(subtract(a, target)) < length(subtract(b, target));
+  });
+  for (const point from : stations) {
     const point ray = subtract(target, from);
     const double span = length(ray);
     bool blocked = false;
-    for (double t = 0.0; t < span - 2.0 && !blocked; t += 1.5) {
+    for (double t = 0.0; t < span - 2.0 && !blocked; t += 2.0) {
       blocked = rock(add(from, scale(ray, t / span)));
     }
     if (!blocked) return false;
@@ -169,9 +179,12 @@ bool niche_hidden(const hall& h, const hall_niche& niche,
 point relevance_half(const hall& h) {
   const double grow = 1.0 + (rock_background + relief_bound) / smallest_radius(h);
   point half{h.half_length * grow, h.half_height * grow, h.half_width * grow};
-  const double core_extent = h.core_radius + 2.0 * core_relief + rock_background;
-  half.x = std::max(half.x, h.core_half + core_extent);
-  half.y = std::max(half.y, std::abs(h.core_y) + core_extent);
+  const double loop_extent = loop_clearance(h) + 2.0 * core_relief + rock_background;
+  for (const point p : h.loop) {
+    half.x = std::max(half.x, std::abs(p.x) + loop_extent);
+    half.y = std::max(half.y, std::abs(p.y) + loop_extent);
+    half.z = std::max(half.z, std::abs(p.z) + loop_extent);
+  }
   for (const hall_niche& niche : h.niches) {
     const double grow_niche = niche.radius * (1.0 + niche_flare) * niche_stretch +
                               2.0 * niche_relief + rock_background;
@@ -191,210 +204,161 @@ bool boxes_overlap(const point low_a, const point high_a, const point low_b, con
          high_a.y >= low_b.y && low_a.z <= high_b.z && high_a.z >= low_b.z;
 }
 
-hall shape_hall(const uint64_t seed, const uint64_t key, const int rx, const int rz,
-                const hall* previous, bool& stacked) {
-  stacked = false;
-  hall h;
-  h.key = key;
-  h.region_x = rx;
-  h.region_z = rz;
-  h.kind = random01(seed, key, 2) < 0.4 ? hall_kind::lair : hall_kind::pillared;
-  if (h.kind == hall_kind::pillared) {
-    h.half_length = 160.0 + 160.0 * random01(seed, key, 3);
-    h.half_width = 70.0 + 60.0 * random01(seed, key, 4);
-    h.half_height = 40.0 + 40.0 * random01(seed, key, 5);
-    h.core_radius = 18.0;
-    h.floor = -0.72 * h.half_height;
-  } else {
-    h.half_length = 200.0 + 180.0 * random01(seed, key, 3);
-    h.half_width = 110.0 + 70.0 * random01(seed, key, 4);
-    h.half_height = 70.0 + 50.0 * random01(seed, key, 5);
-    h.core_radius = 22.0;
-    h.floor = -0.82 * h.half_height;
-  }
-  const double yaw = 2.0 * std::numbers::pi * random01(seed, key, 6);
-  h.forward = {std::cos(yaw), 0, std::sin(yaw)};
-  h.core_y = h.floor + h.core_radius + 0.25 * h.half_height;
-  h.core_half = 0.8 * h.half_length;
-
-  // Слой проходит через нижнюю половину зала: дно чуть ниже слоя, свод выше.
-  const double region_x = (double(rx) + 0.5) * region_size;
-  const double region_z = (double(rz) + 0.5) * region_size;
-  const double vertical = h.half_height * (1.0 + (rock_background + relief_bound) /
-                                           smallest_radius(h)) + 60.0;
-  if (previous != nullptr && random01(seed, key, 8) < 0.6) {
-    // Стопка: второй зал над или под первым и всегда врезается в него, так что
-    // вместе они — одна двухъярусная полость с проломом между ярусами.
-    stacked = true;
-    h.centre.x = previous->centre.x + (random01(seed, key, 9) - 0.5) * 120.0;
-    h.centre.z = previous->centre.z + (random01(seed, key, 10) - 0.5) * 120.0;
-    const double gap = (previous->half_height + h.half_height) *
-                       (0.6 + 0.15 * random01(seed, key, 11));
-    double y = previous->centre.y + (random01(seed, key, 7) < 0.5 ? gap : -gap);
-    if (y + vertical > world_y_max || y - vertical < world_y_min) {
-      y = 2.0 * previous->centre.y - y;
-    }
-    h.centre.y = y;
-  } else {
-    h.centre.x = region_x + (random01(seed, key, 9) - 0.5) * 240.0;
-    h.centre.z = region_z + (random01(seed, key, 10) - 0.5) * 240.0;
-    h.centre.y = layer_height(seed, h.centre.x, h.centre.z) + 0.35 * h.half_height;
-  }
-
-  if (h.kind == hall_kind::pillared) {
-    const uint32_t wanted = 4 + uint32_t(7.0 * random01(seed, key, 20));
-    for (uint32_t attempt = 0; attempt < 48 && h.pillars.size() < wanted; ++attempt) {
-      const uint64_t a = 100 + 4 * uint64_t(attempt);
-      hall_pillar pillar{(random01(seed, key, a) - 0.5) * 1.5 * h.half_length,
-                         (random01(seed, key, a + 1) - 0.5) * 1.6 * h.half_width,
-                         5.0 + 7.0 * random01(seed, key, a + 2)};
-      if (ellipse_level(h, pillar.u, pillar.v) < 0.3) continue;
-      // Колонна целиком по высоте, поэтому держится в стороне от оси коридора.
-      if (std::abs(pillar.v) < pillar.radius * (1.0 + pillar_flare) + h.core_radius +
-                               2.0 * core_relief + 6.0) continue;
-      const bool crowded = std::any_of(h.pillars.begin(), h.pillars.end(),
-        [&](const hall_pillar& other) {
-          return std::hypot(pillar.u - other.u, pillar.v - other.v) <
-                 pillar.radius + other.radius + 18.0;
-        });
-      if (!crowded) h.pillars.push_back(pillar);
-    }
-  }
-  const auto ledge_blocks_core = [&](const hall_ledge& ledge) {
-    return box_distance({ledge.centre.x, h.core_y, 0}, ledge.centre, ledge.half) <
-           h.core_radius + 2.0 * core_relief + 3.0;
-  };
-  const uint32_t ledges = h.kind == hall_kind::pillared
-    ? 3 + uint32_t(3.0 * random01(seed, key, 21))
-    : 1 + uint32_t(2.0 * random01(seed, key, 21));
-  for (uint32_t attempt = 0; attempt < 24 && h.ledges.size() < ledges; ++attempt) {
-    const uint64_t a = 400 + 5 * uint64_t(attempt);
-    const double side = random01(seed, key, a) < 0.5 ? -1.0 : 1.0;
-    const double u = (random01(seed, key, a + 1) - 0.5) * 1.4 * h.half_length;
-    const double y_level = h.floor + 12.0 +
-                           (0.5 * h.half_height - h.floor - 12.0) * random01(seed, key, a + 2);
-    const double inner = 1.0 - (u / h.half_length) * (u / h.half_length) -
-                         (y_level / h.half_height) * (y_level / h.half_height);
-    if (inner <= 0.0) continue;
-    const double wall = h.half_width * std::sqrt(inner);
-    if (wall < 25.0) continue;
-    const double protrude = 12.0 + 14.0 * random01(seed, key, a + 3);
-    const hall_ledge ledge{{u, y_level, side * (wall - protrude / 2.0 + 3.0)},
-                           {12.0 + 20.0 * random01(seed, key, a + 4),
-                            1.5 + 2.0 * random01(seed, key, a + 4), protrude / 2.0 + 3.0}};
-    if (!ledge_blocks_core(ledge)) h.ledges.push_back(ledge);
-  }
-
-  // Укрытия: ниша уходит в стену под углом к нормали, поэтому с оси коридора её дно
-  // закрыто скалой. У логова их больше — там есть от кого прятаться.
-  const uint32_t niches = h.kind == hall_kind::lair
-    ? 4 + uint32_t(3.0 * random01(seed, key, 22))
-    : 3 + uint32_t(3.0 * random01(seed, key, 22));
-  const auto rock = [&](const point& local) { return certainly_rock(h, local); };
-  for (uint32_t attempt = 0; attempt < 96 && h.niches.size() < niches; ++attempt) {
-    const uint64_t a = 700 + 8 * uint64_t(attempt);
-    const double side = random01(seed, key, a) < 0.5 ? -1.0 : 1.0;
-    const double u = (random01(seed, key, a + 1) - 0.5) * 1.3 * h.half_length;
-    const double radius = 7.0 + 1.5 * random01(seed, key, a + 2);
-    // Нижняя треть стены: дно зала добавляет скалы между коридором и отводом.
-    const double y_level = h.floor + radius * niche_stretch + 6.0 +
-                           0.3 * h.half_height * random01(seed, key, a + 3);
-    const double inner = 1.0 - (u / h.half_length) * (u / h.half_length) -
-                         (y_level / h.half_height) * (y_level / h.half_height);
-    if (inner <= 0.1) continue;
-    const point wall{u, y_level, side * h.half_width * std::sqrt(inner)};
-    const point normal = normalize({wall.x / (h.half_length * h.half_length),
-                                    wall.y / (h.half_height * h.half_height),
-                                    wall.z / (h.half_width * h.half_width)});
-    point tangent{normal.z, 0, -normal.x};
-    if (length(tangent) < 1e-3) continue;
-    tangent = normalize(tangent);
-    if (random01(seed, key, a + 4) < 0.5) tangent = scale(tangent, -1.0);
-    hall_niche niche;
-    niche.radius = radius;
-    niche.mouth = subtract(wall, scale(normal, radius + 3.0));
-    // Колено глубже рельефа стены и запаса трубки: между водой зала и отводом
-    // остаётся скала при любом шуме.
-    niche.elbow = add(wall, scale(normal, 32.0 + 4.0 * random01(seed, key, a + 5)));
-    niche.end = add(niche.elbow, scale(tangent, 30.0 + 10.0 * random01(seed, key, a + 6)));
-    // Вход в открытой воде зала, не в колонне и не в уступе.
-    if (hall_solid(h, niche.mouth) > -(relief_bound + 1.0)) continue;
-    const bool crowded = std::any_of(h.niches.begin(), h.niches.end(),
-      [&](const hall_niche& other) {
-        return length(subtract(other.end, niche.end)) < other.radius + radius + 14.0 ||
-               length(subtract(other.mouth, niche.mouth)) < other.radius + radius + 10.0;
-      });
-    if (crowded) continue;
-    h.niches.push_back(niche);
-    if (!niche_hidden(h, niche, rock)) {
-      h.niches.pop_back();
-      continue;
-    }
-    // Навес над частью входов: уступ над нишей закрывает её и сверху.
-    if (random01(seed, key, a + 7) < 0.5) {
-      const double protrude = 14.0;
-      const hall_ledge roof{{wall.x, wall.y + radius * niche_stretch + 2.0 * niche_relief + 3.0,
-                             side * (std::abs(wall.z) - protrude / 2.0 + 3.0)},
-                            {12.0, 2.0, protrude / 2.0 + 3.0}};
-      // Ниша вырезается минимумом поверх уступа, поэтому навес ей не мешает.
-      const bool clear = !ledge_blocks_core(roof);
-      if (clear) {
-        h.ledges.push_back(roof);
-        h.niches.back().overhang = true;
-      }
-    }
-  }
-  // Каждая следующая ниша вырезает воду и могла открыть луч к уже поставленной.
-  // Снимаем ставшие видимыми; снятие только возвращает скалу, поэтому оставшиеся
-  // от этого видимыми не становятся. Навес снятой ниши остаётся простым уступом.
-  for (size_t i = h.niches.size(); i-- > 0;) {
-    if (!niche_hidden(h, h.niches[i], rock)) h.niches.erase(h.niches.begin() + ptrdiff_t(i));
-  }
-  return h;
-}
-
-std::vector<hall> compute_region_halls(const uint64_t seed, const int rx, const int rz) {
-  const uint64_t key = devils_engine::utils::mix(seed, uint64_t(int64_t(rx)),
-                                                 uint64_t(int64_t(rz)), 0x48414c4cull);
-  const uint32_t count = random01(seed, key, 1) < 0.35 ? 2u : 1u;
-  std::vector<hall> out;
-  for (uint32_t i = 0; i < count; ++i) {
-    bool stacked = false;
-    out.push_back(shape_hall(seed, devils_engine::utils::mix(key, i), rx, rz,
-                             out.empty() ? nullptr : &out.front(), stacked));
-    if (stacked) {
-      // У верхнего яруса нет плоского дна: его низ и есть пролом в нижний ярус.
-      hall& upper = out.back().centre.y > out.front().centre.y ? out.back() : out.front();
-      upper.floor = -upper.half_height;
-    }
-  }
-  return out;
-}
-
 } // namespace
 
 const char* name(const hall_kind value) {
   return value == hall_kind::lair ? "lair" : "pillared";
 }
 
-std::vector<hall> region_halls(const uint64_t seed, const int rx, const int rz) {
-  // Чистая функция (seed, регион), а выбор ниш с проверкой лучами недёшев, и граф
-  // спрашивает одни и те же регионы много раз. Кэш на поток: потоки viewer'а не
-  // делят состояние, и результат не зависит от того, был ли он в кэше.
-  struct entry {
-    uint64_t seed;
-    int rx, rz;
-    std::vector<hall> halls;
-  };
-  thread_local std::vector<entry> cache;
-  for (const entry& cached : cache) {
-    if (cached.seed == seed && cached.rx == rx && cached.rz == rz) return cached.halls;
-  }
-  if (cache.size() >= 64) cache.erase(cache.begin(), cache.begin() + 32);
-  cache.push_back({seed, rx, rz, compute_region_halls(seed, rx, rz)});
-  return cache.back().halls;
+const char* name(const creature_class value) {
+  return value == creature_class::lord ? "lord" : value == creature_class::beast ? "beast" : "none";
 }
 
+std::vector<point> loop_stations(const hall& h) {
+  std::vector<point> out;
+  for (size_t i = 0; i < h.loop.size(); ++i) {
+    const point a = h.loop[i], b = h.loop[(i + 1) % h.loop.size()];
+    const double span = length(subtract(b, a));
+    const uint32_t steps = std::max(1u, uint32_t(std::ceil(span / 30.0)));
+    for (uint32_t k = 0; k < steps; ++k) out.push_back(add(a, scale(subtract(b, a), double(k) / steps)));
+  }
+  return out;
+}
+
+std::vector<hall> region_halls(const uint64_t seed, const int rx, const int rz) {
+  // Залы — экземпляр генератора halls цепочки (правила — generator/macro/scripts/halls.lua). Залы не
+  // зависят от радиуса прохода, поэтому годится любая цепочка; берётся цепочка радиуса 1 м.
+  const auto instance = world_chain(1.0).get("halls", seed, {{uint64_t(int64_t(rx)), uint64_t(int64_t(rz)), 0}});
+  return halls_from(*instance);
+}
+
+std::vector<hall> halls_from(const devils_engine::originator::generator_result& instance) {
+  namespace originator = devils_engine::originator;
+  const auto field = [&](const std::string_view buffer, const std::string_view name) {
+    return instance.field(buffer, name);
+  };
+  const auto get3 = [](const originator::const_field_accessor& f, const size_t i) {
+    return point{f.get(i, 0), f.get(i, 1), f.get(i, 2)};
+  };
+  const auto count = size_t(field("hall_counts", "halls").get(0));
+  const auto key = field("halls", "key"), centre = field("halls", "centre"), forward = field("halls", "forward"),
+             half = field("halls", "half"), floor = field("halls", "floor"), kind = field("halls", "kind"),
+             resident = field("halls", "resident"), body = field("halls", "body_radius"),
+             first_pillar = field("halls", "first_pillar"), pillar_count = field("halls", "pillar_count"),
+             first_ledge = field("halls", "first_ledge"), ledge_count = field("halls", "ledge_count"),
+             first_niche = field("halls", "first_niche"), niche_count = field("halls", "niche_count"),
+             first_loop = field("halls", "first_loop"), loop_count = field("halls", "loop_count");
+  const auto pu = field("hall_pillars", "u"), pv = field("hall_pillars", "v"), pr = field("hall_pillars", "radius");
+  const auto lc = field("hall_ledges", "centre"), lh = field("hall_ledges", "half");
+  const auto nm = field("hall_niches", "mouth"), ne = field("hall_niches", "elbow"), nd = field("hall_niches", "end"),
+             nr = field("hall_niches", "radius"), no = field("hall_niches", "overhang");
+  const auto lp = field("hall_loop", "point");
+  std::vector<hall> out(count);
+  for (size_t i = 0; i < count; ++i) {
+    hall& h = out[i];
+    h.key = originator::read_key_word(key, i);
+    h.region_x = int(int64_t(instance.key().words[0]));
+    h.region_z = int(int64_t(instance.key().words[1]));
+    h.kind = hall_kind(uint8_t(kind.get(i)));
+    h.centre = get3(centre, i);
+    h.forward = get3(forward, i);
+    h.half_length = half.get(i, 0);
+    h.half_width = half.get(i, 1);
+    h.half_height = half.get(i, 2);
+    h.floor = floor.get(i);
+    h.resident = creature_class(uint8_t(resident.get(i)));
+    h.body_radius = body.get(i);
+    for (size_t k = size_t(first_pillar.get(i)), e = k + size_t(pillar_count.get(i)); k < e; ++k) {
+      h.pillars.push_back({pu.get(k), pv.get(k), pr.get(k)});
+    }
+    for (size_t k = size_t(first_ledge.get(i)), e = k + size_t(ledge_count.get(i)); k < e; ++k) {
+      h.ledges.push_back({get3(lc, k), get3(lh, k)});
+    }
+    for (size_t k = size_t(first_niche.get(i)), e = k + size_t(niche_count.get(i)); k < e; ++k) {
+      h.niches.push_back({get3(nm, k), get3(ne, k), get3(nd, k), nr.get(k), no.get(k) != 0.0});
+    }
+    for (size_t k = size_t(first_loop.get(i)), e = k + size_t(loop_count.get(i)); k < e; ++k) {
+      h.loop.push_back(get3(lp, k));
+    }
+  }
+  return out;
+}
+
+namespace {
+
+// Блок генератора halls: ниша-кандидат (target) годится, если её вход в открытой воде зала (mouth = 1)
+// и дно не видно ни с одной станции петли при ЛЮБОМ рельефе. Ответ: 0 — вход не в воде, 1 — ниша
+// скрыта, 2 — видна. Зал собирается из его строк в буферах (локальные координаты): полуоси, дно, тело,
+// колонны, уступы, ниши, петля — диапазоны строк в параметрах.
+// Зал из его строк в буферах генератора halls (локальные координаты): полуоси, дно, тело, колонны,
+// уступы, ниши, петля — входы 0..12, диапазоны строк в параметрах.
+hall hall_from_inputs(const devils_engine::originator::tool_call& call) {
+  const auto in = [&](const size_t i) { return call.input(i).read(); };
+  const auto get3 = [](const devils_engine::originator::const_field_accessor& f, const size_t i) {
+    return point{f.get(i, 0), f.get(i, 1), f.get(i, 2)};
+  };
+  const auto param = [&](const char* name) { return size_t(call.params->integer(name)); };
+  const size_t index = param("hall");
+  hall h;
+  h.half_length = in(0).get(index, 0);
+  h.half_width = in(0).get(index, 1);
+  h.half_height = in(0).get(index, 2);
+  h.floor = in(1).get(index);
+  h.body_radius = in(2).get(index);
+  for (size_t k = param("first_pillar"), e = k + param("pillars"); k < e; ++k) {
+    h.pillars.push_back({in(3).get(k), in(4).get(k), in(5).get(k)});
+  }
+  for (size_t k = param("first_ledge"), e = k + param("ledges"); k < e; ++k) {
+    h.ledges.push_back({get3(in(6), k), get3(in(7), k)});
+  }
+  for (size_t k = param("first_niche"), e = k + param("niches"); k < e; ++k) {
+    h.niches.push_back({get3(in(8), k), get3(in(9), k), get3(in(10), k), in(11).get(k), false});
+  }
+  for (size_t k = param("first_loop"), e = k + param("loop"); k < e; ++k) h.loop.push_back(get3(in(12), k));
+  return h;
+}
+
+// Блок генератора halls: ниша-кандидат (target) годится, если её вход в открытой воде зала (mouth = 1)
+// и дно не видно ни с одной станции петли при ЛЮБОМ рельефе. Ответ: 0 — вход не в воде, 1 — ниша
+// скрыта, 2 — видна.
+void tool_hall_niche_fits(const devils_engine::originator::tool_call& call, const size_t, const size_t) {
+  const hall h = hall_from_inputs(call);
+  const size_t target = size_t(call.params->integer("target"));
+  if (target >= h.niches.size()) {
+    devils_engine::utils::error{}("GN09 hall_niche_fits: niche {} of {}", target, h.niches.size());
+  }
+  const hall_niche& niche = h.niches[target];
+  double verdict = 1.0;
+  if (call.params->integer("mouth") != 0 && hall_solid(h, niche.mouth) > -(relief_bound + 1.0)) {
+    verdict = 0.0;
+  } else if (!niche_hidden(h, niche, [&](const point& local) { return certainly_rock(h, local); })) {
+    verdict = 2.0;
+  }
+  call.output(0).write().set(0, verdict);
+}
+
+// Блок генератора halls: полуразмеры области влияния зала (локальные оси), вне которой поле зала
+// больше фоновой скалы. Граница принадлежит формуле зала (словарь форм), поэтому считается здесь, а
+// скрипты читают её данными (окно вокруг зала у существ).
+void tool_hall_relevance(const devils_engine::originator::tool_call& call, const size_t, const size_t) {
+  const point half = relevance_half(hall_from_inputs(call));
+  const auto out = call.output(0).write();
+  const size_t index = size_t(call.params->integer("hall"));
+  out.set(index, half.x, 0);
+  out.set(index, half.y, 1);
+  out.set(index, half.z, 2);
+}
+
+} // namespace
+
+void add_hall_tools(devils_engine::originator::tool_registry& tools) {
+  tools.add(devils_engine::originator::tool_description{
+    .name = "hall_niche_fits", .shape = devils_engine::originator::aperture::sequential, .input_count = 13,
+    .output_count = 1, .body = tool_hall_niche_fits, .footprint = devils_engine::originator::no_temporary_memory});
+  tools.add(devils_engine::originator::tool_description{
+    .name = "hall_relevance", .shape = devils_engine::originator::aperture::sequential, .input_count = 13,
+    .output_count = 1, .body = tool_hall_relevance, .footprint = devils_engine::originator::no_temporary_memory});
+}
 
 std::vector<hall> halls_near(const uint64_t seed, const graph::window area) {
   // Самый длинный зал с запасом на рельеф и ниши: дальше этого его поле — скала.
@@ -420,48 +384,8 @@ bool inside_hall(const hall& h, const point position) {
   return a * a + b * b + c * c < 1.0 && local.y > h.floor;
 }
 
-const hall* hall_owning_sector(const std::vector<hall>& halls, const uint64_t seed,
-                               const int x, const int z) {
-  const point base = base_position(seed, x, z);
-  for (const hall& h : halls) {
-    const point local = to_local(h, base);
-    const double u = local.x / (h.half_length + 60.0), v = local.z / (h.half_width + 60.0);
-    if (u * u + v * v > 1.0) continue;
-    // Сектор принадлежит залу, если слой над сектором проходит сквозь его ярус.
-    const double layer = layer_height(seed, base.x, base.z) - h.centre.y;
-    if (layer >= h.floor - 40.0 && layer <= 0.8 * h.half_height) return &h;
-  }
-  return nullptr;
-}
-
-point hall_node_position(const hall& h, const uint64_t seed, const double x, const double z) {
-  point local = to_local(h, {x, 0, z});
-  const double inner_u = std::max(10.0, h.half_length - 45.0);
-  const double inner_v = std::max(10.0, h.half_width - 45.0);
-  const double level = (local.x / inner_u) * (local.x / inner_u) +
-                       (local.z / inner_v) * (local.z / inner_v);
-  if (level > 0.9) {
-    const double shrink = std::sqrt(0.9 / level);
-    local.x *= shrink;
-    local.z *= shrink;
-  }
-  for (const hall_pillar& pillar : h.pillars) {
-    const double du = local.x - pillar.u, dv = local.z - pillar.v;
-    const double distance = std::hypot(du, dv);
-    const double keep = pillar.radius * (1.0 + pillar_flare) + 14.0;
-    if (distance >= keep) continue;
-    const double ux = distance > 1e-6 ? du / distance : 0.0;
-    const double uz = distance > 1e-6 ? dv / distance : 1.0;
-    local.x = pillar.u + ux * keep;
-    local.z = pillar.v + uz * keep;
-  }
-  const point world = to_world(h, local.x, 0, local.z);
-  const double ceiling = h.half_height * std::sqrt(std::max(0.05, ellipse_level(h, local.x, local.z)));
-  const double low = h.floor + 18.0, high = ceiling - 18.0;
-  const double layer = layer_height(seed, world.x, world.z) - h.centre.y;
-  local.y = low < high ? std::clamp(layer, low, high) : 0.5 * (low + high);
-  return to_world(h, local);
-}
+point hall_to_world(const hall& h, const point local) { return to_world(h, local); }
+point hall_to_local(const hall& h, const point world) { return to_local(h, world); }
 
 double hall_field(const uint64_t seed, const hall& h, const point position) {
   const point local = to_local(h, position);
@@ -475,17 +399,17 @@ double hall_field(const uint64_t seed, const hall& h, const point position) {
       air = std::min(air, niche_distance(niche, local) - niche_relief + niche_relief * grain);
     }
   }
-  const double core = core_distance(h, local) - h.core_radius - core_relief +
+  const double core = loop_distance(h, local) - loop_clearance(h) - core_relief +
                       core_relief * large;
   return std::min(air, core);
 }
 
 double hall_vertical_reach(const hall& h) { return relevance_half(h).y; }
 
-bool hall_reaches(const hall& h, const point low, const point high) {
+void hall_influence(const hall& h, point& hall_low, point& hall_high) {
   const point half = relevance_half(h);
-  point hall_low{1e30, h.centre.y - half.y, 1e30};
-  point hall_high{-1e30, h.centre.y + half.y, -1e30};
+  hall_low = {1e30, h.centre.y - half.y, 1e30};
+  hall_high = {-1e30, h.centre.y + half.y, -1e30};
   for (const double u : {-half.x, half.x}) {
     for (const double v : {-half.z, half.z}) {
       const point p = to_world(h, u, 0, v);
@@ -493,6 +417,11 @@ bool hall_reaches(const hall& h, const point low, const point high) {
       hall_low.z = std::min(hall_low.z, p.z); hall_high.z = std::max(hall_high.z, p.z);
     }
   }
+}
+
+bool hall_reaches(const hall& h, const point low, const point high) {
+  point hall_low, hall_high;
+  hall_influence(h, hall_low, hall_high);
   return boxes_overlap(low, high, hall_low, hall_high);
 }
 
@@ -575,7 +504,7 @@ std::string verify_hall(const uint64_t seed, const hall& h, const double clearan
 
   // Только этот зал, без графа: независимо от генератора пересчитываем то, что
   // зал обещает сам по себе. Галереи и монтажные объёмы могли бы лишь добавить воды.
-  const adventure context{seed, {}, clearance_radius, {}, {}, {}, {h}};
+  const adventure context{seed, {}, clearance_radius, {h}};
   const auto all_open = [&](const std::vector<point>& points) {
     point low{1e30, 1e30, 1e30}, high{-1e30, -1e30, -1e30};
     for (const point p : points) {
@@ -600,21 +529,33 @@ std::string verify_hall(const uint64_t seed, const hall& h, const double clearan
     }
     return prepare_field(context, low, high);
   }();
-  // Коридор существ: ось и оболочка на радиусе с охранным слоем сетки.
-  const double probe = h.core_radius - surface_guard;
-  const uint32_t core_steps = uint32_t(std::ceil(2.0 * h.core_half / 4.0));
-  for (uint32_t step = 0; step <= core_steps; ++step) {
-    const double u = -h.core_half + 2.0 * h.core_half * double(step) / double(core_steps);
-    for (int k = 0; k <= 8; ++k) {
-      const double angle = double(k) * std::numbers::pi / 4.0;
-      const double r = k == 8 ? 0.0 : probe;
-      batch.push_back(to_world(h, u, h.core_y + r * std::sin(angle), r * std::cos(angle)));
-    }
-    if (step % 8 == 7 || step == core_steps) {
-      if (!all_open(batch)) return "hall creature corridor is blocked";
-      batch.clear();
+  // Петля патруля: ось и оболочка на радиусе тела плюс диагональ клетки.
+  const double probe = h.body_radius + std::sqrt(3.0);
+  for (size_t i = 0; i < h.loop.size(); ++i) {
+    const point a = h.loop[i], b = h.loop[(i + 1) % h.loop.size()];
+    const point axis = normalize(subtract(b, a));
+    point side{axis.z, 0, -axis.x};
+    side = length(side) < 1e-3 ? point{1, 0, 0} : normalize(side);
+    const point up{axis.y * side.z - axis.z * side.y, axis.z * side.x - axis.x * side.z,
+                   axis.x * side.y - axis.y * side.x};
+    const double span = length(subtract(b, a));
+    for (double t = 0.0; t < span; t += 3.0) {
+      const point centre = add(a, scale(axis, t));
+      batch.push_back(to_world(h, centre));
+      for (int k = 0; k < 8; ++k) {
+        const double angle = double(k) * std::numbers::pi / 4.0;
+        batch.push_back(to_world(h, add(centre, add(scale(side, probe * std::cos(angle)),
+                                                    scale(up, probe * std::sin(angle))))));
+      }
+      if (batch.size() > 400) {
+        if (!all_open(batch)) return "hall creature loop is blocked";
+        batch.clear();
+      }
     }
   }
+  if (h.loop.size() < 3) return "hall creature loop is missing";
+  if (!all_open(batch)) return "hall creature loop is blocked";
+  batch.clear();
   // Ниши: корпус лодки проходит по оси до дна, а дно не видно с оси коридора.
   const double hull_probe = starter_sub_beam / 2.0 + std::sqrt(3.0);
   for (const hall_niche& niche : h.niches) {
@@ -649,11 +590,10 @@ std::string verify_hall(const uint64_t seed, const hall& h, const double clearan
     if (!all_open(batch)) return "hall niche is too narrow for the submarine";
     batch.clear();
     const auto rock = [&](const point& local) { return density(whole, to_world(h, local)) >= 0.0; };
-    if (!niche_hidden(h, niche, rock)) return "hall niche is visible from the creature corridor";
+    if (!niche_hidden(h, niche, rock)) return "hall niche is visible from the creature loop";
   }
   // Оценки однородного чанка обязаны совпадать с полными сэмплами.
-  for (const point local : {point{0, h.core_y, 0},
-                            point{0.5 * h.core_half, h.core_y + 0.2 * h.half_height, 0}}) {
+  for (const point local : {h.loop[0], h.loop[h.loop.size() / 2]}) {
     const point at = to_world(h, local.x, local.y, local.z);
     const int cx = int(std::floor(at.x / chunk::cells));
     const int cy = int(std::floor(at.y / chunk::cells));
@@ -664,6 +604,199 @@ std::string verify_hall(const uint64_t seed, const hall& h, const double clearan
     const chunk full = generate_chunk(region, cx, cy, cz);
     for (const double sample : full.samples) {
       if ((sign < 0) != (sample < 0.0)) return "uniform chunk estimate disagrees with samples";
+    }
+  }
+  return {};
+}
+
+namespace {
+
+// Окно графа вокруг зала: поле зала и ещё два сектора — домен уходит от зала не
+// больше чем на четыре ребра.
+graph::window window_around(const hall& h, const int margin) {
+  const point half = relevance_half(h);
+  double min_x = 1e30, max_x = -1e30, min_z = 1e30, max_z = -1e30;
+  for (const double u : {-half.x, half.x}) {
+    for (const double v : {-half.z, half.z}) {
+      const point p = to_world(h, u, 0, v);
+      min_x = std::min(min_x, p.x); max_x = std::max(max_x, p.x);
+      min_z = std::min(min_z, p.z); max_z = std::max(max_z, p.z);
+    }
+  }
+  return {int(std::floor(min_x / sector_size)) - margin, int(std::floor(min_z / sector_size)) - margin,
+          int(std::floor(max_x / sector_size)) + 1 + margin, int(std::floor(max_z / sector_size)) + 1 + margin};
+}
+
+
+// Тело-шар радиуса body проходит отрезок: в центре и на 14 направлениях на радиусе
+// тела плюс диагональ клетки поле — вода. Считается по полю пещеры без монтажных
+// объёмов станций: они только добавили бы воды, так что ответ «проходит» честен.
+bool body_fits(const adventure& context, const point a, const point b, const double body) {
+  const double probe = body + std::sqrt(3.0);
+  const point low{std::min(a.x, b.x) - probe - 1.0, std::min(a.y, b.y) - probe - 1.0,
+                  std::min(a.z, b.z) - probe - 1.0};
+  const point high{std::max(a.x, b.x) + probe + 1.0, std::max(a.y, b.y) + probe + 1.0,
+                   std::max(a.z, b.z) + probe + 1.0};
+  const field_region region = prepare_field(context, low, high, false);
+  const double span = length(subtract(b, a));
+  const uint32_t steps = std::max(1u, uint32_t(std::ceil(span / 2.0)));
+  const double diagonal = 1.0 / std::sqrt(3.0);
+  for (uint32_t step = 0; step <= steps; ++step) {
+    const point centre = add(a, scale(subtract(b, a), double(step) / double(steps)));
+    // Шар целиком в гарантированной воде зала — та же точная оценка, что пропускает
+    // однородные чанки; поле здесь можно не считать.
+    const point box_low = subtract(centre, {probe, probe, probe});
+    const point box_high = add(centre, {probe, probe, probe});
+    if (std::any_of(context.halls.begin(), context.halls.end(),
+                    [&](const hall& x) { return hall_contains_air(x, box_low, box_high); })) continue;
+    if (cave_density(region, centre) >= 0.0) return false;
+    for (const point direction : {point{1, 0, 0}, point{-1, 0, 0}, point{0, 1, 0}, point{0, -1, 0},
+                                  point{0, 0, 1}, point{0, 0, -1},
+                                  point{diagonal, diagonal, diagonal}, point{-diagonal, diagonal, diagonal},
+                                  point{diagonal, -diagonal, diagonal}, point{diagonal, diagonal, -diagonal},
+                                  point{-diagonal, -diagonal, diagonal}, point{-diagonal, diagonal, -diagonal},
+                                  point{diagonal, -diagonal, -diagonal}, point{-diagonal, -diagonal, -diagonal}}) {
+      if (cave_density(region, add(centre, scale(direction, probe))) >= 0.0) return false;
+    }
+  }
+  return true;
+}
+
+struct creature_context {
+  graph route;
+  adventure field;
+  std::vector<const hall*> domain_halls;
+};
+
+creature_context context_for(const uint64_t seed, const hall& h, const std::vector<hall>& near) {
+  creature_context out;
+  const graph::window area = window_around(h, 2);
+  out.route = generate_graph(seed, area);
+  out.field = adventure{seed, out.route, 1.5, near};
+  return out;
+}
+
+// Узлы графа, разделяющие «внутри залов домена» и «снаружи».
+bool in_halls(const std::vector<const hall*>& halls, const point p) {
+  return std::any_of(halls.begin(), halls.end(), [&](const hall* x) { return inside_hall(*x, p); });
+}
+
+} // namespace
+
+creature_presence creature_of(const uint64_t seed, const hall& h) {
+  // Существо — экземпляр генератора creature цепочки (creature/scripts/creature.lua). Поле прохода у
+  // него — мир при радиусе 1.5 м, как у хоста раньше, поэтому и цепочка этого радиуса.
+  namespace originator = devils_engine::originator;
+  const auto instance = world_chain(1.5).get(
+    "creature", seed, {{uint64_t(int64_t(h.region_x)), uint64_t(int64_t(h.region_z)), h.key}});
+  creature_presence out;
+  out.hall_key = originator::read_key_word(instance->field("creature_meta", "hall"), 0);
+  out.resident = creature_class(uint8_t(instance->field("creature_meta", "resident").get(0)));
+  out.body_radius = instance->field("creature_meta", "body_radius").get(0);
+  const auto keys = [&](const std::string_view buffer, std::vector<uint64_t>& to) {
+    const auto field = instance->field(buffer, "key");
+    for (size_t i = 0; i < field.count(); ++i) to.push_back(originator::read_key_word(field, i));
+  };
+  keys("creature_halls", out.halls);
+  keys("creature_nodes", out.nodes);
+  keys("creature_refuges", out.refuges);
+  const auto a = instance->field("creature_passages", "a"), b = instance->field("creature_passages", "b");
+  for (size_t i = 0; i < a.count(); ++i) out.passages.push_back({originator::read_key_word(a, i), originator::read_key_word(b, i)});
+  return out;
+}
+
+std::string verify_creature(const uint64_t seed, const hall& h, const creature_presence& presence) {
+  if (presence.hall_key != h.key || presence.resident != h.resident ||
+      presence.body_radius != h.body_radius) return "creature presence disagrees with its hall";
+  if (presence.halls.empty() || presence.halls.front() != h.key || presence.halls.size() > 3) {
+    return "creature domain halls are invalid";
+  }
+  const std::vector<hall> near = halls_near(seed, window_around(h, 2));
+  const creature_context context = context_for(seed, h, near);
+  const graph& route = context.route;
+  const auto index_of = [&](const uint64_t key) -> int64_t {
+    for (const node& at : route.nodes) if (at.key == key) return at.id;
+    return -1;
+  };
+  std::vector<const hall*> halls;
+  for (const uint64_t key : presence.halls) {
+    const auto found = std::find_if(near.begin(), near.end(), [&](const hall& x) { return x.key == key; });
+    if (found == near.end()) return "creature domain halls are invalid";
+    halls.push_back(&*found);
+  }
+  std::vector<uint8_t> in_domain(route.nodes.size(), 0);
+  bool invalid_node = false;
+  for (const uint64_t key : presence.nodes) {
+    const int64_t id = index_of(key);
+    if (id < 0 || is_base(route.nodes[size_t(id)].kind)) invalid_node = true;
+    else in_domain[size_t(id)] = 1;
+    if (id >= 0) in_domain[size_t(id)] = 1;
+  }
+  // Обход: внешние концы входов вне домена, их не меньше двух, и между ними есть путь
+  // по графу, не заходящий в домен. Встретив существо у входа, можно развернуться и
+  // объехать. Для зверя, которого можно одолеть, обход не обязателен.
+  std::vector<uint32_t> refuges;
+  for (const uint64_t key : presence.refuges) {
+    const int64_t id = index_of(key);
+    if (id < 0 || in_domain[size_t(id)]) return "creature domain leaves no detour around the hall";
+    refuges.push_back(uint32_t(id));
+  }
+  if (h.resident == creature_class::lord) {
+    if (refuges.size() < 2) return "creature domain leaves no detour around the hall";
+    std::vector<uint8_t> seen(route.nodes.size(), 0);
+    std::vector<uint32_t> stack{refuges.front()};
+    seen[refuges.front()] = 1;
+    while (!stack.empty()) {
+      const uint32_t current = stack.back();
+      stack.pop_back();
+      for (const edge e : route.edges) {
+        if (e.a != current && e.b != current) continue;
+        const uint32_t next = e.a == current ? e.b : e.a;
+        if (seen[next] || in_domain[next]) continue;
+        seen[next] = 1;
+        stack.push_back(next);
+      }
+    }
+    for (const uint32_t refuge : refuges) {
+      if (!seen[refuge]) return "creature domain leaves no detour around the hall";
+    }
+  }
+  if (invalid_node) return "creature domain names a missing or base node";
+  // Каждый проход домена — ребро графа, и тело в нём помещается.
+  std::vector<std::vector<uint32_t>> passages(route.nodes.size());
+  for (const auto& [ka, kb] : presence.passages) {
+    const int64_t a = index_of(ka), b = index_of(kb);
+    const bool is_edge = a >= 0 && b >= 0 && std::any_of(route.edges.begin(), route.edges.end(),
+      [&](const edge e) { return (e.a == a && e.b == b) || (e.a == b && e.b == a); });
+    if (!is_edge || !in_domain[size_t(a)] || !in_domain[size_t(b)]) {
+      return "creature domain passage is not a route edge inside the domain";
+    }
+    if (!body_fits(context.field, route.nodes[size_t(a)].centre, route.nodes[size_t(b)].centre,
+                   h.body_radius)) return "creature domain passage is too narrow for its body";
+    passages[size_t(a)].push_back(uint32_t(b));
+    passages[size_t(b)].push_back(uint32_t(a));
+  }
+  // Домен связан проходами и ограничен: узел вне залов не дальше четырёх проходов.
+  std::vector<int> depth(route.nodes.size(), -1);
+  std::deque<uint32_t> queue;
+  for (const node& at : route.nodes) {
+    if (in_domain[at.id] && in_halls(halls, at.centre)) {
+      depth[at.id] = 0;
+      queue.push_back(at.id);
+    }
+  }
+  while (!queue.empty()) {
+    const uint32_t current = queue.front();
+    queue.pop_front();
+    for (const uint32_t next : passages[current]) {
+      if (depth[next] >= 0) continue;
+      depth[next] = in_halls(halls, route.nodes[next].centre) ? 0 : depth[current] + 1;
+      queue.push_back(next);
+    }
+  }
+  for (uint32_t i = 0; i < route.nodes.size(); ++i) {
+    if (in_domain[i] && !in_halls(halls, route.nodes[i].centre) && (depth[i] < 0 || depth[i] > 4)) {
+      return "creature domain reaches too far from its halls";
     }
   }
   return {};

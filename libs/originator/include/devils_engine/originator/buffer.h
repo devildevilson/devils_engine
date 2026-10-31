@@ -121,6 +121,12 @@ public:
   void set(const size_t element, const double value, const uint32_t component = 0) const noexcept
     requires(!is_const);
 
+  // Целый путь (`load_integer`/`store_integer`): у `ul`/`l` без потерь во всех 64 битах.
+  int64_t get_integer(const size_t element, const uint32_t component = 0) const noexcept;
+
+  void set_integer(const size_t element, const int64_t value, const uint32_t component = 0) const noexcept
+    requires(!is_const);
+
   // Поле лежит непрерывно (шаг равен размеру поля) — значит его можно отдать нативному ядру как
   // span и обработать векторно. При aos это ложно для всего, кроме однополевого буфера.
   bool contiguous() const noexcept;
@@ -178,6 +184,11 @@ public:
   // Обнуление всей памяти. Переиспользование буфера под новую работу — решение скрипта, поэтому
   // движок его не делает сам, но даёт дешёвый явный способ.
   void clear() noexcept;
+
+  // Копия первых count элементов в буфер ровно этого размера — так выход с объявленной ёмкостью
+  // уходит в долгое хранение (кэш цепочки) без пустого хвоста. Только у линейного буфера: у растра
+  // «первые элементы» — не форма.
+  buffer truncated(const size_t count) const;
 
   const std::byte* base_pointer() const noexcept;
 
@@ -249,6 +260,27 @@ void basic_field_accessor<is_const>::set(const size_t element, const double valu
   }
   auto* ptr = base_ + element * stride_ + size_t(component) * type_.component_byte_size();
   store_component(ptr, type_.base, value);
+}
+
+template <bool is_const>
+int64_t basic_field_accessor<is_const>::get_integer(const size_t element, const uint32_t component) const noexcept {
+  if (base_ == nullptr || element >= count_ || component >= type_.components) {
+    return 0;
+  }
+  const auto* ptr = base_ + element * stride_ + size_t(component) * type_.component_byte_size();
+  return load_integer(ptr, type_.base);
+}
+
+template <bool is_const>
+void basic_field_accessor<is_const>::set_integer(const size_t element, const int64_t value,
+                                                 const uint32_t component) const noexcept
+  requires(!is_const)
+{
+  if (base_ == nullptr || element >= count_ || component >= type_.components) {
+    return;
+  }
+  auto* ptr = base_ + element * stride_ + size_t(component) * type_.component_byte_size();
+  store_integer(ptr, type_.base, value);
 }
 
 template <bool is_const>

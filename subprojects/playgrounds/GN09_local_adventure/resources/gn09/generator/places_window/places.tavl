@@ -1,0 +1,10 @@
+// Места окна: все природные узлы окна макрографа (ключ — ключ окна). Их пещеры — fan-in полей, где
+// важны все пещеры окна (проход существа, место станции).
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = window_places
+buffers = ./places_buffers.tavl
+steps = [
+  { name = select, body = ./select.lua, reads = [ nodes, graph_meta ], writes = [ places, place_counts ] }
+]

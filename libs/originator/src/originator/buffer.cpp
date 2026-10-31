@@ -300,6 +300,31 @@ void buffer::clear() noexcept {
   }
 }
 
+buffer buffer::truncated(const size_t count) const {
+  if (extent_.declared()) {
+    utils::error{}("originator buffer '{}': has a shape {}x{}x{}, its prefix is not a buffer", name_, extent_.x,
+                   extent_.y, extent_.z);
+  }
+  if (count > count_) {
+    utils::error{}("originator buffer '{}': cannot keep {} of its {} elements", name_, count, count_);
+  }
+  // Пустой занятый хвост законен (у места нет старших соседей), а объявить буфер из нуля элементов
+  // нельзя: память выделяется под один, видно ноль.
+  buffer out(name_, layout_, std::max<size_t>(count, 1));
+  out.count_ = count;
+  // Раскладка та же, поэтому копия — байты поля, а не значения: через double `ul`/`l` потеряли бы младшие
+  // биты (так обрезка однажды и испортила ключи узлов).
+  for (size_t f = 0; f < layout_.fields.size(); ++f) {
+    const auto from = field(f);
+    auto to = out.field(f);
+    const size_t bytes = from.type().byte_size();
+    for (size_t i = 0; i < count; ++i) {
+      std::memcpy(to.data() + i * to.stride(), from.data() + i * from.stride(), bytes);
+    }
+  }
+  return out;
+}
+
 const std::byte* buffer::base_pointer() const noexcept {
   return data_;
 }

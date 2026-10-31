@@ -13,9 +13,18 @@
 // учить второй словарь форматов. Отличие — ни одного Vulkan-специфичного типа, зато есть сырые
 // 8/16-битные целые: генератору они нужны для компактных идентификаторов и меток.
 //
-// КАНОНИЧЕСКИЙ ТИП ЧТЕНИЯ И ЗАПИСИ ОДНОЙ КОМПОНЕНТЫ — `double`. Он точно представляет всё, что здесь
-// хранится (включая uint32), и совпадает с числовым типом lua, поэтому граница со скриптом не теряет
-// значений. Единственное исключение — быстрый путь `as_span`, требующий точного совпадения рода
+// `d` (f64) — для мировых координат грубых проходов: макрограф и залы считают в double, и float32 в
+// буфере округлил бы их на миллиметры за десятки километров. На устройство `d` не едет (Float64 в
+// Vulkan не гарантирован): для перевода и тел это род без устройственного типа, то есть отказ.
+//
+// `ul`/`l` (u64/i64) — для ключей, хешей и зёрен: слово ключа цепочки — одна компонента `ul`, а не
+// пара `ui`. Как и `d`, на устройство они не едут: роскошь CPU, которой GPU-путь не обязан повторять.
+//
+// КАНОНИЧЕСКИЙ ТИП ЧТЕНИЯ И ЗАПИСИ ОДНОЙ КОМПОНЕНТЫ — `double`. Он точно представляет всё 32-битное,
+// что здесь хранится, и совпадает с числовым типом lua. 64-битные целые через double теряют младшие
+// биты выше 2^53, поэтому у них есть второй, ЦЕЛЫЙ путь (`load_integer`/`store_integer`): им ходят
+// ключи, им пользуется lua (целое lua — 64 бита), а `ds`, читающий поле как double, видит округлённое
+// значение — это его граница, не поля. Быстрый путь `as_span` требует точного совпадения рода
 // (`exact_storage_base`).
 
 namespace devils_engine {
@@ -31,13 +40,16 @@ namespace originator {
   X(i, 4, signed_integer)                        \
   X(is, 2, signed_integer)                       \
   X(ib, 1, signed_integer)                       \
-  X(c, 1, normalized)
+  X(c, 1, normalized)                            \
+  X(d, 8, floating)                              \
+  X(ul, 8, unsigned_integer)                     \
+  X(l, 8, signed_integer)
 
 struct field_kind {
   enum values {
-    floating,         // v (f32), sf (f16)
-    unsigned_integer, // ui (u32), us (u16), ub (u8)
-    signed_integer,   // i (i32), is (i16), ib (i8)
+    floating,         // v (f32), sf (f16), d (f64)
+    unsigned_integer, // ul (u64), ui (u32), us (u16), ub (u8)
+    signed_integer,   // l (i64), i (i32), is (i16), ib (i8)
     normalized,       // c (u8, значение 0..1)
     count
   };
@@ -75,6 +87,8 @@ template <typename type_t>
 constexpr field_base::values exact_storage_base() noexcept {
   if constexpr (std::is_same_v<type_t, float>) {
     return field_base::v;
+  } else if constexpr (std::is_same_v<type_t, double>) {
+    return field_base::d;
   } else if constexpr (std::is_same_v<type_t, uint32_t>) {
     return field_base::ui;
   } else if constexpr (std::is_same_v<type_t, uint16_t>) {
@@ -87,6 +101,10 @@ constexpr field_base::values exact_storage_base() noexcept {
     return field_base::is;
   } else if constexpr (std::is_same_v<type_t, int8_t>) {
     return field_base::ib;
+  } else if constexpr (std::is_same_v<type_t, uint64_t>) {
+    return field_base::ul;
+  } else if constexpr (std::is_same_v<type_t, int64_t>) {
+    return field_base::l;
   } else {
     return field_base::count; // нет точного соответствия => быстрый путь недоступен
   }
@@ -101,6 +119,11 @@ std::string_view to_string(const field_kind::values kind) noexcept;
 // Чтение/запись одной компоненты в канонический double. Указатель — начало КОМПОНЕНТЫ, а не поля.
 double load_component(const void* ptr, const field_base::values base) noexcept;
 void store_component(void* ptr, const field_base::values base, const double value) noexcept;
+// Целый путь: значение компоненты как int64 (у `ul` — его биты, u64 ↔ i64 без потерь; у плавающих —
+// усечение к нулю). Запись в узкий целый род зажимает так же, как запись через double.
+int64_t load_integer(const void* ptr, const field_base::values base) noexcept;
+void store_integer(void* ptr, const field_base::values base, const int64_t value) noexcept;
+bool is_wide_integer(const field_base::values base) noexcept;
 
 // Апертура: как инструмент адресуется относительно обрабатываемого элемента. Из неё выводится
 // параллельность — инструмент её ОБЪЯВЛЯЕТ, скрипт её не выбирает.

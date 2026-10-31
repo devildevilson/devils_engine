@@ -11,6 +11,7 @@
 #include <sol/sol.hpp>
 
 #include "computation_queue.h"
+#include "generator_chain.h"
 #include "execution_profile.h"
 #include "pipeline.h"
 #include "script_program.h"
@@ -96,6 +97,8 @@ public:
 
   // Регистрирует исходник программы devils_script под именем. Компиляция ОТЛОЖЕНА до первого вызова:
   // имена полей, против которых программа компилируется, известны только по фактическим привязкам.
+  // Общий модуль цепочки (generator_chain.h): lua, возвращающий таблицу; виден телам как `modules.<имя>`.
+  void load_module(const std::string_view& module_name, const std::string_view& source, const std::string_view& chunk_name);
   void load_program(const std::string_view& program_name, const std::string_view& source);
   bool has_program(const std::string_view& program_name) const noexcept;
 
@@ -163,7 +166,8 @@ private:
                const bool on_device = false,
                const uint64_t translation_microseconds = 0,
                const size_t footprint = 0,
-               const bool declared_footprint = false);
+               const bool declared_footprint = false,
+               const bool script = false);
 
   // Собирает объявленный вызов из таблицы аргументов lua; счётчик объявлений трогают declare_*.
   queue_call make_tool_call(const std::string& tool_name, const sol::table& args);
@@ -218,6 +222,18 @@ private:
   bool current_chunked_ = false;
   std::string current_step_;
 };
+
+class generator_chain;
+
+// LUA-ХОСТЫ ДЛЯ ЦЕПОЧКИ ГЕНЕРАТОРОВ: по одному на (поток, генератор), с телами и программами,
+// которые цепочка получила при постройке. Состояние lua однопоточно, а экземпляры собираются из
+// потоков хоста; поэтому хост живёт в потоке и строится при первой сборке генератора в нём.
+//
+// `add_tools` наполняет реестр инструментов хоста: нативные инструменты проекта добавляются здесь
+// же, рядом со стандартными наборами. Хосты живут до конца своего потока; источник, переживший
+// цепочку, — ошибка вызывающего.
+invoker_source make_chain_invokers(const generator_chain& chain, std::function<void(tool_registry&)> add_tools,
+                                   thread::atomic_pool* pool = nullptr);
 
 } // namespace originator
 } // namespace devils_engine

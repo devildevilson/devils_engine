@@ -1,0 +1,10 @@
+// Туннель: ближайший якорь с построенной станцией (ключ — ключ станции якоря). Своя станция обязана быть.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = tunnel_partner
+buffers = ./partner_buffers.tavl
+steps = [
+  { name = partner, body = ./scripts/partner.lua, reads = [ tunnel_self, tunnel_candidates, candidate_counts ],
+    writes = [ tunnel_partner ] }
+]

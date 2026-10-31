@@ -1,0 +1,9 @@
+// Туннели якорей чанка: взаимные пары, без повторов (ключ туннеля — станция первого якоря).
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = chunk_tunnels
+buffers = ./tunnels_buffers.tavl
+steps = [
+  { name = select, body = ./scripts/tunnels.lua, writes = [ chunk_tunnels, tunnel_counts ] }
+]

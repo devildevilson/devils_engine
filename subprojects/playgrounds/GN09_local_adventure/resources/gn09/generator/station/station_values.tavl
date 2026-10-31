@@ -1,0 +1,10 @@
+// Значения генератора станции GN09.
+
+{
+  numbers = {
+  }
+  strings = {
+    // Словарь назначений помещений: помещение хранит номер, хост переводит его обратно в имя.
+    purposes = "airlock entry_hall corridor bunks slums storage lounge greenhouse mine_shaft equipment_bay guard_post armory watch_room"
+  }
+}

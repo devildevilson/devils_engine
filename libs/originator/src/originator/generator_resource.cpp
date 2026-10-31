@@ -179,5 +179,67 @@ generator_config load_generator(const demiurg::resource_system& resources, const
   return config;
 }
 
+const generator_config& loaded_chain::config(const std::string_view& generator) const {
+  for (const auto& [name, config] : generators) {
+    if (name == generator) {
+      return config;
+    }
+  }
+  utils::error{}("originator chain '{}': generator '{}' is not a pipeline", description.name, generator);
+  return generators.front().second;
+}
+
+loaded_chain load_chain(const demiurg::resource_system& resources, const std::string_view& chain_id) {
+  const auto id = demiurg::absolute_resource_path("", chain_id);
+  if (id.empty()) {
+    utils::error{}("originator: '{}' is not a valid chain id", chain_id);
+  }
+  loaded_chain out;
+  const auto text = read_source(resources, id, "generator chain");
+  out.description = parse_chain(text, id);
+  for (auto& module : out.description.modules) {
+    module.path = demiurg::absolute_resource_path(id, module.path);
+    out.setup.modules.push_back({false, module.name, module.path, read_source(resources, module.path, module.name)});
+  }
+
+  for (auto& g : out.description.generators) {
+    if (!g.entry.empty()) {
+      g.entry = demiurg::absolute_resource_path(id, g.entry);
+      auto config = load_generator(resources, g.entry);
+      std::vector<script_text> scripts;
+      std::string all;
+      for (const auto& step : config.description.steps) {
+        scripts.push_back({false, step.name, step.body, config.source(step.body)});
+        for (const auto& [program_name, program_id] : step.programs) {
+          scripts.push_back({true, program_name, program_id, config.source(program_id)});
+        }
+      }
+      // Отпечаток — все тексты генератора в порядке их id: перестановка ссылок в точке входа не
+      // меняет генератор, а правка любого файла меняет.
+      auto sources = config.sources;
+      std::sort(sources.begin(), sources.end());
+      for (const auto& [source_id, source_text] : sources) {
+        all += source_id;
+        all += '\n';
+        all += source_text;
+        all += '\n';
+      }
+      out.setup.pipelines.emplace_back(g.name, config.description);
+      out.setup.scripts.emplace_back(g.name, std::move(scripts));
+      out.setup.fingerprints.emplace_back(g.name, std::move(all));
+      out.generators.emplace_back(g.name, std::move(config));
+    } else {
+      if (g.buffers.empty()) {
+        utils::error{}("originator chain '{}': native generator '{}' names no 'buffers' document", id, g.name);
+      }
+      g.buffers = demiurg::absolute_resource_path(id, g.buffers);
+      const auto buffers_text = read_source(resources, g.buffers, g.name);
+      out.setup.native_buffers.emplace_back(g.name, parse_buffers(buffers_text, g.buffers));
+      out.setup.fingerprints.emplace_back(g.name, g.native + "\n" + buffers_text);
+    }
+  }
+  return out;
+}
+
 } // namespace originator
 } // namespace devils_engine

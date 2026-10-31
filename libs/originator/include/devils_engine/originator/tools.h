@@ -337,13 +337,20 @@ public:
   //                конкретный алгоритм, поэтому апертура доступна только готовым инструментам;
   //   structure  — ПОСТРОЙКА: обещание глобальное (из любой комнаты дойти до любой), а не
   //                поэлементное, и план отделён от геометрии — у здания настолько, что план живёт в
-  //                МЕРЕ, а клетки появляются последним шагом, чтобы его ПОКАЗАТЬ.
+  //                МЕРЕ, а клетки появляются последним шагом, чтобы его ПОКАЗАТЬ;
+  //   skeleton   — граф из явных списков точек и рёбер, который скрипт дописывает и откатывает
+  //                (пещера из ниш и ходов): число занятых элементов приходит параметром.
   void add_standard_tools();
   void add_graph_tools();
   void add_volume_tools();
   void add_constraint_tools();
   void add_scatter_tools();
   void add_structure_tools();
+  void add_skeleton_tools();
+  // Запросы к полю из примитивов (primitive_field.h): значение в точках и луч до породы/воды.
+  void add_field_tools();
+  // Соседство как привязка (neighbourhood.h): blur, frontier, flood над CSR или трафаретом; edge_csr.
+  void add_neighbourhood_tools();
 
 private:
   std::vector<tool_description> tools_;

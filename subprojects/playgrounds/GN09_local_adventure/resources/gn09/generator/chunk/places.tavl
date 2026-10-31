@@ -1,0 +1,10 @@
+// Места, чьи пещеры могут коснуться чанка: природные узлы окна чанка не дальше досягаемости пещеры от
+// коробки чанка (с соседним слоем сэмплов). Их ключи — fan-in генератора поля чанка на пещеры.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = chunk_places
+buffers = ./places_buffers.tavl
+steps = [
+  { name = select, body = ./scripts/places.lua, reads = [ nodes, graph_meta ], writes = [ places, chunk_counts ] }
+]

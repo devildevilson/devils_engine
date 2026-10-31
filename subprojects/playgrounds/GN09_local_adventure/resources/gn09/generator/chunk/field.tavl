@@ -1,0 +1,16 @@
+// Поле чанка и его поверхность: поле `solid` из форм окна, пещер мест и построек (объявлено в world.tavl,
+// у генератора), сэмплы на решётке узлов чанка с полосой в один узел с каждой стороны (центральные
+// разности нормалей на шве), поверхность марширующими тетраэдрами, порода клетки — метка поля у середины её
+// поверхности, треугольники станций и туннелей, обрезанные по чанку, и предметы пещер мест в чанке.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = chunk_field
+buffers = ./field_buffers.tavl
+steps = [
+  { name = sample, body = ./scripts/field.lua, writes = [ lattice, samples ] },
+  { name = surface, body = ./scripts/surface.lua, reads = [ lattice, samples ], writes = [ surface, middles, surface_counts ] },
+  { name = structures, body = ./scripts/structures.lua,
+    reads = [ anchors, anchor_counts, chunk_tunnels, tunnel_counts ], writes = [ chunk_meta, structure_surface, surface_counts ] },
+  { name = props, body = ./scripts/props.lua, reads = [ places ], writes = [ props, surface_counts ] }
+]

@@ -1,0 +1,11 @@
+// Сухой туннель пары станций — ТОЧКА ВХОДА генератора tunnel (ключ — ключ станции первого якоря пары).
+// Станции не меняются: туннель вырезает свой объём в скале. Блок tunnel_build строит сетку и коробку.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+name = tunnel
+buffers = ./tunnel_buffers.tavl
+steps = [
+  { name = route, body = ./scripts/tunnel.lua, reads = [ tunnel_link, tunnel_pair ],
+    writes = [ tunnel_meta, tunnel_pieces, tunnel_mesh, samples ] }
+]

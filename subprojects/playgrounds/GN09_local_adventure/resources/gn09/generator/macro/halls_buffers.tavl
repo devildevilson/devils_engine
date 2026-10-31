@@ -1,0 +1,80 @@
+// Буферы генератора halls: залы одного региона (8x8 секторов). Координаты мира — `d` (double): в `v`
+// они округлились бы на миллиметры. Колонны, уступы, ниши и петля — в локальных осях зала (u вдоль
+// forward, y вверх, v вправо), строками своих буферов; у зала — диапазоны строк.
+
+{
+  name = halls
+  format = [
+    key = ul1
+    centre = d3
+    forward = d3
+    // полуоси: длина (вдоль forward), ширина, высота
+    half = d3
+    // локальная высота плоского дна
+    floor = d1
+    // 0 pillared, 1 lair
+    kind = ui1
+    // 0 none, 1 beast, 2 lord
+    resident = ui1
+    body_radius = d1
+    first_pillar = ui1
+    pillar_count = ui1
+    first_ledge = ui1
+    ledge_count = ui1
+    first_niche = ui1
+    niche_count = ui1
+    first_loop = ui1
+    loop_count = ui1
+    // полуразмеры области влияния в локальных осях: дальше поле зала — скала (блок hall_relevance)
+    relevance = d3
+  ]
+  size = hall_capacity
+}
+
+{
+  name = hall_pillars
+  format = [ u = d1, v = d1, radius = d1 ]
+  size = hall_pillar_capacity
+}
+
+// Уступ — локальная коробка, частью уходящая в стену.
+{
+  name = hall_ledges
+  format = [ centre = d3, half = d3 ]
+  size = hall_ledge_capacity
+}
+
+// Укрытие: вход по нормали в стену, колено с поворотом лодки, отвод вдоль стены.
+{
+  name = hall_niches
+  format = [ mouth = d3, elbow = d3, end = d3, radius = d1, overhang = ui1 ]
+  size = hall_niche_capacity
+}
+
+// Петля патруля обитателя: замкнутая ломаная.
+{
+  name = hall_loop
+  format = [ point = d3 ]
+  size = hall_loop_capacity
+}
+
+// Аванпосты залов — якоря станций на уступах. theme: 1 outpost, 2 derelict; recipe: 3 mining,
+// 4 residential, 5 military; preferred: -1 дно, 0 стена.
+{
+  name = hall_outposts
+  format = [ key = ul1, centre = d3, kind = ui1, recipe = ui1, preferred = i1, hall = ul1 ]
+  size = hall_outpost_capacity
+}
+
+{
+  name = hall_counts
+  format = [ halls = ui1, pillars = ui1, ledges = ui1, niches = ui1, loop = ui1, outposts = ui1 ]
+  size = one
+}
+
+// Ответ блока hall_niche_fits.
+{
+  name = hall_probe
+  format = [ verdict = ui1 ]
+  size = one
+}
