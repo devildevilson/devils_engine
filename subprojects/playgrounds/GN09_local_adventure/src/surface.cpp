@@ -143,66 +143,7 @@ surface_mesh generate_surface(const field_region& region, const chunk& volume) {
   return mesh;
 }
 
-namespace {
-
 namespace originator = devils_engine::originator;
-
-originator::instance_key key_at(const originator::const_field_accessor& keys, const size_t row) {
-  return {{originator::read_key_word(keys, row, 0), originator::read_key_word(keys, row, 1),
-           originator::read_key_word(keys, row, 2)}};
-}
-
-// Блок генератора chunk_field: треугольники станций якорей чанка (без проёмов их туннеля) и туннелей
-// чанка, обрезанные по коробке чанка [low, high). Станции и туннели — экземпляры цепочки по ключам
-// (вход 0 — станции якорей, 1 — туннели, 2 — зерно мира); их же поле чанка взяло fan-in-ом.
-void tool_structure_surface(const originator::tool_call& call, const size_t, const size_t) {
-  const auto stations = call.input(0).read(), tunnels = call.input(1).read();
-  const uint64_t seed = originator::read_key_word(call.input(2).read(), 0);
-  auto& chain = world_chain(call.params->number("clearance"));
-  const double side = call.params->number("cells");
-  const point low{call.params->number("x") * side, call.params->number("y") * side, call.params->number("z") * side};
-  const point high{low.x + side, low.y + side, low.z + side};
-  auto position = call.output(0).write(), normal = call.output(1).write(), shade = call.output(2).write();
-  size_t made = 0;
-  const auto emit = [&](const point* polygon, const size_t count, const point n, const uint8_t material) {
-    for (size_t i = 1; i + 1 < count; ++i) {
-      for (const point& p : {polygon[0], polygon[i], polygon[i + 1]}) {
-        if (made >= position.count()) {
-          devils_engine::utils::error{}("GN09 structure_surface: more than {} vertices", position.count());
-        }
-        position.set(made, p.x, 0); position.set(made, p.y, 1); position.set(made, p.z, 2);
-        normal.set(made, n.x, 0); normal.set(made, n.y, 1); normal.set(made, n.z, 2);
-        shade.set(made, double(material));
-        ++made;
-      }
-    }
-  };
-  for (int64_t i = 0; i < call.params->integer("anchors"); ++i) {
-    const auto key = key_at(stations, size_t(i));
-    const auto station = station_view(*chain.get("station", seed, key));
-    if (!station || !station_reaches(*station, low, high)) continue;
-    // Проём туннеля: треугольники стены станции внутри его ноги не выводятся.
-    const auto tunnel = tunnel_of_station(chain, seed, key);
-    const uint64_t anchor = key.words[2];
-    clip_triangles(station->mesh, low, high, emit, [&](const station_triangle& t) {
-      return tunnel && in_tunnel_doorway(*tunnel, anchor, scale(add(add(t.a, t.b), t.c), 1.0 / 3.0));
-    });
-  }
-  for (int64_t i = 0; i < call.params->integer("tunnels"); ++i) {
-    const auto tunnel = tunnel_view(*chain.get("tunnel", seed, key_at(tunnels, size_t(i))));
-    if (!tunnel || !tunnel_reaches(*tunnel, low, high)) continue;
-    clip_triangles(tunnel->mesh, low, high, emit);
-  }
-  call.output(3).write().set(0, double(made));
-}
-
-} // namespace
-
-void add_surface_tools(devils_engine::originator::tool_registry& tools) {
-  tools.add(originator::tool_description{.name = "structure_surface", .shape = originator::aperture::sequential,
-                                         .input_count = 3, .output_count = 4, .body = tool_structure_surface,
-                                         .footprint = originator::no_temporary_memory});
-}
 
 surface_mesh surface_from_chain(const chunk_instance& made) {
   surface_mesh mesh;
@@ -243,9 +184,9 @@ void append_outpost_surface(const adventure& world, const chunk& volume, surface
     }
   };
   for (const station_anchor& at : station_anchors(world)) {
-    if (std::abs(at.centre.x - chunk_low.x) > station_reach + side ||
-        std::abs(at.centre.y - chunk_low.y) > station_reach + side ||
-        std::abs(at.centre.z - chunk_low.z) > station_reach + side) continue;
+    if (std::abs(at.centre.x - chunk_low.x) > station_reach() + side ||
+        std::abs(at.centre.y - chunk_low.y) > station_reach() + side ||
+        std::abs(at.centre.z - chunk_low.z) > station_reach() + side) continue;
     const auto station = station_for(world, at);
     if (!station || !station_reaches(*station, chunk_low, chunk_high)) continue;
     // Проём туннеля: треугольники стены станции внутри его ноги не выводятся.

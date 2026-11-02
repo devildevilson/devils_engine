@@ -99,6 +99,7 @@ public:
   // имена полей, против которых программа компилируется, известны только по фактическим привязкам.
   // Общий модуль цепочки (generator_chain.h): lua, возвращающий таблицу; виден телам как `modules.<имя>`.
   void load_module(const std::string_view& module_name, const std::string_view& source, const std::string_view& chunk_name);
+  void set_constants(const parameters& values);
   void load_program(const std::string_view& program_name, const std::string_view& source);
   bool has_program(const std::string_view& program_name) const noexcept;
 

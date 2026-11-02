@@ -7,5 +7,5 @@
 name = chunk
 buffers = ./chunk_buffers.tavl
 steps = [
-  { name = locate, body = ./scripts/chunk.lua, writes = [ home ] }
+  { name = locate, body = ./01_chunk.lua, writes = [ home ] }
 ]

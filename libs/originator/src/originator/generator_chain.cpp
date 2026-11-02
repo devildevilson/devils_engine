@@ -2,6 +2,12 @@
 #include "devils_engine/originator/primitive_field.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <stdexcept>
+#include <thread>
+#include <cstdio>
+#include <cstdlib>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -64,6 +70,7 @@ struct generator_mirror {
   std::vector<field_mirror> fields;
   std::map<std::string, std::string> trim;
   size_t capacity = 0;
+  bool keep_fields = false;
 };
 
 struct module_mirror {
@@ -71,9 +78,62 @@ struct module_mirror {
   std::string path;
 };
 
+struct shape_mirror {
+  std::string name;
+  std::string buffer;
+  std::string count;
+  std::string box_a;
+  std::string box_b;
+  std::string box;
+  std::string reach;
+  std::string tag;
+  std::string value;
+  std::string role;
+  double blend = 0.0;
+  struct part_mirror {
+    std::string buffer;
+    std::string first;
+    std::string count;
+    std::string op;
+    std::string value;
+    std::string box_a;
+    std::string box_b;
+  };
+  std::vector<part_mirror> parts;
+};
+
+struct noise_slot_mirror {
+  std::string name;
+  uint64_t seed_add = 0;
+  double period = 1.0;
+};
+
+struct background_term_mirror {
+  std::string slot;
+  double weight = 0.0;
+};
+
+struct background_mirror {
+  bool enabled = false;
+  double base = 0.0;
+  double outside = 0.0;
+  double y_min = -1e30;
+  double y_max = 1e30;
+  double upper = 0.0;
+  double lower = 0.0;
+  uint32_t tag = 0;
+  std::vector<background_term_mirror> terms;
+  std::string y_min_constant;
+  std::string y_max_constant;
+};
+
 struct chain_mirror {
   std::string name;
+  std::string constants;
   std::vector<module_mirror> modules;
+  std::vector<noise_slot_mirror> noise_slots;
+  background_mirror background;
+  std::vector<shape_mirror> shapes;
   std::vector<generator_mirror> generators;
 };
 
@@ -100,7 +160,31 @@ std::pair<std::string_view, std::string_view> split_field(const std::string_view
 }
 
 thread_local std::vector<std::tuple<const void*, uint64_t, instance_key>> building;
+// Глубина исполнения шагов (lua, исполнитель, нативное тело) на этом потоке: внутри шага поток не
+// помогает чужим сборкам — его lua-хост занят, а вложенный вызов того же хоста испортил бы шаг.
+thread_local int step_depth = 0;
 
+} // namespace
+
+struct generator_chain::build_node {
+  const void* at = nullptr;
+  uint64_t seed = 0;
+  instance_key key;
+  std::shared_ptr<const build_node> parent;
+};
+
+struct generator_chain::pending_build {
+  const slot* at = nullptr;
+  uint64_t seed = 0;
+  instance_key key;
+  std::shared_ptr<const build_node> parent;
+  std::promise<result_ptr> promise;
+  std::atomic<bool> started{false};
+};
+
+namespace {
+// Путь зависимостей текущей сборки этого потока: по нему помощник узнаёт поддерево того, кого ждёт.
+thread_local std::shared_ptr<const void> current_node_holder;
 } // namespace
 
 uint64_t read_key_word(const const_field_accessor& field, const size_t element, const uint32_t word) {
@@ -136,6 +220,7 @@ chain_description parse_chain(const std::string_view& text, const std::string_vi
 
   chain_description out;
   out.name = mirror.name.empty() ? std::string(label) : mirror.name;
+  out.constants = mirror.constants;
   for (auto& m : mirror.modules) {
     if (m.name.empty() || m.path.empty()) {
       utils::error{}("originator chain '{}': module {} needs both a name and a path", label, out.modules.size());
@@ -144,6 +229,60 @@ chain_description parse_chain(const std::string_view& text, const std::string_vi
       if (known.name == m.name) utils::error{}("originator chain '{}': module '{}' is declared twice", label, m.name);
     }
     out.modules.push_back({std::move(m.name), std::move(m.path)});
+  }
+  for (auto& slot : mirror.noise_slots) {
+    if (slot.name.empty() || !std::isfinite(slot.period) || slot.period <= 0.0) {
+      utils::error{}("originator chain '{}': invalid noise slot '{}' with period {}", label, slot.name, slot.period);
+    }
+    for (const auto& known : out.noise_slots) {
+      if (known.name == slot.name) utils::error{}("originator chain '{}': noise slot '{}' declared twice", label, slot.name);
+    }
+    out.noise_slots.push_back({std::move(slot.name), slot.seed_add, slot.period});
+  }
+  if (mirror.background.enabled) {
+    const auto& b = mirror.background;
+    if (!std::isfinite(b.base) || !std::isfinite(b.outside) || !std::isfinite(b.y_min) ||
+        !std::isfinite(b.y_max) || b.y_min > b.y_max || !std::isfinite(b.upper) || !std::isfinite(b.lower)) {
+      utils::error{}("originator chain '{}': invalid background bounds", label);
+    }
+    out.has_background = true;
+    out.background = {b.base, b.outside, b.y_min, b.y_max, b.upper, b.lower, b.tag, {},
+                      b.y_min_constant, b.y_max_constant};
+    for (const auto& term : b.terms) {
+      if (term.slot.empty() || !std::isfinite(term.weight)) {
+        utils::error{}("originator chain '{}': invalid background term", label);
+      }
+      out.background.terms.push_back({term.slot, term.weight});
+    }
+  }
+  for (auto& m : mirror.shapes) {
+    if (m.name.empty() || m.buffer.empty() || m.box_a.empty() || m.reach.empty() || m.value.empty()) {
+      utils::error{}("originator chain '{}': shape {} needs name, buffer, box_a, reach and value", label,
+                     out.shapes.size());
+    }
+    if (!m.role.empty() && m.role != "natural" && m.role != "fill" && m.role != "cut" && m.role != "insert") {
+      utils::error{}("originator chain '{}': shape '{}' has role '{}', expected natural, fill, cut or insert", label, m.name,
+                     m.role);
+    }
+    if (!m.box.empty() && m.box != "capsule" && m.box != "aabb") {
+      utils::error{}("originator chain '{}': shape '{}' has box '{}', expected capsule or aabb", label, m.name, m.box);
+    }
+    if (m.box == "aabb" && m.box_b.empty()) {
+      utils::error{}("originator chain '{}': shape '{}' needs box_b for an aabb", label, m.name);
+    }
+    out.shapes.push_back({std::move(m.name), std::move(m.buffer), std::move(m.count), std::move(m.box_a),
+                          std::move(m.box_b), std::move(m.box), std::move(m.reach), std::move(m.tag), std::move(m.value), {},
+                          std::move(m.role), m.blend, {}});
+    for (auto& part : m.parts) {
+      if (part.buffer.empty() || part.first.empty() || part.count.empty() || part.value.empty() ||
+          (part.op != "max" && part.op != "min") || part.box_a.empty() != part.box_b.empty()) {
+        utils::error{}("originator chain '{}': shape '{}' has an invalid part; expected buffer, first, count, op=max|min and value",
+                       label, out.shapes.back().name);
+      }
+      out.shapes.back().parts.push_back({std::move(part.buffer), std::move(part.first), std::move(part.count),
+                                         std::move(part.op), std::move(part.value), {},
+                                         std::move(part.box_a), std::move(part.box_b)});
+    }
   }
   for (auto& g : mirror.generators) {
     if (g.name.empty()) {
@@ -157,6 +296,7 @@ chain_description parse_chain(const std::string_view& text, const std::string_vi
     generator.buffers = std::move(g.buffers);
     generator.outputs = std::move(g.outputs);
     generator.capacity = g.capacity;
+    generator.keep_fields = g.keep_fields;
     for (auto& l : g.links) {
       chain_link link;
       link.name = l.name.empty() ? l.from : std::move(l.name);
@@ -358,6 +498,7 @@ generator_chain::generator_chain(chain_description description, chain_setup setu
       }
       at->has_pipeline = true;
       at->merged = found->second;
+      at->merged.values.overlay(setup_.constants);
       at->merged.values.overlay(setup_.values);
       at->values = at->merged.values;
       const auto scripts = std::find_if(setup_.scripts.begin(), setup_.scripts.end(),
@@ -380,7 +521,8 @@ generator_chain::generator_chain(chain_description description, chain_setup setu
         utils::error{}("originator chain generator '{}': native, but its buffer declarations were not supplied", g.name);
       }
       at->buffers = &found->second;
-      at->values = setup_.values;
+      at->values = setup_.constants;
+      at->values.overlay(setup_.values);
       for (const auto& output : g.outputs) {
         const bool declared = std::any_of(found->second.begin(), found->second.end(),
                                           [&](const auto& b) { return b.name == output; });
@@ -482,6 +624,11 @@ uint64_t generator_chain::fingerprint_of(const slot& at, std::vector<const slot*
                    setup_.values.is_string_at(i) ? utils::string_hash(setup_.values.string_at(i)) :
                                                    std::bit_cast<uint64_t>(setup_.values.number_at(i)));
   }
+  for (size_t i = 0; i < setup_.constants.size(); ++i) {
+    h = utils::mix(h, utils::string_hash(setup_.constants.name_at(i)),
+                   setup_.constants.is_string_at(i) ? utils::string_hash(setup_.constants.string_at(i)) :
+                     std::bit_cast<uint64_t>(setup_.constants.number_at(i)));
+  }
   for (const auto& [buffer_name, count] : at.description.trim) {
     h = utils::mix(h, utils::string_hash(buffer_name), utils::string_hash(count));
   }
@@ -541,6 +688,7 @@ void generator_chain::set_invoker_source(invoker_source source) {
 uint64_t generator_chain::fingerprint(const std::string_view& name) const { return find_slot(name).fingerprint; }
 
 std::span<const script_text> generator_chain::modules() const noexcept { return setup_.modules; }
+const parameters& generator_chain::constants() const noexcept { return setup_.constants; }
 
 std::span<const script_text> generator_chain::scripts(const std::string_view& name) const {
   return find_slot(name).scripts;
@@ -550,6 +698,39 @@ generator_chain::statistics generator_chain::stats(const std::string_view& name)
   const auto& at = find_slot(name);
   std::lock_guard guard(at.lock);
   return at.stats;
+}
+
+std::vector<std::pair<std::string, generator_chain::statistics>> generator_chain::all_stats() const {
+  std::vector<std::pair<std::string, statistics>> out;
+  for (const auto& at : slots_) {
+    std::lock_guard guard(at->lock);
+    out.emplace_back(at->description.name, at->stats);
+  }
+  return out;
+}
+
+std::vector<std::pair<std::string, generator_chain::footprint>> generator_chain::cache_footprint() const {
+  std::vector<std::pair<std::string, footprint>> out;
+  for (const auto& at : slots_) {
+    footprint f;
+    std::lock_guard guard(at->lock);
+    for (const auto& [key, e] : at->cache) {
+      if (e.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
+      const result_ptr& r = e.future.get();
+      if (r == nullptr) continue;
+      ++f.instances;
+      for (size_t i = 0; i < r->buffer_count(); ++i) f.buffer_bytes += r->buffer_at(i).byte_size();
+    }
+    out.emplace_back(at->description.name, f);
+  }
+  return out;
+}
+
+void generator_chain::reset_stats() const {
+  for (const auto& at : slots_) {
+    std::lock_guard guard(at->lock);
+    at->stats = {};
+  }
 }
 
 result_ptr generator_chain::get(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const {
@@ -568,54 +749,149 @@ result_ptr generator_chain::get(const std::string_view& name, const uint64_t wor
     }
   }
 
-  std::promise<result_ptr> promise;
-  std::shared_future<result_ptr> future;
-  bool owner = false;
+  const auto made = claim(at, world_seed, key);
+  if (made.job) run_claim(*made.job);
+  wait_helping(at, world_seed, key, made.future);
+  return made.future.get();
+}
+
+generator_chain::claimed generator_chain::claim(const slot& at, const uint64_t world_seed, const instance_key& key) const {
+  claimed out;
   const auto cache_key = std::make_pair(world_seed, key);
+  std::lock_guard guard(at.lock);
+  const auto found = at.cache.find(cache_key);
+  if (found != at.cache.end()) {
+    out.future = found->second.future;
+    found->second.used = ++at.tick;
+    ++at.stats.hits;
+    return out;
+  }
+  if (at.cache.size() >= at.capacity) {
+    auto oldest = at.cache.end();
+    for (auto it = at.cache.begin(); it != at.cache.end(); ++it) {
+      if (it->second.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
+      if (oldest == at.cache.end() || it->second.used < oldest->second.used) oldest = it;
+    }
+    if (oldest != at.cache.end()) {
+      at.cache.erase(oldest);
+      ++at.stats.evictions;
+    }
+  }
+  out.job = std::make_shared<pending_build>();
+  out.job->at = &at;
+  out.job->seed = world_seed;
+  out.job->key = key;
+  out.job->parent = std::static_pointer_cast<const build_node>(current_node_holder);
+  out.future = out.job->promise.get_future().share();
+  at.cache.emplace(cache_key, entry{out.future, ++at.tick});
+  ++at.stats.builds;
+  return out;
+}
+
+void generator_chain::run_claim(pending_build& job) const {
+  if (job.started.exchange(true)) return;
+  const slot& at = *job.at;
+  auto node = std::make_shared<build_node>();
+  node->at = &at;
+  node->seed = job.seed;
+  node->key = job.key;
+  node->parent = job.parent;
+  struct node_scope {
+    std::shared_ptr<const void> previous;
+    ~node_scope() { current_node_holder = std::move(previous); }
+  } scope{std::exchange(current_node_holder, std::shared_ptr<const void>(node))};
+  building.emplace_back(&at, job.seed, job.key);
+  try {
+    job.promise.set_value(build(at, job.seed, job.key));
+  } catch (...) {
+    building.pop_back();
+    // Неудачная сборка не остаётся в кэше: ждущие получат исключение из своей копии будущего, а
+    // следующий запрос попробует снова, а не получит то же исключение навсегда.
+    {
+      std::lock_guard guard(at.lock);
+      at.cache.erase(std::make_pair(job.seed, job.key));
+    }
+    job.promise.set_exception(std::current_exception());
+    return;
+  }
+  building.pop_back();
+}
+
+void generator_chain::wait_helping(const slot& at, const uint64_t world_seed, const instance_key& key,
+                                   const std::shared_future<result_ptr>& future) const {
+  if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) return;
+  // Пока экземпляр строит другой поток, этот берёт захваченные сборки из ЕГО поддерева: они нужны
+  // тому, кого ждём, и не могут зависеть ни от чего на стеке этого потока (иначе в графе был бы цикл).
+  // Брать можно: сам ожидаемый экземпляр, его поддерево и поддерево собственной текущей сборки этого
+  // потока — всё это нужно тем, кто на стеке, и ни от чего на стеке зависеть не может.
+  const auto own = std::static_pointer_cast<const build_node>(current_node_holder);
+  const auto under_awaited = [&](const pending_build& job) {
+    if (job.at == &at && job.seed == world_seed && job.key == key) return true;
+    for (auto node = job.parent; node != nullptr; node = node->parent) {
+      if (node->at == &at && node->seed == world_seed && node->key == key) return true;
+      if (own != nullptr && node.get() == own.get()) return true;
+    }
+    return false;
+  };
+  uint64_t idle_ns = 0;
+  while (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    std::shared_ptr<pending_build> job;
+    {
+      // Внутри шага поток берёт только сам ожидаемый экземпляр: это ровно сборка «на месте», которую
+      // делает и обычный get; чужие поддеревья внутри шага не берутся (lua-хост потока занят шагом).
+      std::lock_guard guard(pending_lock_);
+      std::erase_if(pending_, [](const auto& p) { return p->started.load(); });
+      for (const auto& p : pending_) {
+        const bool itself = p->at == &at && p->seed == world_seed && p->key == key;
+        if (step_depth == 0 ? under_awaited(*p) : itself) {
+          job = p;
+          break;
+        }
+      }
+    }
+    if (job) {
+      run_claim(*job);
+      continue;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    future.wait_for(std::chrono::microseconds(200));
+    idle_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+    if (idle_ns > 10'000'000'000ull && std::getenv("ORIGINATOR_HANG_DEBUG")) {
+      static std::mutex print_lock;
+      std::lock_guard print(print_lock);
+      const auto name_of = [&](const void* slot_ptr) { return static_cast<const slot*>(slot_ptr)->description.name; };
+      std::fprintf(stderr, "HANG thread %zu waits %s %llx/%llx/%llx step_depth %d; stack:",
+                   std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000, at.description.name.c_str(),
+                   (unsigned long long)key.words[0], (unsigned long long)key.words[1], (unsigned long long)key.words[2],
+                   step_depth);
+      for (const auto& [who, seed, k] : building) {
+        std::fprintf(stderr, " %s:%llx", name_of(who).c_str(), (unsigned long long)k.words[2]);
+      }
+      std::fprintf(stderr, "\n");
+      std::lock_guard guard(pending_lock_);
+      for (const auto& p : pending_) {
+        std::fprintf(stderr, "   pending %s:%llx started %d parents:", p->at->description.name.c_str(),
+                     (unsigned long long)p->key.words[2], int(p->started.load()));
+        for (auto node = p->parent; node != nullptr; node = node->parent) {
+          std::fprintf(stderr, " %s:%llx", name_of(node->at).c_str(), (unsigned long long)node->key.words[2]);
+        }
+        std::fprintf(stderr, "\n");
+      }
+      idle_ns = 0;
+    }
+  }
+  std::lock_guard guard(at.lock);
+  at.stats.wait_ns += idle_ns;
+  ++at.stats.waits;
+}
+
+void generator_chain::prefetch(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const {
+  const slot& at = find_slot(name);
   {
     std::lock_guard guard(at.lock);
-    const auto found = at.cache.find(cache_key);
-    if (found != at.cache.end()) {
-      future = found->second.future;
-      found->second.used = ++at.tick;
-      ++at.stats.hits;
-    } else {
-      if (at.cache.size() >= at.capacity) {
-        auto oldest = at.cache.end();
-        for (auto it = at.cache.begin(); it != at.cache.end(); ++it) {
-          if (it->second.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
-          if (oldest == at.cache.end() || it->second.used < oldest->second.used) oldest = it;
-        }
-        if (oldest != at.cache.end()) {
-          at.cache.erase(oldest);
-          ++at.stats.evictions;
-        }
-      }
-      future = promise.get_future().share();
-      at.cache.emplace(cache_key, entry{future, ++at.tick});
-      ++at.stats.builds;
-      owner = true;
-    }
+    if (at.cache.contains(std::make_pair(world_seed, key))) return;
   }
-
-  if (owner) {
-    building.emplace_back(&at, world_seed, key);
-    try {
-      promise.set_value(build(at, world_seed, key));
-    } catch (...) {
-      building.pop_back();
-      // Неудачная сборка не остаётся в кэше: ждущие получат исключение из своей копии будущего, а
-      // следующий запрос попробует снова, а не получит то же исключение навсегда.
-      {
-        std::lock_guard guard(at.lock);
-        at.cache.erase(cache_key);
-      }
-      promise.set_exception(std::current_exception());
-      throw;
-    }
-    building.pop_back();
-  }
-  return future.get();
+  (void)resolve(at, world_seed, key);
 }
 
 std::string generator_chain::verify(const std::string_view& name, const uint64_t world_seed,
@@ -707,9 +983,51 @@ std::vector<resolved_link> generator_chain::resolve(const slot& at, const uint64
           utils::error{}("originator chain generator '{}', link '{}': count {} is not a whole number", g.name,
                          link.name, count);
         }
+        // Все недостающие экземпляры захватываются сразу и выставляются в очередь помощи: потоки, которые
+        // ждут ЭТУ сборку, строят их параллельно, а сам поток берёт их по порядку. Порядок результатов —
+        // порядок ключей, кто бы ни строил.
+        std::vector<claimed> items;
+        std::vector<instance_key> keys;
+        items.reserve(size_t(count));
+        keys.reserve(size_t(count));
+        struct abandon {
+          const generator_chain* chain;
+          std::vector<claimed>* items;
+          bool done = false;
+          ~abandon() {
+            if (done) return;
+            for (auto& item : *items) {
+              if (!item.job || item.job->started.exchange(true)) continue;
+              {
+                std::lock_guard guard(item.job->at->lock);
+                item.job->at->cache.erase(std::make_pair(item.job->seed, item.job->key));
+              }
+              item.job->promise.set_exception(std::make_exception_ptr(
+                std::runtime_error("originator chain: a sibling build of this fan-in failed")));
+            }
+          }
+        } guard{this, &items};
         for (size_t e = 0; e < size_t(count); ++e) {
-          resolved.results.push_back(get(link.from, world_seed, key_at(link, e, from.description.key_words)));
+          const instance_key produced = key_at(link, e, from.description.key_words);
+          for (const auto& [who, seed, k] : building) {
+            if (who == &from && seed == world_seed && k == produced) {
+              utils::error{}("originator chain generator '{}': instance {:x}/{:x}/{:x} links back to itself while "
+                             "being built", link.from, produced.words[0], produced.words[1], produced.words[2]);
+            }
+          }
+          items.push_back(claim(from, world_seed, produced));
+          keys.push_back(produced);
         }
+        {
+          std::lock_guard lock(pending_lock_);
+          for (const auto& item : items) if (item.job) pending_.push_back(item.job);
+        }
+        for (size_t e = 0; e < items.size(); ++e) {
+          if (items[e].job) run_claim(*items[e].job);
+          wait_helping(from, world_seed, keys[e], items[e].future);
+          resolved.results.push_back(items[e].future.get());
+        }
+        guard.done = true;
         break;
       }
     }
@@ -733,6 +1051,25 @@ void generator_chain::trim_outputs(const chain_generator& g, generator_result& r
   }
 }
 
+std::shared_ptr<const primitive_field> generator_chain::field(const std::string_view& name, const uint64_t world_seed,
+                                                             const instance_key& key,
+                                                             const std::string_view& field_name) const {
+  const slot& at = find_slot(name);
+  for (const auto& declared : at.description.fields) {
+    if (declared.name != field_name) continue;
+    const std::vector<resolved_link> links = resolve(at, world_seed, key);
+    std::vector<field_term_source> terms;
+    for (const auto& term : declared.terms) {
+      const auto found = std::find_if(links.begin(), links.end(), [&](const resolved_link& l) { return l.name == term.link; });
+      if (found == links.end()) utils::error{}("originator chain generator '{}': field '{}' names unknown link '{}'", name, field_name, term.link);
+      terms.push_back({term.kind, found->results});
+    }
+    return std::make_shared<const primitive_field>(*setup_.vocabulary, terms, world_seed);
+  }
+  utils::error{}("originator chain generator '{}' declares no field '{}'", name, field_name);
+  return nullptr;
+}
+
 result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, const instance_key& key) const {
   generator_run run;
   run.chain_ = this;
@@ -741,7 +1078,19 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
   run.key_ = key;
   run.seed_ = utils::mix(world_seed, at.name_hash, key.words[0], key.words[1], key.words[2]);
   run.values_ = &at.values;
+  const auto started = std::chrono::steady_clock::now();
   run.links_ = resolve(at, world_seed, key);
+  const auto linked_at = std::chrono::steady_clock::now();
+  struct timing {
+    const slot& at;
+    std::chrono::steady_clock::time_point started, linked;
+    ~timing() {
+      const auto now = std::chrono::steady_clock::now();
+      std::lock_guard guard(at.lock);
+      at.stats.build_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - started).count());
+      at.stats.self_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - linked).count());
+    }
+  } timed{at, started, linked_at};
   for (const auto& declared : at.description.fields) {
     std::vector<field_term_source> terms;
     for (const auto& term : declared.terms) terms.push_back({term.kind, run.link(term.link).results});
@@ -787,6 +1136,8 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
     run.line_ = std::make_unique<pipeline>(at.merged, setup_.sizes, run.seed_, linked);
     run.line_->set_links(std::move(step_links));
     run.line_->set_instance(key.words, world_seed);
+    ++step_depth;
+    struct depth_scope { ~depth_scope() { --step_depth; } } depth;
     if (at.executor) {
       at.executor(run);
     } else {
@@ -814,6 +1165,8 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
           declaration.name, declaration.layout, setup_.sizes.get(declaration.size_name, declaration.name)));
       }
     }
+    ++step_depth;
+    struct depth_scope { ~depth_scope() { --step_depth; } } depth;
     at.native(run);
     for (const auto& output : at.description.outputs) {
       for (auto& candidate : run.native_buffers_) {
@@ -825,9 +1178,9 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
     }
     trim_outputs(at.description, *run.result_);
   }
-  // Поля остаются с экземпляром: потребитель спрашивает их и после сборки (поверхность чанка — между
-  // узлами решётки). Строки полей — разделяемые строки связей, копии не делаются.
-  run.result_->fields_ = run.fields_;
+  // Поля остаются с экземпляром, только если генератор объявил keep_fields = true: поле держит строки
+  // всех своих связей, и кэш из сотен экземпляров держал бы их (а с ними вытесненные экземпляры связей).
+  if (at.description.keep_fields) run.result_->fields_ = run.fields_;
   return run.result_;
 }
 

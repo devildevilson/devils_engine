@@ -88,6 +88,10 @@ struct pipeline_entry {
   std::string values;
   // Документ буферов. Обязателен: без буферов пайплайну нечего связывать.
   std::string buffers;
+  // Общие документы буферов: одни и те же объявления у нескольких генераторов (например, строки форм
+  // поля у окна и у пещеры места) — одной копией, а не двумя, которые разъедутся. Имя, объявленное
+  // дважды, — отказ.
+  std::vector<std::string> shared_buffers;
   // Буферы, приходящие ИЗВНЕ: их заполняет хост до запуска. См. pipeline_description::inputs.
   std::vector<std::string> inputs;
   std::vector<step_description> steps;

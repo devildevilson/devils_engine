@@ -161,6 +161,18 @@ generator_config load_generator(const demiurg::resource_system& resources, const
 
   const auto buffers_id = acquire(config, resources, entry.buffers, config.entry_id);
   config.description.buffers = parse_buffers(config.source(buffers_id), buffers_id);
+  for (const auto& shared : entry.shared_buffers) {
+    const auto shared_id = acquire(config, resources, shared, config.entry_id);
+    for (auto& buffer : parse_buffers(config.source(shared_id), shared_id)) {
+      for (const auto& known : config.description.buffers) {
+        if (known.name == buffer.name) {
+          utils::error{}("originator generator '{}': buffer '{}' of shared document '{}' is declared twice",
+                         config.entry_id, buffer.name, shared_id);
+        }
+      }
+      config.description.buffers.push_back(std::move(buffer));
+    }
+  }
 
   // Входы пайплайна: имена буферов, приходящих извне. Переписывать в абсолютные id их не нужно —
   // это имена БУФЕРОВ, а не путей, и они уже объявлены в документе буферов.
@@ -197,9 +209,31 @@ loaded_chain load_chain(const demiurg::resource_system& resources, const std::st
   loaded_chain out;
   const auto text = read_source(resources, id, "generator chain");
   out.description = parse_chain(text, id);
+  // Метаданные формы (роль, состав, фон, шумы и связи) меняют результат так же, как DS/Lua.
+  out.setup.modules.push_back({true, "chain_document", id, text});
+  if (!out.description.constants.empty()) {
+    out.description.constants = demiurg::absolute_resource_path(id, out.description.constants);
+    const auto source = read_source(resources, out.description.constants, "chain constants");
+    out.setup.constants = parse_values(source, out.description.constants);
+    out.setup.modules.push_back({true, "chain_constants", out.description.constants, source});
+  }
   for (auto& module : out.description.modules) {
     module.path = demiurg::absolute_resource_path(id, module.path);
     out.setup.modules.push_back({false, module.name, module.path, read_source(resources, module.path, module.name)});
+  }
+
+  // Формулы видов форм входят в отпечаток каждого генератора, как модули: поле любого из них может их
+  // читать.
+  for (auto& shape : out.description.shapes) {
+    shape.path = demiurg::absolute_resource_path(id, shape.path);
+    shape.text = read_source(resources, shape.path, shape.name);
+    out.setup.modules.push_back({true, shape.name, shape.path, shape.text});
+    for (size_t i = 0; i < shape.parts.size(); ++i) {
+      auto& part = shape.parts[i];
+      part.path = demiurg::absolute_resource_path(id, part.path);
+      part.text = read_source(resources, part.path, shape.name);
+      out.setup.modules.push_back({true, shape.name + ".part" + std::to_string(i), part.path, part.text});
+    }
   }
 
   for (auto& g : out.description.generators) {

@@ -1,0 +1,6 @@
+// Смещённая полость галереи: эллипсоид в базисе ребра, стенка с неровностью. Строка — элемент `lobes`.
+{
+  ctx_save = { qx = x - centre_x, qy = y - centre_y, qz = z - centre_z }
+  ctx_save = { a = (ctx:saved:qx * axis_x + ctx:saved:qy * axis_y + ctx:saved:qz * axis_z) / size_x, l = (ctx:saved:qx * right_x + ctx:saved:qy * right_y + ctx:saved:qz * right_z) / size_y, v = (ctx:saved:qx * up_x + ctx:saved:qy * up_y + ctx:saved:qz * up_z) / size_z }
+  (sqrt(ctx:saved:a * ctx:saved:a + ctx:saved:l * ctx:saved:l + ctx:saved:v * ctx:saved:v) - 1) * 7 + 0.85 * broad + 0.35 * detail
+}

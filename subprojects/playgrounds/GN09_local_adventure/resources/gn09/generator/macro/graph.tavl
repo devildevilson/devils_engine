@@ -6,5 +6,5 @@
 name = graph
 buffers = ./graph_buffers.tavl
 steps = [
-  { name = assemble, body = ./scripts/graph.lua, reads = [ area_counts ], writes = [ nodes, edges, graph_meta ] }
+  { name = assemble, body = ./06_graph.lua, reads = [ area_counts ], writes = [ nodes, edges, graph_meta ] }
 ]

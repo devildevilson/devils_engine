@@ -41,7 +41,7 @@ local_structure materialize_local_structure(const adventure& world, const uint32
   result.recipe = local.recipe;
   result.centre = at.centre;
 
-  // Предметы — выход шага features генератора cave (generator/scripts/S03_features.lua).
+  // Предметы — выход шага features генератора cave (generator/cave/02_features.lua).
   if (!is_base(at.kind) && local.has_cave) {
     const auto instance = cave_instance(world, node_id);
     const auto room = instance->field("features", "room"), kind = instance->field("features", "kind"),

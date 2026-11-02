@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <future>
 #include <map>
@@ -112,6 +113,10 @@ struct chain_generator {
   std::vector<std::pair<std::string, std::string>> trim;
   // Сколько готовых экземпляров держит кэш. Ноль — значение цепочки по умолчанию.
   size_t capacity = 0;
+  // Поля живут только во время сборки: поле держит строки ВСЕХ связей (станции, пещеры, окно), и кэш из
+  // сотен экземпляров удерживал бы их сверх ёмкости их собственных кэшей. true — поля остаются с
+  // экземпляром (shape_field); иначе их пересобирает generator_chain::field из связей по требованию.
+  bool keep_fields = false;
 };
 
 // Общий lua-модуль цепочки: функции правил, которые нужны нескольким генераторам (рельеф слоя, ключ
@@ -122,9 +127,71 @@ struct chain_module {
   std::string path;
 };
 
+// Вид формы поля, объявленный данными: строки — элементы буфера `buffer` экземпляра (занято — поле
+// `count`, пусто — все), коробка — точка `box_a` (и второй конец `box_b` у капсулы) ± `reach` (поле
+// строки или число), метка — `tag` (поле или число), значение — программа ds `path` над столбцами
+// x, y, z и слотами словаря; поля строки видны ей скалярами (многокомпонентные — имя_x/_y/_z/_w).
+// `box = aabb` трактует box_a/box_b как противоположные углы ящика, расширенного на reach.
+struct chain_shape {
+  std::string name;
+  std::string buffer;
+  std::string count;
+  std::string box_a;
+  std::string box_b;
+  std::string box;
+  std::string reach;
+  std::string tag;
+  std::string path;
+  std::string text; // текст программы (заполняет загрузка)
+  // Роль вида в поле: natural (по умолчанию), fill (своя порода, сглаженный максимум радиуса blend),
+  // cut (вырез поверх заливки) — см. shape_role.
+  std::string role;
+  double blend = 0.0;
+  // Составная форма: каждая дочерняя строка относится к основной через диапазон first/count
+  // в её буфере. Операции идут по порядку: max добавляет твёрдые детали, min вырезает полости.
+  struct part {
+    std::string buffer;
+    std::string first;
+    std::string count;
+    std::string op;
+    std::string path;
+    std::string text;
+    std::string box_a;
+    std::string box_b;
+  };
+  std::vector<part> parts;
+};
+
+// Общие шумовые слоты и фон поля задаются документом цепочки. Программа формы DS видит слоты
+// по именам; веса фона и границы мира остаются данными, а не правилами хоста.
+struct chain_noise_slot {
+  std::string name;
+  uint64_t seed_add = 0;
+  double period = 1.0;
+};
+
+struct chain_background {
+  struct term { std::string slot; double weight = 0.0; };
+  double base = 0.0;
+  double outside = 0.0;
+  double y_min = -1e30;
+  double y_max = 1e30;
+  double upper = 0.0;
+  double lower = 0.0;
+  uint32_t tag = 0;
+  std::vector<term> terms;
+  std::string y_min_constant;
+  std::string y_max_constant;
+};
+
 struct chain_description {
   std::string name;
+  std::string constants;
   std::vector<chain_module> modules;
+  std::vector<chain_noise_slot> noise_slots;
+  chain_background background;
+  bool has_background = false;
+  std::vector<chain_shape> shapes;
   std::vector<chain_generator> generators;
 };
 
@@ -149,11 +216,19 @@ class shape_vocabulary;
 struct field_box {
   std::array<double, 3> low{};
   std::array<double, 3> high{};
+  // Необязательная КАПСУЛА внутри коробки: отрезок ab ± capsule_radius (меньше нуля — нет). Точка вне
+  // капсулы считается вне коробки: у длинной диагональной формы коробка-AABB огромна, а капсула — нет,
+  // и это и есть ранний выход по расстоянию до оси, вынесенный из формулы в общее отсечение.
+  std::array<double, 3> a{};
+  std::array<double, 3> b{};
+  double capsule_radius = -1.0;
 
   bool contains(const std::array<double, 3>& p) const noexcept;
   bool overlaps(const std::array<double, 3>& other_low, const std::array<double, 3>& other_high) const noexcept;
   // Коробка отрезка ab, раздутая на radius.
   static field_box around(const std::array<double, 3>& a, const std::array<double, 3>& b, const double radius) noexcept;
+  // То же с капсулой: точка дальше radius от отрезка — вне.
+  static field_box capsule(const std::array<double, 3>& a, const std::array<double, 3>& b, const double radius) noexcept;
 };
 
 struct shape_rows {
@@ -340,6 +415,9 @@ struct chain_setup {
   size_table sizes;
   // Значения цепочки: накладываются на значения КАЖДОГО генератора (параметры мира, общие для всех).
   parameters values;
+  // Константы из документа цепочки: доступны в Lua как constants и step.constants (read-only),
+  // также входят в общие параметры генераторов. values хоста накладываются поверх для входов запуска.
+  parameters constants;
   size_t default_capacity = 256;
   // Словарь форм для полей генераторов. Не владеет; нужен, если хоть один генератор объявил поле.
   const shape_vocabulary* vocabulary = nullptr;
@@ -361,6 +439,9 @@ public:
 
   // Экземпляр из кэша или собранный сейчас. Потокобезопасно; одна сборка на ключ.
   result_ptr get(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
+  // Строит всё, от чего зависит экземпляр (разрешает его связи), но не сам экземпляр: опережающая
+  // подготовка тяжёлых производителей для чанков впереди по ходу.
+  void prefetch(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
   // Пересобирает экземпляр мимо кэша и сравнивает с кэшированным. Пусто — совпали.
   std::string verify(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
 
@@ -370,13 +451,33 @@ public:
   uint64_t fingerprint(const std::string_view& name) const;
   std::span<const script_text> scripts(const std::string_view& name) const;
   std::span<const script_text> modules() const noexcept;
+  const parameters& constants() const noexcept;
 
   struct statistics {
     uint64_t hits = 0;
     uint64_t builds = 0;
     uint64_t evictions = 0;
+    // Время: сборка целиком (со связями), своя часть (без разрешения связей) и ожидание чужой
+    // сборки того же экземпляра другим потоком, в наносекундах.
+    uint64_t build_ns = 0;
+    uint64_t self_ns = 0;
+    uint64_t wait_ns = 0;
+    uint64_t waits = 0;
   };
   statistics stats(const std::string_view& name) const;
+  // Статистика всех генераторов в порядке документа.
+  std::vector<std::pair<std::string, statistics>> all_stats() const;
+  // Поле генератора, собранное заново из связей экземпляра (связи — из кэша; шаги не исполняются). Для
+  // генераторов с keep_fields = false, когда поле всё же нужно после сборки (сверка, отладка).
+  std::shared_ptr<const primitive_field> field(const std::string_view& name, uint64_t world_seed,
+                                               const instance_key& key, const std::string_view& field_name) const;
+  // Что держит кэш генератора сейчас: готовые экземпляры и байты их буферов (без полей и представлений).
+  struct footprint {
+    size_t instances = 0;
+    size_t buffer_bytes = 0;
+  };
+  std::vector<std::pair<std::string, footprint>> cache_footprint() const;
+  void reset_stats() const;
 
 private:
   struct entry {
@@ -402,12 +503,30 @@ private:
     mutable statistics stats;
   };
 
+  // Сборка, захваченная разрешением fan-in и ждущая исполнителя: её берёт сам разрешающий поток по
+  // порядку или поток, который ждёт экземпляр, в поддереве которого она лежит (parent — путь
+  // зависимостей до неё). Другой выбор мог бы взять сборку, зависящую от недостроенного ниже по стеку
+  // самого помощника, и это была бы взаимная блокировка.
+  struct build_node;
+  struct pending_build;
+  struct claimed {
+    std::shared_future<result_ptr> future;
+    std::shared_ptr<pending_build> job; // не пусто — сборка за этим потоком
+  };
+
   slot& find_slot(const std::string_view& name);
   const slot& find_slot(const std::string_view& name) const;
+  claimed claim(const slot& at, const uint64_t world_seed, const instance_key& key) const;
+  void run_claim(pending_build& job) const;
+  void wait_helping(const slot& at, const uint64_t world_seed, const instance_key& key,
+                    const std::shared_future<result_ptr>& future) const;
   result_ptr build(const slot& at, const uint64_t world_seed, const instance_key& key) const;
   std::vector<resolved_link> resolve(const slot& at, const uint64_t world_seed, const instance_key& key) const;
   uint64_t fingerprint_of(const slot& at, std::vector<const slot*>& visiting) const;
   static void trim_outputs(const chain_generator& g, generator_result& result);
+
+  mutable std::mutex pending_lock_;
+  mutable std::deque<std::shared_ptr<pending_build>> pending_;
 
   chain_description description_;
   chain_setup setup_;

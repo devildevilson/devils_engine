@@ -7,7 +7,7 @@
 name = creature
 buffers = ./creature_buffers.tavl
 steps = [
-  { name = domain, body = ./scripts/creature.lua,
+  { name = domain, body = ./03_creature.lua,
     reads = [ creature_home, nodes, edges, graph_meta ],
     writes = [ creature_meta, creature_halls, creature_nodes, creature_passages, creature_refuges, creature_counts, probes ] }
 ]

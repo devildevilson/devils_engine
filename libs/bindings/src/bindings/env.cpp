@@ -1,3 +1,5 @@
+#include <array>
+#include <cmath>
 #include <queue>
 #include <vector>
 
@@ -437,6 +439,41 @@ static sol::table script_stack(sol::this_state s) {
   return t;
 }
 
+// utils::mix от 1..8 слов — тот же хеш, которым считает C++-код мира. Скрипт, повторяющий правило из
+// C++, обязан брать ровно его: prng64_2 (миксует ПРЕДВАРИТЕЛЬНО перемешанные слова) — другой хеш.
+static int64_t mix_words(const sol::variadic_args args) {
+  std::array<uint64_t, 8> w{};
+  const size_t n = args.size();
+  if (n == 0 || n > w.size()) {
+    utils::error{}("base.mix takes 1..8 integer words, got {}", n);
+  }
+  for (size_t i = 0; i < n; ++i) w[i] = s64_to_u64(args.get<int64_t>(int(i)));
+  switch (n) {
+    case 1: return u64_to_s64(utils::mix(w[0]));
+    case 2: return u64_to_s64(utils::mix(w[0], w[1]));
+    case 3: return u64_to_s64(utils::mix(w[0], w[1], w[2]));
+    case 4: return u64_to_s64(utils::mix(w[0], w[1], w[2], w[3]));
+    case 5: return u64_to_s64(utils::mix(w[0], w[1], w[2], w[3], w[4]));
+    case 6: return u64_to_s64(utils::mix(w[0], w[1], w[2], w[3], w[4], w[5]));
+    case 7: return u64_to_s64(utils::mix(w[0], w[1], w[2], w[3], w[4], w[5], w[6]));
+    default: return u64_to_s64(utils::mix(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]));
+  }
+}
+
+// Остаток 64-битного слова как БЕЗЗНАКОВОГО: целые lua знаковые, и `%` над хешем с верхним битом дал
+// бы другой номер, чем `% n` в C++.
+static int64_t unsigned_modulo(const int64_t value, const int64_t divisor) {
+  if (divisor <= 0) {
+    utils::error{}("base.umod: divisor {} must be positive", divisor);
+  }
+  return int64_t(s64_to_u64(value) % uint64_t(divisor));
+}
+
+// std::hypot: не равен sqrt(x*x + y*y) в последнем бите, а правила мира написаны через него.
+static double hypot2(const double x, const double y) {
+  return std::hypot(x, y);
+}
+
 // еще дополнительно желательно вылетать если у нас случайно произошел бесконечный цикл
 // как сделать?
 
@@ -468,6 +505,9 @@ void basic_functions(sol::table t) {
   base.set_function("rng_mix", &rng_mix);   // явный микс (то же, что '+')
   base.set_function("prng64_2", &prng64_2);
   base.set_function("prng64_normalize", &prng64_normalize);
+  base.set_function("mix", &mix_words);
+  base.set_function("umod", &unsigned_modulo);
+  base.set_function("hypot", &hypot2);
   base.set_function("interval", &interval);
   base.set_function("dice", &dice);
   base.set_function("prng32", &shared::prng);

@@ -4,7 +4,6 @@
 #include <vector>
 
 #include "adventure.h"
-#include "devils_engine/originator/tools.h"
 
 namespace gn09 {
 
@@ -23,11 +22,9 @@ struct field_region;
 surface_mesh generate_surface(const field_region& region, const chunk& volume);
 void append_outpost_surface(const adventure& world, const chunk& volume, surface_mesh& mesh);
 // Поверхность чанка цепочки (генератор chunk_field): рельеф марширующими тетраэдрами библиотеки и
-// постройки блока structure_surface — те же вершины, что generate_surface + append_outpost_surface.
+// постройки, обрезанные общим clip_triangle_mesh — те же вершины, что generate_surface + append_outpost_surface.
 struct chunk_instance;
 surface_mesh surface_from_chain(const chunk_instance& made);
-// Блок structure_surface генератора chunk_field.
-void add_surface_tools(devils_engine::originator::tool_registry& tools);
 
 struct surface_seam_result {
   bool ok = false;

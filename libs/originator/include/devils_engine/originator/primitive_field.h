@@ -4,7 +4,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -75,6 +78,26 @@ struct shape_value {
   uint32_t tag = 0;
 };
 
+// Пакет точек для вида, который считает СТОЛБЦОМ (колоночный ds): позиции по осям, точки со слотами
+// (шумы считаются лениво и один раз на точку), выходы — значение и метка на точку.
+struct field_batch {
+  size_t count = 0;
+  const double* x = nullptr;
+  const double* y = nullptr;
+  const double* z = nullptr;
+  field_point* const* points = nullptr;
+  double* values = nullptr;
+  uint32_t* tags = nullptr;
+};
+
+// Роль вида в поле. Поле считается в три стадии: ПРИРОДНОЕ (минимум фона и форм — формы вынимают
+// породу), ЗАЛИВКА (сглаженный максимум с природным — форма приносит свою породу, например блок
+// постройки; радиус смешения blend заполняет швы, а не оставляет складку), ВЫРЕЗ (минимум поверх
+// заливки — помещения построек внутри своей же породы), ВСТАВКА (сглаженный максимум поверх выреза —
+// порода внутри вырезанного: колонны, сталагмиты; без неё вырез стёр бы их). Порядок слагаемых внутри
+// стадии важен только для метки при равных значениях.
+enum class shape_role : uint8_t { natural, fill, cut, insert };
+
 class shape_vocabulary {
 public:
   using slot_function = std::function<double(field_point&)>;
@@ -91,9 +114,13 @@ public:
   const slot_function& slot_at(const size_t index) const noexcept;
 
   // upper_bound — верхняя оценка фона везде: коробка влияния формы — там, где форма может быть ниже.
-  void set_background(background_function function, const double upper_bound);
+  // lower_bound — нижняя оценка фона: если она выше порога поверхности, область без форм — сплошная
+  // порода, и её можно не сэмплировать (field_bound).
+  void set_background(background_function function, const double upper_bound,
+                      const double lower_bound = -std::numeric_limits<double>::infinity());
   const background_function& background() const noexcept;
   double background_bound() const noexcept;
+  double background_lower() const noexcept;
 
   // Строки своего C++-типа в стёртый вид: так их отдаёт decode, и так же их собирает хост, у которого
   // строки уже есть объектом (см. field_term_rows).
@@ -123,10 +150,23 @@ public:
       });
   }
 
+  // Вид, который считает пакетом точек (одна строка формы — много точек): столбцом считать дешевле,
+  // постоянные строки поднимаются из цикла. Поточечный вызов идёт пакетом из одной точки.
+  using batch_function = std::function<void(const void* rows, size_t row, field_batch& batch)>;
+  void add_kind_batch(std::string name, decode_function decode, batch_function batch);
+
   void add_kind_erased(std::string name, decode_function decode, value_function value);
+  // Роль вида (по умолчанию природная); blend — радиус сглаженного максимума заливки, метры.
+  void set_role(const std::string_view& name, shape_role role, double blend = 0.0);
+  shape_role role(const size_t kind) const noexcept;
+  double blend(const size_t kind) const noexcept;
   size_t kind(const std::string_view& name) const;
   const decode_function& decoder(const size_t kind) const noexcept;
   const value_function& evaluator(const size_t kind) const noexcept;
+  // Пакетная форма вида; пусто — вид считает по точке.
+  const batch_function& batcher(const size_t kind) const noexcept;
+  size_t slot_count() const noexcept { return slots_.size(); }
+  std::string_view slot_name(const size_t index) const noexcept { return slots_[index].name; }
 
 private:
   struct named_slot {
@@ -137,11 +177,15 @@ private:
     std::string name;
     decode_function decode;
     value_function value;
+    batch_function batch;
+    shape_role role = shape_role::natural;
+    double blend = 0.0;
   };
   std::vector<named_slot> slots_;
   std::vector<named_kind> kinds_;
   background_function background_;
   double background_bound_ = 0.0;
+  double background_lower_ = -std::numeric_limits<double>::infinity();
 };
 
 // Член поля: вид формы и экземпляры, из выходов которых он читает строки.
@@ -180,13 +224,20 @@ public:
 
   private:
     friend class primitive_field;
+    struct shape_ref;
     const primitive_field* field_ = nullptr;
     field_vector low_{}, high_{};
-    std::vector<uint32_t> shapes_;
+    std::vector<const void*> shapes_;
   };
 
   region prepare(const field_vector& low, const field_vector& high) const;
   shape_value value(const field_vector& p) const;
+
+  // Значения во многих точках сразу: точки бьются на клетки со стороной 2 * half, у клетки — своя
+  // область, и формы считаются ФОРМА ЗА ФОРМОЙ над столбцом точек клетки (пакетные виды — пакетом).
+  // Порядок форм в каждой точке тот же, что у поточечного значения, поэтому и ответ тот же.
+  void sample_points(std::span<const field_vector> points, std::span<double> values, std::span<uint32_t> tags,
+                     const double half) const;
 
   // Значения по точкам подряд: одна подготовленная область (куб со стороной 2 * half) служит
   // соседним точкам; точка вне неё пересобирает область вокруг себя.
@@ -211,13 +262,13 @@ public:
 private:
   struct shape {
     uint32_t kind = 0;
-    uint32_t source = 0;
     uint32_t row = 0;
+    const void* rows = nullptr;
     field_box box;
   };
-
-  shape_value evaluate(std::span<const uint32_t> candidates, const field_vector& p) const;
+  shape_value evaluate(std::span<const void* const> candidates, const field_vector& p) const;
   void add_rows(const size_t kind, shape_vocabulary::decoded decoded);
+  void collect(const field_vector& low, const field_vector& high, std::vector<const void*>& out) const;
 
   const shape_vocabulary* vocabulary_ = nullptr;
   uint64_t seed_ = 0;

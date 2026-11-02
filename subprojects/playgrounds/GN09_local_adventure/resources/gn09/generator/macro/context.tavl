@@ -6,5 +6,5 @@
 name = context
 buffers = ./context_buffers.tavl
 steps = [
-  { name = locate, body = ./scripts/context.lua, writes = [ canonical ] }
+  { name = locate, body = ./00_context.lua, writes = [ canonical ] }
 ]

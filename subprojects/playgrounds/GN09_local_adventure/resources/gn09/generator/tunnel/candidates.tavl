@@ -6,6 +6,6 @@
 name = tunnel_candidates
 buffers = ./candidates_buffers.tavl
 steps = [
-  { name = candidates, body = ./scripts/candidates.lua, reads = [ nodes, graph_meta ],
+  { name = candidates, body = ./01_candidates.lua, reads = [ nodes, graph_meta ],
     writes = [ tunnel_self, tunnel_candidates, candidate_counts ] }
 ]

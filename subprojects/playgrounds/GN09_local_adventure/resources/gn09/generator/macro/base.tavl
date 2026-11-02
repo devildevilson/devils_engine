@@ -6,5 +6,5 @@
 name = base
 buffers = ./base_buffers.tavl
 steps = [
-  { name = place, body = ./scripts/base.lua, reads = [ sector_counts ], writes = [ base ] }
+  { name = place, body = ./03_base.lua, reads = [ sector_counts ], writes = [ base ] }
 ]

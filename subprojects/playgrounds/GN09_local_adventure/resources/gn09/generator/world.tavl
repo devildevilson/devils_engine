@@ -1,7 +1,9 @@
+constants = ./constants.tavl
+
 // Цепочка генераторов GN09 — что из чего строится. Хост просит экземпляр по имени генератора и
 // ключу; связи ниже говорят, какие экземпляры других генераторов нужны раньше, и кэш цепочки
-// строит каждый из них один раз. Правила живут в скриптах генераторов; нативные тела — залы (пока) и
-// сборка C++-структуры мира для нативных потребителей.
+// строит каждый из них один раз. Правила живут в скриптах генераторов; C++ предоставляет общие
+// инструменты, представления буферов для просмотра и независимую проверку.
 //
 // МАКРОГРАФ (macro/):
 //   halls    залы региона (ключ — регион 8x8 секторов): эллипсоид, стопки, колонны, уступы, ниши, петля.
@@ -16,12 +18,12 @@
 //   context  локатор, ключ (x, z): ключ канонического окна 3x3 вокруг сектора.
 //
 // МЕСТА:
-//   place    место узла, ключ (сектор x, сектор z, ключ узла): вход пещеры и СТАРШИЕ соседи.
-//   cave     пещера места: место связью same, канонический мир через context, старшие пещеры —
-//            fan-in на себя. Рекурсия сходится, потому что старшинство идёт только к меньшему ключу.
+//   place    место узла, ключ (сектор x, сектор z, ключ узла): вход пещеры.
+//   cave     пещера места: место связью same, канонический граф через context; скелет строится
+//            без запросов к полю и без соседних пещер.
 //
 // ЧАНК (chunk/), ключ (x, y, z) — номера чанка по 16 м:
-//   chunk             локатор: ключ окна 5x5 секторов вокруг сектора чанка.
+//   chunk             локатор: окно не меньше 5x5 секторов с запасом на досягаемость пещер.
 //   chunk_places      места окна, чьи пещеры дотягиваются до чанка.
 //   chunk_anchors     якоря станций в досягаемости чанка (их станции — fan-in поля).
 //   chunk_tunnels     туннели этих якорей без повторов.
@@ -34,7 +36,6 @@
 // (ближайший с построенной станцией), tunnel_link (взаимность, первый якорь, окрестность середины),
 // tunnel_scope и tunnel — ключ станции ПЕРВОГО якоря: станции у середины и сама трасса.
 //
-// window_places — природные места окна (ключ окна): fan-in пещер для полей существа и станции.
 //
 // СУЩЕСТВО (creature/), ключ (регион x, регион z, ключ зала):
 //   creature_home     локатор: окно графа вокруг области влияния зала с запасом в два сектора.
@@ -49,7 +50,75 @@
 name = gn09
 
 // Общие модули: правила, нужные нескольким генераторам, в одной копии (`modules.world` в теле шага).
-modules = [ { name = world, path = ./modules/world.lua } ]
+modules = [ { name = world, path = ./modules/world.lua },
+            { name = station_build, path = ./station/modules/build.lua } ]
+
+// Шумовые слоты DS и фоновая порода. seed_add/period — параметры общего value noise;
+// upper/lower — обещания для отсечения форм и пропуска сплошных чанков.
+noise_slots = [
+  { name = broad, seed_add = 1, period = 11 }, { name = detail, seed_add = 2, period = 4 },
+  { name = relief_a, seed_add = 21, period = 2.2 }, { name = relief_b, seed_add = 22, period = 5 },
+  { name = warp_x, seed_add = 23, period = 8 }, { name = warp_y, seed_add = 24, period = 8 },
+  { name = warp_z, seed_add = 25, period = 8 },
+  { name = hall_large, seed_add = 3, period = 31 }, { name = hall_small, seed_add = 4, period = 9 },
+  { name = hall_grain, seed_add = 5, period = 5 }
+]
+background = { enabled = true, base = 3, outside = 3, y_min_constant = world_y_min, y_max_constant = world_y_max,
+  upper = 3.46, lower = 2.5, tag = 0,
+  terms = [ { slot = broad, weight = 0.30 }, { slot = detail, weight = 0.16 } ] }
+
+// Формы поля, объявленные данными: формула — программа ds над точкой (x, y, z, шумы словаря) и полями
+// строки буфера; коробка влияния — обещание формулы (вне неё значение не ниже фона). Мод заменяет
+// формулу файлом с тем же id. Зал — составная форма: max деталей внутри зала, затем min ниш и петли.
+// Прежний вырез станции оставлен в C++ только для независимого сравнения с DS полем в --bench.
+shapes = [
+  { name = gallery, buffer = galleries, count = environment_counts.galleries, box_a = port_a, box_b = port_b,
+    reach = "reach + core_radius", tag = rock, value = ./shared/field/01_gallery.ds },
+  { name = route, buffer = galleries, count = environment_counts.galleries, box_a = ends_a, box_b = ends_b,
+    reach = "route_radius + 6.5", tag = rock, value = ./shared/field/02_route.ds },
+  { name = lobe, buffer = lobes, count = environment_counts.lobes, box_a = centre,
+    reach = "1.7 * max(size_x, max(size_y, size_z))", tag = rock, value = ./shared/field/03_lobe.ds },
+  { name = pocket, buffer = pockets, count = environment_counts.pockets, box_a = mouth, box_b = centre,
+    reach = "max(radius, core_radius) + 5", tag = 9, value = ./shared/field/04_pocket.ds },
+  { name = turn, buffer = turns, count = environment_counts.turns, box_a = centre, reach = "radius + 2 * relief + 3.5", tag = rock,
+    value = ./shared/field/05_turn.ds },
+  { name = hall, buffer = halls, count = hall_counts.halls, box_a = low, box_b = high, box = aabb, reach = 0,
+    tag = 5, value = ./macro/field/01_base.ds,
+    parts = [
+      { buffer = hall_pillars, first = first_pillar, count = pillar_count, op = max, value = ./macro/field/02_pillar.ds,
+        box_a = low, box_b = high },
+      { buffer = hall_ledges, first = first_ledge, count = ledge_count, op = max, value = ./macro/field/03_ledge.ds,
+        box_a = low, box_b = high },
+      { buffer = hall_niches, first = first_niche, count = niche_count, op = min, value = ./macro/field/04_niche.ds,
+        box_a = low, box_b = high },
+      { buffer = hall_loop, first = first_loop, count = loop_count, op = min, value = ./macro/field/05_loop.ds,
+        box_a = low, box_b = high }
+    ] },
+  // Пещеры мест — те же формы, но ВЫРЕЗ: режут что угодно, в том числе свою породу аванпостов.
+  { name = cave_gallery, buffer = galleries, count = environment_counts.galleries, box_a = port_a, box_b = port_b,
+    reach = "reach + core_radius", tag = rock, role = cut, value = ./shared/field/01_gallery.ds },
+  { name = cave_lobe, buffer = lobes, count = environment_counts.lobes, box_a = centre,
+    reach = "1.7 * max(size_x, max(size_y, size_z))", tag = rock, role = cut, value = ./shared/field/03_lobe.ds },
+  { name = cave_turn, buffer = turns, count = environment_counts.turns, box_a = centre, reach = "radius + 2 * relief + 3.5",
+    tag = rock, role = cut, value = ./shared/field/05_turn.ds },
+  // Колонна ниши — ВСТАВКА: порода внутри выреза пещеры (вырез иначе стёр бы её), шов blend у пола и свода.
+  { name = cave_pillar, buffer = pillars, count = state.pillars, box_a = centre, reach = "max(2 * radius + 2, half)",
+    tag = rock, role = insert, blend = 1, value = ./cave/field/01_pillar.ds },
+  // Своя порода аванпоста — ЗАЛИВКА: тонкий воротник вокруг заглублённых помещений, сглаженный максимум с
+  // природным полем (шов радиусом blend); помещения станции вырезаются поверх (вид station хоста — вырез).
+  { name = outpost_rock, buffer = station_rock, count = station_meta.rock_rows, box_a = centre,
+    reach = "sqrt(half_x * half_x + half_y * half_y + half_z * half_z) + relief + 1", tag = 4,
+    role = fill, blend = 2, value = ./station/field/01_outpost_rock.ds },
+  { name = station_cap, buffer = station_meta, count = station_meta.built, box_a = low, box_b = high,
+    box = aabb, reach = 0, tag = 10, role = cut, value = ./station/field/02_station_cap.ds },
+  { name = station_cut, buffer = station_cuts, count = station_meta.cut_rows, box_a = low, box_b = high,
+    box = aabb, reach = 4.21, tag = 10, role = cut, value = ./station/field/03_station_cut.ds },
+  { name = station_berth, buffer = station_meta, count = station_meta.built, box_a = low, box_b = high,
+    box = aabb, reach = 0, tag = 10, role = cut, value = ./station/field/04_station_berth.ds },
+  { name = tunnel, buffer = tunnel_pieces, count = tunnel_meta.pieces, box_a = centre,
+    reach = "sqrt(half_x * half_x + half_y * half_y + half_z * half_z) + 4.21", tag = 10,
+    role = cut, value = ./tunnel/field/01_tunnel.ds }
+]
 
 generators = [
   { name = halls, entry = ./macro/halls.tavl, key = 2, outputs = [ halls, hall_pillars, hall_ledges, hall_niches, hall_loop, hall_outposts, hall_counts ],
@@ -102,9 +171,10 @@ generators = [
     name = window
     entry = ./macro/window.tavl
     key = 3
-    outputs = [ limits, galleries, turns, environment_counts ]
-    trim = { galleries = environment_counts.galleries, turns = environment_counts.turns }
-    capacity = 1024
+    outputs = [ limits, galleries, turns, lobes, pockets, environment_counts ]
+    trim = { galleries = environment_counts.galleries, turns = environment_counts.turns,
+             lobes = environment_counts.lobes, pockets = environment_counts.pockets }
+    capacity = 256
     links = [
       { name = area, from = area, key = same },
       { name = graph, from = graph, key = same },
@@ -114,10 +184,9 @@ generators = [
   { name = context, entry = ./macro/context.tavl, key = 2, outputs = [ canonical ], capacity = 8192 },
   {
     name = place
-    entry = ./place.tavl
+    entry = ./place/place.tavl
     key = 3
-    outputs = [ site, elders ]
-    trim = { elders = site.elders }
+    outputs = [ site ]
     capacity = 2048
     links = [
       { name = context, from = context, project = [ 0, 1 ] },
@@ -127,20 +196,20 @@ generators = [
   },
   {
     name = cave
-    entry = ./cave.tavl
+    entry = ./cave/cave.tavl
     key = 3
-    outputs = [ rooms, links, pillars, state, features ]
-    trim = { rooms = state.rooms, links = state.links, pillars = state.pillars, features = state.features }
+    outputs = [ rooms, links, state, features, galleries, lobes, turns, pockets, environment_counts, pillars ]
+    trim = { rooms = state.rooms, links = state.links, features = state.features, pillars = state.pillars,
+             galleries = environment_counts.galleries, lobes = environment_counts.lobes, turns = environment_counts.turns,
+             pockets = environment_counts.pockets }
     capacity = 1024
+    // Пещера строится без поля и без соседних пещер: чужую воду окна она пересчитывает из графа правилами
+    // модуля `world`, а резать вправе что угодно.
     links = [
       { name = context, from = context, project = [ 0, 1 ] },
-      { name = window, from = window, keys = [ canonical.corner, canonical.size ] },
-      { name = place, from = place, key = same },
-      { name = older, from = cave, keys = [ elders.sector, elders.node ], count = site.elders }
+      { name = graph, from = graph, keys = [ canonical.corner, canonical.size ] },
+      { name = place, from = place, key = same }
     ]
-    // Природное поле канонической окрестности без пещер мест и построек: по нему место выбирает
-    // свою пещеру. Шаги спрашивают его field_march, блоки пещеры — сэмплером того же поля.
-    fields = [ { name = natural, terms = [ { kind = gallery, link = window }, { kind = turn, link = window }, { kind = hall, link = window } ] } ]
   },
   { name = chunk, entry = ./chunk/chunk.tavl, key = 3, outputs = [ home ], capacity = 4096 },
   {
@@ -185,12 +254,14 @@ generators = [
     name = chunk_field
     entry = ./chunk/field.tavl
     key = 3
-    outputs = [ samples, surface, structure_surface, props, surface_counts ]
+    outputs = [ samples, surface, structure_surface, props, surface_counts, chunk_meta ]
     trim = { surface = surface_counts.vertices, structure_surface = surface_counts.structure, props = surface_counts.props }
     capacity = 1024
     links = [
       { name = chunk, from = chunk, key = same },
       { name = window, from = window, keys = [ home.area ] },
+      { name = area, from = area, keys = [ home.area ] },
+      { name = regions, from = halls, keys = [ area_regions.key ], count = area_counts.regions },
       { name = places, from = chunk_places, key = same },
       { name = caves, from = cave, keys = [ places.sector, places.node ], count = chunk_counts.places },
       { name = anchors, from = chunk_anchors, key = same },
@@ -200,9 +271,12 @@ generators = [
     ]
     // Порядок членов — порядок слагаемых минимума у prepare_field: от него зависит только метка при
     // равных значениях.
-    fields = [ { name = solid, terms = [ { kind = gallery, link = window }, { kind = turn, link = window },
-                                         { kind = site, link = caves }, { kind = hall, link = window },
-                                         { kind = station, link = stations }, { kind = tunnel, link = tunnels } ] } ]
+    fields = [ { name = solid, terms = [ { kind = gallery, link = window }, { kind = route, link = window }, { kind = lobe, link = window },
+      { kind = pocket, link = window }, { kind = turn, link = window },
+                                         { kind = cave_gallery, link = caves }, { kind = cave_lobe, link = caves }, { kind = cave_turn, link = caves }, { kind = cave_pillar, link = caves }, { kind = hall, link = regions },
+                                         { kind = outpost_rock, link = stations },
+                                         { kind = station_cap, link = stations }, { kind = station_cut, link = stations },
+                                         { kind = station_berth, link = stations }, { kind = tunnel, link = tunnels } ] } ]
   },
   {
     name = creature_home
@@ -211,15 +285,6 @@ generators = [
     outputs = [ creature_home ]
     capacity = 512
     links = [ { name = halls, from = halls, project = [ 0, 1 ] } ]
-  },
-  {
-    name = window_places
-    entry = ./places_window/places.tavl
-    key = 3
-    outputs = [ places, place_counts ]
-    trim = { places = place_counts.places }
-    capacity = 1024
-    links = [ { name = graph, from = graph, key = same } ]
   },
   {
     name = creature_scope
@@ -254,29 +319,25 @@ generators = [
     ]
     // Поле прохода: природная пещера окна вместе с пещерами мест, без построек — они только добавили бы
     // воды, так что ответ «тело проходит» честен.
-    fields = [ { name = passage, terms = [ { kind = gallery, link = window }, { kind = turn, link = window },
-                                           { kind = site, link = caves }, { kind = hall, link = window } ] } ]
+    fields = [ { name = passage, terms = [ { kind = gallery, link = window }, { kind = route, link = window }, { kind = lobe, link = window },
+      { kind = pocket, link = window }, { kind = turn, link = window },
+                                           { kind = cave_gallery, link = caves }, { kind = cave_lobe, link = caves }, { kind = cave_turn, link = caves }, { kind = cave_pillar, link = caves }, { kind = hall, link = regions } ] } ]
   },
   {
     name = station
     entry = ./station/station.tavl
     key = 3
-    outputs = [ station_meta, station_rooms, station_doors, station_mesh, station_voxels, mask_cells ]
+    outputs = [ station_meta, station_rooms, station_doors, station_mesh, station_voxels, mask_cells, station_rock, station_cuts ]
     trim = { station_rooms = station_meta.rooms, station_doors = station_meta.doors,
-             station_mesh = station_meta.triangles, station_voxels = station_meta.voxels }
-    capacity = 256
+             station_mesh = station_meta.triangles, station_voxels = station_meta.voxels, station_cuts = station_meta.cut_rows }
+    // Станция в кэше — мегабайты (сетка, воксели, вид хоста): держим только окрестность камеры.
+    capacity = 48
     links = [
       { name = context, from = context, project = [ 0, 1 ] },
       { name = area, from = area, keys = [ canonical.corner, canonical.size ] },
       { name = graph, from = graph, keys = [ canonical.corner, canonical.size ] },
-      { name = window, from = window, keys = [ canonical.corner, canonical.size ] },
-      { name = regions, from = halls, keys = [ area_regions.key ], count = area_counts.regions },
-      { name = places, from = window_places, keys = [ canonical.corner, canonical.size ] },
-      { name = caves, from = cave, keys = [ places.sector, places.node ], count = place_counts.places }
+      { name = regions, from = halls, keys = [ area_regions.key ], count = area_counts.regions }
     ]
-    // Поле пещеры до монтажа канонической окрестности, с пещерами мест: по нему ищется место и растёт план.
-    fields = [ { name = natural_sites, terms = [ { kind = gallery, link = window }, { kind = turn, link = window },
-                                                 { kind = site, link = caves }, { kind = hall, link = window } ] } ]
   },
   {
     name = tunnel_candidates
@@ -344,13 +405,15 @@ generators = [
       { name = pair, from = station, keys = [ tunnel_pair.station ], count = tunnel_link.pairs },
       { name = around, from = station, keys = [ tunnel_around.station ], count = around_counts.stations },
       { name = window, from = window, keys = [ tunnel_link.corner, tunnel_link.size ] },
-      { name = places, from = window_places, keys = [ tunnel_link.corner, tunnel_link.size ] },
-      { name = caves, from = cave, keys = [ places.sector, places.node ], count = place_counts.places }
+      { name = area, from = area, keys = [ tunnel_link.corner, tunnel_link.size ] },
+      { name = regions, from = halls, keys = [ area_regions.key ], count = area_counts.regions }
     ]
-    // Природная порода окрестности середины пары (с пещерами мест) и вырезы станций рядом.
-    fields = [ { name = natural_sites, terms = [ { kind = gallery, link = window }, { kind = turn, link = window },
-                                                 { kind = site, link = caves }, { kind = hall, link = window } ] },
-               { name = carves, terms = [ { kind = station, link = around } ] } ]
+    // Природная порода окрестности середины пары (без пещер мест, как у станций) и вырезы станций рядом.
+    fields = [ { name = natural_sites, terms = [ { kind = gallery, link = window }, { kind = route, link = window }, { kind = lobe, link = window },
+      { kind = pocket, link = window }, { kind = turn, link = window },
+                                                 { kind = hall, link = regions } ] },
+               { name = carves, terms = [ { kind = station_cap, link = around }, { kind = station_cut, link = around },
+                                          { kind = station_berth, link = around } ] } ]
   },
   {
     name = base_site

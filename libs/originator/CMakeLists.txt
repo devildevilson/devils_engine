@@ -81,8 +81,12 @@ add_library(devils_engine::originator_config ALIAS devils_originator_config)
 add_library(devils_originator_script
   src/originator/script_program.cpp
   src/originator/script_translate.cpp
+  src/originator/script_column.cpp
+  src/originator/script_shape.cpp
   include/devils_engine/originator/script_program.h
   include/devils_engine/originator/script_translate.h
+  include/devils_engine/originator/script_column.h
+  include/devils_engine/originator/script_shape.h
 )
 
 target_include_directories(devils_originator_script

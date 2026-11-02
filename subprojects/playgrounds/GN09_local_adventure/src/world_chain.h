@@ -21,6 +21,10 @@ devils_engine::originator::generator_chain& world_chain(double clearance_radius)
 const std::vector<std::string>& cave_purposes();
 // Словарь предметов пещеры (features.kind, значения генератора cave).
 const std::vector<std::string>& cave_feature_kinds();
+// Виды форм, объявленные данными (`shapes` документа цепочки): формулы на ds.
+const std::vector<devils_engine::originator::chain_shape>& world_shape_kinds();
+const devils_engine::originator::chain_description& world_chain_description();
+const devils_engine::originator::parameters& world_constants();
 // Словарь назначений комнат места базы (значения генератора base_site).
 const std::vector<std::string>& base_purposes();
 
@@ -29,8 +33,6 @@ devils_engine::originator::instance_key window_key(graph::window area);
 
 // Залы из выходов генератора halls (регион).
 std::vector<hall> halls_from(const devils_engine::originator::generator_result& instance);
-// Блоки генератора halls (hall.cpp): hall_niche_fits.
-void add_hall_tools(devils_engine::originator::tool_registry& tools);
 
 // C++-мир окна для нативных потребителей: представление экземпляра генератора window (граф и залы его
 // окна из буферов); живёт с экземпляром.

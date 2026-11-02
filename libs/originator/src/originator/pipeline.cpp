@@ -60,6 +60,7 @@ struct entry_mirror {
   std::string name;
   std::string values;
   std::string buffers;
+  std::vector<std::string> shared_buffers;
   // Буферы, которые пайплайн получает ИЗВНЕ: их заполняет хост до запуска, а не какой-то шаг. См.
   // pipeline_description::inputs.
   std::vector<std::string> inputs;
@@ -253,6 +254,7 @@ pipeline_entry parse_entry(const std::string_view& text, const std::string_view&
   entry.name = std::move(mirror.name);
   entry.values = std::move(mirror.values);
   entry.buffers = std::move(mirror.buffers);
+  entry.shared_buffers = std::move(mirror.shared_buffers);
   entry.inputs = std::move(mirror.inputs);
   entry.steps.reserve(mirror.steps.size());
   for (size_t i = 0; i < mirror.steps.size(); ++i) {

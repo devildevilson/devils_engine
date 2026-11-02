@@ -1,0 +1,130 @@
+// Пример мода (resources/mods/deep_caves): те же числа пещер GN09, но заплыв дольше и залежей больше —
+// от трёх до шести, сбор каждой дольше. Подключается --mods=mods/deep_caves.
+//
+// demiurg подменяет ФАЙЛ целиком, поэтому мод повторяет весь документ значений, а не только
+// изменённые строки.
+//
+// Числа пещер GN09.
+//
+// Длины — в метрах, углы — в градусах, время — в секундах, доли — от 0 до 1. «core» — ядро прохода из
+// входа `site` (R + охранный слой): ходы всегда шире него. Масштаб хода — доля галереи маршрута лодки.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+{
+  numbers = {
+    // ------------------------------------------------------------ облик
+    // Масштаб ходов пещеры (доля галереи маршрута) и разброс по ходам вокруг него.
+    passage_scale_min = 0.22
+    passage_scale_max = 0.45
+    passage_scale_spread = 0.25
+    // Доля ходов с двумя смещёнными полостями (как у галереи маршрута).
+    lobe_chance = 0.35
+
+    // ------------------------------------------------------------ горло
+    // Сколько направлений устья перебирается (по сфере, всё равно куда: стена, пол, свод).
+    mouth_directions = 32
+    // Узкая часть горла за водой окна до первой ниши.
+    throat_narrow_min = 5
+    throat_narrow_max = 10
+    // Дальше этого от центра узла горло не ищется.
+    throat_search = 100
+
+    // ------------------------------------------------------------ ходы и ниши
+    segment_min = 8
+    segment_max = 20
+    // Повороты хода: по курсу до turn_max, по наклону до pitch_max.
+    turn_max = 70
+    pitch_max = 35
+    // Выходы из одной ниши расходятся на столько градусов.
+    exit_spread = 55
+    segment_variants = 10
+    // Ниша на конце хода: вероятность и радиусы; изредка крупная (в ней поместилась бы и лодка).
+    chamber_chance = 0.4
+    chamber_min = 3.5
+    chamber_max = 7
+    big_chamber_chance = 0.15
+    big_chamber_min = 8
+    big_chamber_max = 13
+    // Неровность стенки ниши наружу (до вдвое больше).
+    chamber_relief_min = 0.4
+    chamber_relief_max = 1.5
+    // Первая ниша за горлом.
+    hub_min = 4
+    hub_max = 8
+    // Выходов: из первой ниши hub_exits + (0|1), из остальных chamber_exits + (0..2); колено хода
+    // кончается тупиком или ветвится с такими долями.
+    hub_exits = 2
+    chamber_exits = 1
+    dead_end_chance = 0.15
+    branch_chance = 0.15
+    // Порода между частями пещеры и до чужой воды.
+    rock_margin = 1.5
+    // Скелет не дальше extent - shape_margin от узла: формы ходов дотягиваются дальше осей.
+    shape_margin = 20
+
+    // ------------------------------------------------------------ предзал, петли, второй вход, колонны
+    // Предзал у устья (лодка заходит в него носом, горло — за ним): вероятность и радиус.
+    vestibule_chance = 0.35
+    vestibule_min = 7.5
+    vestibule_max = 10
+    // Петли: ход между узлами, близкими по прямой (span) и далёкими по пути (во столько раз и не короче).
+    loop_chance = 0.6
+    loops_max = 2
+    loop_span_min = 6
+    loop_span_max = 24
+    loop_path_ratio = 2.5
+    loop_path_min = 25
+    // Второй вход: узкий ход из узла глубже second_entrance_depth в шар поворота узла маршрута, не длиннее
+    // second_entrance_max, у своего узла — на second_entrance_angle градусов в стороне от устья.
+    second_entrance_chance = 0.4
+    second_entrance_max = 60
+    second_entrance_depth = 15
+    second_entrance_angle = 60
+    // Колонны в нишах радиусом от pillar_room_min: вероятность, до pillar_max штук, радиус ствола.
+    pillar_chance = 0.7
+    pillar_room_min = 6.5
+    pillar_max = 3
+    pillar_radius_min = 0.8
+    pillar_radius_max = 1.8
+
+    // ------------------------------------------------------------ время заплыва
+    // Скорость ныряльщика, время сбора одной залежи, весь заплыв.
+    swim_speed = 1.0
+    collect_min = 30
+    collect_max = 60
+    time_min = 420
+    time_max = 900
+    // Залежей: deposits_min + (0..deposits_extra); у гнездовой пещеры цель — гнездо.
+    deposits_min = 3
+    deposits_extra = 3
+    // Короче этого обход не бывает.
+    tour_min = 40
+    // Ходов больше, чем нужно обходу (тупики, ветки без залежей): во столько раз.
+    dead_end_share_min = 0.9
+    dead_end_share_max = 1.3
+    // Гнездо не на виду (прикидка): глубже этого по пути и дальше этого от устья по прямой.
+    nest_depth = 25
+    nest_distance = 20
+    // Гнездо гнездовой пещеры, укрытия у неё.
+    nest_min = 8
+    nest_max = 12
+    shelters_min = 1
+    shelters_extra = 2
+    plug_chance = 0.5
+    // N — радиосвязь с лодкой (для отчёта).
+    radio_min = 25
+    radio_max = 50
+  }
+  strings = {
+    // СЛОВАРЬ НАЗНАЧЕНИЙ КОМНАТ. Номер в rooms.purpose — позиция слова здесь; хост переводит его
+    // обратно в имя. Хост понимает: mouth, entrance, vestibule, neck, nest, lair, pocket:*, shelter:*
+    // (по ним ставятся залежи, кладки, монстры и пробки); остальные слова — для глаза и отчётов.
+    purposes = "main_chamber mouth entrance vestibule bend neck chamber hall_part dead_end nest lair pocket:ore_vein pocket:crystal_shelf pocket:mineral_pool pocket:cache pocket:fault pocket:ore_pocket pocket:warm_pool pocket:crystal pocket:shaft pocket:shelter pocket:vent_mouth shelter:shelter shelter:molt shelter:feeding shelter:nursery shelter:lair shelter:refuse"
+    ore_uses = "ore_vein crystal_shelf mineral_pool cache fault ore_pocket"
+    thermal_uses = "warm_pool crystal shaft shelter vent_mouth cache"
+    shelter_uses = "shelter molt feeding nursery lair refuse"
+    // Словарь предметов пещеры (features.kind).
+    feature_kinds = "metal_ore mineral_vein thermal_crystal egg_cluster monster_group ice_plug"
+  }
+}

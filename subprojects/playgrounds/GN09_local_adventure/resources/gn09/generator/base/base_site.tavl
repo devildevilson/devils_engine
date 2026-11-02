@@ -7,5 +7,5 @@ name = base_site
 values = ./base_values.tavl
 buffers = ./base_buffers.tavl
 steps = [
-  { name = programme, body = ./scripts/base_site.lua, reads = [ nodes, graph_meta ], writes = [ base_rooms, base_counts ] }
+  { name = programme, body = ./01_base_site.lua, reads = [ nodes, graph_meta ], writes = [ base_rooms, base_counts ] }
 ]

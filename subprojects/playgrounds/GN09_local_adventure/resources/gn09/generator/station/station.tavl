@@ -1,7 +1,9 @@
 // Станция базы или аванпоста зала — ТОЧКА ВХОДА генератора station (ключ — сектор якоря x, z и ключ
-// якоря). Место ищется лучами по полю пещеры, план растёт графом помещений по маске породы; блоки
-// station_room_cells (классы клеток маски) и station_build (воксели, сетка, коробка) держат обещания
-// хоста о геометрии.
+// якоря). Аванпост приносит СВОЮ ПОРОДУ: место выбирается у полости узла без запросов к полю (стена, дно
+// или свод, поворот по хешу), план растёт графом помещений по геометрической маске (за лицевой гранью —
+// порода блока, перед ней — вода), блок породы — по коробке помещений с кольцом. Блоки
+// Lua держит ленивую маску; воксели, материал, коробку и воротник
+// решают скрипты, грани четвертных вокселей строит общий инструмент библиотеки.
 //
 // В этом файле НЕТ отделителей `//---`.
 
@@ -9,8 +11,9 @@ name = station
 buffers = ./station_buffers.tavl
 values = ./station_values.tavl
 steps = [
-  { name = plan, body = ./scripts/station.lua,
+  { name = plan, body = ./01_station.lua,
     reads = [ nodes, edges, graph_meta ],
     writes = [ station_meta, station_rooms, station_doors, station_mesh, station_voxels, keep_routes, keep_turns,
-               keep_berth, keep_tubes, mask_band, mask_held, mask_margin, mask_cells, station_probe, rays, samples ] }
+               keep_berth, keep_tubes, mask_band, mask_held, mask_margin, mask_cells, station_rock,
+               station_cuts ] }
 ]

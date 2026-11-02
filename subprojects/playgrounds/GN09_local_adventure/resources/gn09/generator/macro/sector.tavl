@@ -8,5 +8,5 @@
 name = sector
 buffers = ./sector_buffers.tavl
 steps = [
-  { name = locate, body = ./scripts/sector.lua, writes = [ regions, ends, around, sector_counts ] }
+  { name = locate, body = ./02_sector.lua, writes = [ regions, ends, around, sector_counts ] }
 ]

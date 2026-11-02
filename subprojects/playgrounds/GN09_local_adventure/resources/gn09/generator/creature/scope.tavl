@@ -7,5 +7,5 @@
 name = creature_scope
 buffers = ./scope_buffers.tavl
 steps = [
-  { name = scope, body = ./scripts/scope.lua, reads = [ nodes, edges, graph_meta ], writes = [ places, place_counts ] }
+  { name = scope, body = ./02_scope.lua, reads = [ nodes, edges, graph_meta ], writes = [ places, place_counts ] }
 ]

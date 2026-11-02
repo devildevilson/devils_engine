@@ -1,0 +1,7 @@
+// Твёрдая колонна внутри одного зала; рельеф добавляется после max, поэтому он есть и здесь.
+{
+  ctx_save = { dx = x - centre_x, dz = z - centre_z, ly = y - centre_y }
+  ctx_save = { u = ctx:saved:dx * forward_x + ctx:saved:dz * forward_z,
+               v = -ctx:saved:dx * forward_z + ctx:saved:dz * forward_x }
+  child_radius * (1 + pillar_flare * (ctx:saved:ly / half_z) * (ctx:saved:ly / half_z)) - sqrt((ctx:saved:u - child_u) * (ctx:saved:u - child_u) + (ctx:saved:v - child_v) * (ctx:saved:v - child_v)) + 5 * hall_large + 1.5 * hall_small
+}

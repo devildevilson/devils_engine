@@ -38,11 +38,7 @@ struct built_tunnel {
   double span = 0, slope_deg = 0; // длина трассы между тамбурами и самый крутой пролёт
 };
 
-inline constexpr double tunnel_partner_reach = 95.0;
-inline constexpr double tunnel_max_slope_deg = 25.0;
 
-// Блоки генератора tunnel: tunnel_build.
-void add_tunnel_tools(devils_engine::originator::tool_registry& tools);
 // Туннель, который входит в станцию этого якоря, или nullptr: экземпляр генератора tunnel цепочки.
 std::shared_ptr<const built_tunnel> tunnel_for(const adventure& world, const station_anchor& anchor);
 // Туннель станции по ключу её экземпляра (tunnel_link якоря, затем tunnel первого якоря); nullptr — нет.
@@ -59,6 +55,7 @@ double tunnel_carve_field(const built_tunnel& tunnel, point position);
 // станции здесь — проём, их не выводят.
 bool in_tunnel_doorway(const built_tunnel& tunnel, uint64_t station_key, point position);
 // Независимая проверка по итоговому полю: внутренность вырезана, вокруг на 1.5 м порода.
-std::string verify_tunnel(const adventure& world, const built_tunnel& tunnel);
+// with_sites — проверять ещё и против пещер мест (мягкий счёт вскрытий; туннель их не ждёт).
+std::string verify_tunnel(const adventure& world, const built_tunnel& tunnel, bool with_sites = false);
 
 } // namespace gn09

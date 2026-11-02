@@ -5,6 +5,7 @@
 #include <doctest/doctest.h>
 
 #include "devils_engine/originator/tools.h"
+#include "devils_engine/originator/geometry.h"
 #include "devils_engine/thread/atomic_pool.h"
 
 using namespace devils_engine;
@@ -48,6 +49,50 @@ originator::parameters noise_params() {
   return p;
 }
 } // namespace
+
+TEST_CASE("triangle clipping assigns the upper face to the adjacent box") {
+  struct point { double x, y, z; };
+  const point low{0, 0, 0}, high{1, 1, 1};
+  const auto inside = originator::clip_triangle_to_box(point{0.1, 0.2, 0.3}, point{0.8, 0.2, 0.3},
+                                                       point{0.1, 0.8, 0.3}, low, high);
+  REQUIRE(inside.count == 3);
+  CHECK(inside.vertices[0].x == doctest::Approx(0.1));
+
+  const auto upper = originator::clip_triangle_to_box(point{1, 0, 0}, point{1, 0.5, 0},
+                                                      point{1, 0, 0.5}, low, high);
+  CHECK(upper.count == 0);
+
+  const auto crossing = originator::clip_triangle_to_box(point{0.25, 0.25, 0.5}, point{1.25, 0.25, 0.5},
+                                                         point{0.25, 0.75, 0.5}, low, high);
+  REQUIRE(crossing.count == 4);
+  for (size_t i = 0; i < crossing.count; ++i) {
+    CHECK(crossing.vertices[i].x >= low.x);
+    CHECK(crossing.vertices[i].x <= high.x);
+  }
+}
+
+TEST_CASE("quarter voxel meshing removes shared faces") {
+  struct point { double x, y, z; };
+  const auto world = [](double u, double y, double v) { return point{u, y, v}; };
+  const auto normal = [](double u, double y, double v) { return point{u, y, v}; };
+  const auto shade = [](int32_t, int32_t, int32_t) { return uint8_t(7); };
+  size_t triangles = 0;
+  const auto emit = [&](point, point, point, point, uint8_t material) {
+    CHECK(material == 7);
+    ++triangles;
+  };
+  const auto one = [](int32_t i, int32_t y, int32_t k) {
+    return uint8_t(i == 0 && y == 0 && k == 0 ? 15 : 0);
+  };
+  originator::mesh_quarter_voxels<point>(0, 0, 0, 1, 1, 1, 0.5, one, shade, world, normal, emit);
+  CHECK(triangles == 16);
+  triangles = 0;
+  const auto pair = [](int32_t i, int32_t y, int32_t k) {
+    return uint8_t(i >= 0 && i < 2 && y == 0 && k == 0 ? 15 : 0);
+  };
+  originator::mesh_quarter_voxels<point>(0, 0, 0, 2, 1, 1, 0.5, pair, shade, world, normal, emit);
+  CHECK(triangles == 28);
+}
 
 TEST_CASE("originator parallel execution is bit-identical to serial") {
   auto& registry = *[] {

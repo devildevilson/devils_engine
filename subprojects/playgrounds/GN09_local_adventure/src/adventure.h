@@ -78,12 +78,6 @@ struct room_link {
   double width = 0.0, roof = 0.0, floor = 0.0, bulge = 0.0, bulge_at = 0.5;
 };
 
-// Колонна в крупной нише пещеры: вертикальная порода, расширенная у пола и свода.
-struct cave_pillar {
-  point base;          // низ оси
-  double radius = 0.0, height = 0.0;
-};
-
 // Место на узле маршрута. У базы это программа помещений станции; у природного
 // места — пещера для ныряльщиков (cave.h): устье в стене полости узла, кишки и
 // расширенные залы, тупики с залежами, гнездо за изгибами.
@@ -95,17 +89,23 @@ struct site {
   std::vector<portal> portals;
   std::vector<room> rooms;
   std::vector<room_link> links;
-  // Природная пещера: комната устья, гнездо, горловины веток с залежами (будущие
-  // ледяные пробки) и коробка, за которой поле пещеры больше фоновой скалы.
+  // Природная пещера: комната устья, гнездо, горловины перед залежами (будущие
+  // ледяные пробки) и коробка скелета (для рисунка).
   bool has_cave = false;
   uint32_t mouth = UINT32_MAX, nest = UINT32_MAX, lair = UINT32_MAX; // lair — первая встреча с монстрами
-  std::vector<uint32_t> entrances; // устье и вторые входы из соседних галерей
+  std::vector<uint32_t> entrances; // устье и вторые входы
+  uint32_t pillars = 0;            // колонны в крупных нишах (формы cave_pillar)
   std::vector<uint32_t> plugs;
-  std::vector<cave_pillar> pillars;
-  // Глубина заплыва этой пещеры (N своё у каждой; M пока не используется) и вид
-  // логова: 0 сама ниша системы, 1 боковой карман ниши, 2 тупик без залежи.
-  double radio_target = 0.0, gap_target = 0.0;
+  // N — радиосвязь (для отчёта), вид логова: 0 ниша, 2 тупик; масштаб ходов.
+  double radio_target = 0.0, scale = 0.0;
   uint8_t lair_kind = 0;
+  // Бюджет заплыва: залежей, сбор одной (с), весь заплыв (с), обход (м) и оценка времени (с).
+  uint32_t deposits = 0;
+  double collect = 0.0, budget = 0.0, tour = 0.0, estimate = 0.0;
+  // Узкая часть горла и её ядро; blocks_sub — ядро уже корпуса лодки.
+  point throat_a, throat_b;
+  double throat_core = 0.0;
+  bool blocks_sub = false;
   point low, high;
 };
 
@@ -157,6 +157,7 @@ struct hall {
   point centre;
   point forward{1, 0, 0};
   double half_length = 0, half_width = 0, half_height = 0;
+  point relevance; // полуразмеры области влияния, рассчитаны генератором halls
   double floor = 0; // локальная высота плоского дна
   std::vector<hall_pillar> pillars;
   std::vector<hall_ledge> ledges;
@@ -199,27 +200,35 @@ struct adventure {
   // Залы всех регионов, чьё влияние может дотянуться до окна. Чистая функция от
   // seed и координат региона, поэтому совпадает в любых окнах.
   std::vector<hall> halls;
+  // Ключ экземпляра окна, из которого собран этот мир (world_view): хостовый путь поля берёт из него
+  // строки видов, объявленных данными (shapes).
+  std::array<uint64_t, 3> window_key{};
+  bool from_window = false;
 };
 
-inline constexpr int sector_size = 96;
-// Полная высота мира. Граф баз и галерей идёт по рельефу слоя layer_height,
-// который поднимается и опускается на сотни метров.
-inline constexpr int world_y_min = -500;
-inline constexpr int world_y_max = 500;
-inline constexpr double surface_guard = 2.0; // > диагонали клетки 1 м: √3
-inline constexpr double starter_sub_length = 17.0; // временный масштаб, нос–корма
-inline constexpr double starter_sub_beam = 6.0;   // временный максимальный поперечник
-// Корпус — капсула общей длиной 17 м: ось 11 м, радиус 3 м.
-inline constexpr double starter_sub_axis_half = (starter_sub_length - starter_sub_beam) / 2.0;
-inline constexpr double starter_sub_path_radius = starter_sub_beam / 2.0 + surface_guard;
-inline constexpr double starter_sub_turn_radius = starter_sub_length / 2.0 + surface_guard;
-// Естественная полость у базы содержит мокрый док 24x24x7 м с запасом под сетку.
-inline constexpr double base_cavern_radius = 19.5;
-static_assert(surface_guard * surface_guard > 3.0);
-// Регион — ячейка уровня залов, 8x8 секторов.
-inline constexpr int region_size = 768;
 inline constexpr uint32_t min_base_intermediates = 2;
 inline constexpr uint32_t max_deadend_nodes = 5;
+
+// Параметры мира читаются из generator/constants.tavl после выбора модов.
+int sector_size();
+int region_size();
+int world_y_min();
+int world_y_max();
+double surface_guard();
+double starter_sub_length();
+double starter_sub_beam();
+double starter_sub_axis_half();
+double starter_sub_path_radius();
+double starter_sub_turn_radius();
+double macro_scale();
+double base_cavern_radius();
+double cave_extent();
+double cave_reach();
+double cave_hull_radius();
+double station_reach();
+double tunnel_partner_reach();
+double tunnel_max_slope_deg();
+double station_cell();
 
 // Макрограф окна — экземпляр генератора `graph` цепочки generator/world (world_chain.h): правила баз и
 // маршрутов живут в скриптах resources/gn09/generator/macro.
@@ -320,6 +329,8 @@ struct verification {
   // Мягкие нарушения пещер: логово мельче, цель мельче, гнездо видно из лодки, стена
   // вскрыта в чужую воду (см. cave_check).
   std::array<uint32_t, 4> cave_soft{};
+  // Станции, чью внутреннюю комнату вскрыла пещера места (мягко: станции пещер не ждут).
+  uint32_t stations = 0, stations_breached = 0, tunnels_breached = 0;
 };
 verification verify(const adventure& world);
 struct built_station;

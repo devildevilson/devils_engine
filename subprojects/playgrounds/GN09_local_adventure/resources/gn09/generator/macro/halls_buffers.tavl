@@ -17,6 +17,9 @@
     // 0 none, 1 beast, 2 lord
     resident = ui1
     body_radius = d1
+    sub_turn_radius = d1
+    surface_guard = d1
+    pillar_flare = d1
     first_pillar = ui1
     pillar_count = ui1
     first_ledge = ui1
@@ -25,36 +28,38 @@
     niche_count = ui1
     first_loop = ui1
     loop_count = ui1
-    // полуразмеры области влияния в локальных осях: дальше поле зала — скала (блок hall_relevance)
+    // полуразмеры области влияния в локальных осях: дальше поле зала — скала
     relevance = d3
+    low = d3
+    high = d3
   ]
   size = hall_capacity
 }
 
 {
   name = hall_pillars
-  format = [ u = d1, v = d1, radius = d1 ]
+  format = [ u = d1, v = d1, radius = d1, low = d3, high = d3 ]
   size = hall_pillar_capacity
 }
 
 // Уступ — локальная коробка, частью уходящая в стену.
 {
   name = hall_ledges
-  format = [ centre = d3, half = d3 ]
+  format = [ centre = d3, half = d3, low = d3, high = d3 ]
   size = hall_ledge_capacity
 }
 
 // Укрытие: вход по нормали в стену, колено с поворотом лодки, отвод вдоль стены.
 {
   name = hall_niches
-  format = [ mouth = d3, elbow = d3, end = d3, radius = d1, overhang = ui1 ]
+  format = [ mouth = d3, elbow = d3, end = d3, radius = d1, overhang = ui1, low = d3, high = d3 ]
   size = hall_niche_capacity
 }
 
 // Петля патруля обитателя: замкнутая ломаная.
 {
   name = hall_loop
-  format = [ point = d3 ]
+  format = [ point = d3, next = d3, low = d3, high = d3 ]
   size = hall_loop_capacity
 }
 
@@ -69,12 +74,5 @@
 {
   name = hall_counts
   format = [ halls = ui1, pillars = ui1, ledges = ui1, niches = ui1, loop = ui1, outposts = ui1 ]
-  size = one
-}
-
-// Ответ блока hall_niche_fits.
-{
-  name = hall_probe
-  format = [ verdict = ui1 ]
   size = one
 }

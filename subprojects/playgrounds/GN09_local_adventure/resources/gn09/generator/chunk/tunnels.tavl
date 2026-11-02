@@ -5,5 +5,5 @@
 name = chunk_tunnels
 buffers = ./tunnels_buffers.tavl
 steps = [
-  { name = select, body = ./scripts/tunnels.lua, writes = [ chunk_tunnels, tunnel_counts ] }
+  { name = select, body = ./04_tunnels.lua, writes = [ chunk_tunnels, tunnel_counts ] }
 ]

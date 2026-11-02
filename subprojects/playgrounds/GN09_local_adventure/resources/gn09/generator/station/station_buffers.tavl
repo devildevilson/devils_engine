@@ -28,6 +28,7 @@
     hall_key = ul1
     rooms = ui1
     doors = ui1
+    cut_rows = ui1
     triangles = ui1
     voxel_origin = i3
     voxel_size = i3
@@ -36,7 +37,30 @@
     mask = i4
     low = d3
     high = d3
+    // строк своей породы (station_rock): 1 — воротник вокруг заглублённых помещений, 0 — без него
+    rock_rows = ui1
+    sub_axis_half = d1
+    sub_path_radius = d1
   ]
+  size = one
+}
+
+// Комнаты, двери и люк как строки выреза в осях станции. Прямоугольник и срезы углов — в метрах;
+// отсутствие среза обозначено отрицательным числом, чтобы DS не проверял его в каждой точке.
+{
+  name = station_cuts
+  format = [ origin = d3, axis_u = d3, axis_v = d3, low = d3, high = d3,
+             rect = d4, heights = d2, chamfer = d4 ]
+  size = station_cut_capacity
+}
+
+// СВОЯ ПОРОДА аванпоста — тонкий воротник вокруг заглублённых помещений: чуть поправляет местную
+// геометрию (щели между стенами и неровной скалой), шов вправе заходить в стены (station/field/01_outpost_rock.ds,
+// роль заливки). Помещения вырезаются поверх. Строк — station_meta.rock_rows. half — полуоси по u, y, v;
+// local_low/local_high — коробка в локальных осях станции, метры (для хоста).
+{
+  name = station_rock
+  format = [ centre = d3, axis_u = d3, axis_v = d3, half = d3, relief = d1, rounding = d1, local_low = d3, local_high = d3 ]
   size = one
 }
 
@@ -78,15 +102,3 @@
 { name = mask_held, format = [ value = ub1 ], size = station_mask_cells }
 { name = mask_margin, format = [ value = ub1 ], size = station_mask_cells }
 { name = mask_cells, format = [ value = ub1 ], size = station_mask_cells }
-
-// Ответ блока station_room_cells: отказ (запретная клетка или вода без опоры рядом), клеток внутри,
-// из них в породе, глубоко в породе, в воде с опорой.
-{
-  name = station_probe
-  format = [ refused = ui1, total = ui1, solid = ui1, deep = ui1, water = ui1 ]
-  size = one
-}
-
-// Лучи и пробы поля.
-{ name = rays, format = [ origin = d3, direction = d3, hit = d1 ], size = station_probe_capacity }
-{ name = samples, format = [ position = d3, value = d1 ], size = station_probe_capacity }

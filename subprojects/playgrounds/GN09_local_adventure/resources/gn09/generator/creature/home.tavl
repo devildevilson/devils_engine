@@ -6,5 +6,5 @@
 name = creature_home
 buffers = ./home_buffers.tavl
 steps = [
-  { name = locate, body = ./scripts/home.lua, reads = [ halls, hall_counts ], writes = [ creature_home ] }
+  { name = locate, body = ./01_home.lua, reads = [ halls, hall_counts ], writes = [ creature_home ] }
 ]

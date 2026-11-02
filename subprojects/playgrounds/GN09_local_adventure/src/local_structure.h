@@ -106,10 +106,14 @@ chunk generate_chunk(const field_region& region, int x, int y, int z);
 // экземпляры держат и поле, и мир окна (region.world).
 struct chunk_instance {
   chunk volume;
+  // false — над решёткой не было форм и фон выше нуля: сплошная порода, сэмплы не считались.
+  bool sampled = true;
   field_region region;
   std::shared_ptr<const devils_engine::originator::generator_result> instance, window;
 };
-chunk_instance chunk_from_chain(uint64_t seed, double clearance_radius, int x, int y, int z);
+// with_field — ещё и поле `solid` с подготовленной областью (собирается заново из связей: в кэше чанк
+// поля не держит); без него region.field и region.view пусты.
+chunk_instance chunk_from_chain(uint64_t seed, double clearance_radius, int x, int y, int z, bool with_field = false);
 
 // Поле по точкам подряд: одна подготовленная область (куб со стороной 2 * half)
 // обслуживает соседние точки, а точка вне неё пересобирает область вокруг себя.

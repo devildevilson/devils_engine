@@ -1,0 +1,8 @@
+// Колонна в нише пещеры места: вертикальная порода с природной неровностью, расширяется к полу и своду
+// ниши (span — её радиус), уходит в породу за стенки (half). Положительно внутри — роль вставки: поле
+// берёт сглаженный максимум поверх выреза пещеры. Строка — элемент буфера `pillars` экземпляра cave.
+{
+  ctx_save = { dx = x - centre_x, dz = z - centre_z, dy = abs(y - centre_y) }
+  ctx_save = { t = min(ctx:saved:dy / span, 1) }
+  min(radius * (1 + 0.9 * ctx:saved:t * ctx:saved:t) + 0.3 * broad + 0.15 * detail - sqrt(ctx:saved:dx * ctx:saved:dx + ctx:saved:dz * ctx:saved:dz), half - ctx:saved:dy)
+}

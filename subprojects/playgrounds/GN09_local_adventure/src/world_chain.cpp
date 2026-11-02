@@ -3,6 +3,7 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -54,6 +55,30 @@ struct world_generator {
     originator::register_generator_resources(resources);
     resources.parse_resources(&modules);
     chain = originator::load_chain(resources, "generator/world");
+    const auto& constants = chain.setup.constants;
+    for (const char* name : {"sector_size", "region_size", "surface_guard", "sub_length", "sub_beam",
+         "sub_axis_half", "sub_path_radius", "sub_turn_radius", "macro_scale", "base_cavern_radius",
+         "cave_extent", "site_reach", "sub_radius", "station_reach", "tunnel_partner_reach",
+         "tunnel_max_slope_deg", "station_cell", "hall_reach", "pillar_flare"}) {
+      if (!constants.has(name) || !std::isfinite(constants.number(name)) || constants.number(name) <= 0.0) {
+        devils_engine::utils::error{}("GN09: global constant '{}' must be a finite positive number", name);
+      }
+    }
+    for (const char* name : {"world_y_min", "world_y_max"}) {
+      if (!constants.has(name) || !std::isfinite(constants.number(name))) {
+        devils_engine::utils::error{}("GN09: global constant '{}' must be a finite number", name);
+      }
+    }
+    for (const char* name : {"sector_size", "region_size", "world_y_min", "world_y_max"}) {
+      if (std::floor(constants.number(name)) != constants.number(name)) {
+        devils_engine::utils::error{}("GN09: global constant '{}' must be an integer", name);
+      }
+    }
+    if (constants.number("world_y_min") >= constants.number("world_y_max") ||
+        constants.number("sub_length") < constants.number("sub_beam") ||
+        constants.number("surface_guard") * constants.number("surface_guard") <= 3.0) {
+      devils_engine::utils::error{}("GN09: inconsistent world bounds, submarine dimensions or surface guard");
+    }
     const std::string_view words = chain.config("cave").description.values.string("purposes");
     for (size_t at = 0; at < words.size();) {
       while (at < words.size() && std::isspace(static_cast<unsigned char>(words[at]))) ++at;
@@ -107,26 +132,18 @@ originator::generator_chain& world_chain(const double clearance_radius) {
     setup.vocabulary = &world_shapes(clearance_radius);
     setup.values.set_number("clearance_radius", clearance_radius);
     setup.values.set_number("chunk_cells", double(chunk::cells));
-    setup.values.set_number("sector_size", double(sector_size));
-    setup.values.set_number("site_reach", cave_reach);
-    setup.values.set_number("station_reach", station_reach);
     setup.values.set_number("cave_core", cave_core(clearance_radius));
-    setup.values.set_number("cave_relief", cave_relief);
-    setup.values.set_number("cave_extent", cave_extent);
-    setup.values.set_number("cave_rock_ring", cave_rock_ring);
-    setup.values.set_number("sub_turn_radius", starter_sub_turn_radius);
-    setup.values.set_number("tunnel_partner_reach", tunnel_partner_reach);
     for (const auto& [name, size] : std::initializer_list<std::pair<const char*, size_t>>{
            {"one", 1}, {"three", 3}, {"sixteen", 16}, {"region_capacity", 64}, {"cell_capacity", 1024},
            {"hall_capacity", 8}, {"hall_pillar_capacity", 128}, {"hall_ledge_capacity", 64},
            {"hall_niche_capacity", 32}, {"hall_loop_capacity", 32}, {"hall_outpost_capacity", 16}, {"route_node_capacity", 32},
            {"route_edge_capacity", 32}, {"graph_node_capacity", 8192}, {"graph_edge_capacity", 8192},
-           {"elder_capacity", 128}, {"room_capacity", 256}, {"link_capacity", 384}, {"pillar_capacity", 64},
-           {"probe_capacity", 128}, {"gallery_capacity", 8192}, {"turn_capacity", 8192},
+           {"room_capacity", 256}, {"link_capacity", 384}, {"pillar_capacity", 64}, {"gallery_capacity", 8192}, {"turn_capacity", 8192}, {"lobe_capacity", 16384}, {"pocket_capacity", 8192},
            {"place_capacity", 128}, {"creature_capacity", 4096}, {"window_place_capacity", 1024}, {"feature_capacity", 64}, {"base_room_capacity", 8},
            {"station_room_capacity", 32}, {"station_door_capacity", 64}, {"station_triangle_capacity", 65536},
-           {"station_voxel_capacity", 262144}, {"station_keep_capacity", 512}, {"station_mask_cells", 112 * 96},
-           {"station_probe_capacity", 2048}, {"two", 2}, {"tunnel_candidate_capacity", 128},
+           {"station_cut_capacity", 128},
+           {"station_voxel_capacity", 262144}, {"station_keep_capacity", 512}, {"station_mask_cells", 144 * 96},
+           {"two", 2}, {"tunnel_candidate_capacity", 128},
            {"tunnel_piece_capacity", 16}, {"tunnel_triangle_capacity", 65536}, {"tunnel_sample_capacity", 4096}, {"creature_probe_capacity", 4096}, {"chunk_side", size_t(chunk::cells + 1)}, {"chunk_padded", size_t(chunk::cells + 3)},
            {"surface_capacity", size_t(chunk::cells * chunk::cells * chunk::cells * 36)},
            {"middle_capacity", size_t(chunk::cells * chunk::cells * chunk::cells)}, {"structure_vertex_capacity", 262144}, {"prop_capacity", 256}, {"chunk_anchor_capacity", 64}}) {
@@ -138,7 +155,30 @@ originator::generator_chain& world_chain(const double clearance_radius) {
   return *slot;
 }
 
+int sector_size() { static const auto value = int(generator().chain.setup.constants.number("sector_size")); return value; }
+int region_size() { static const auto value = int(generator().chain.setup.constants.number("region_size")); return value; }
+int world_y_min() { static const auto value = int(generator().chain.setup.constants.number("world_y_min")); return value; }
+int world_y_max() { static const auto value = int(generator().chain.setup.constants.number("world_y_max")); return value; }
+double surface_guard() { static const auto value = double(generator().chain.setup.constants.number("surface_guard")); return value; }
+double starter_sub_length() { static const auto value = double(generator().chain.setup.constants.number("sub_length")); return value; }
+double starter_sub_beam() { static const auto value = double(generator().chain.setup.constants.number("sub_beam")); return value; }
+double starter_sub_axis_half() { static const auto value = double(generator().chain.setup.constants.number("sub_axis_half")); return value; }
+double starter_sub_path_radius() { static const auto value = double(generator().chain.setup.constants.number("sub_path_radius")); return value; }
+double starter_sub_turn_radius() { static const auto value = double(generator().chain.setup.constants.number("sub_turn_radius")); return value; }
+double macro_scale() { static const auto value = double(generator().chain.setup.constants.number("macro_scale")); return value; }
+double base_cavern_radius() { static const auto value = double(generator().chain.setup.constants.number("base_cavern_radius")); return value; }
+double cave_extent() { static const auto value = double(generator().chain.setup.constants.number("cave_extent")); return value; }
+double cave_reach() { static const auto value = double(generator().chain.setup.constants.number("site_reach")); return value; }
+double cave_hull_radius() { static const auto value = double(generator().chain.setup.constants.number("sub_radius")); return value; }
+double station_reach() { static const auto value = double(generator().chain.setup.constants.number("station_reach")); return value; }
+double tunnel_partner_reach() { static const auto value = double(generator().chain.setup.constants.number("tunnel_partner_reach")); return value; }
+double tunnel_max_slope_deg() { static const auto value = double(generator().chain.setup.constants.number("tunnel_max_slope_deg")); return value; }
+double station_cell() { static const auto value = double(generator().chain.setup.constants.number("station_cell")); return value; }
+
 const std::vector<std::string>& cave_purposes() { return generator().purposes; }
+const std::vector<originator::chain_shape>& world_shape_kinds() { return generator().chain.description.shapes; }
+const originator::chain_description& world_chain_description() { return generator().chain.description; }
+const originator::parameters& world_constants() { return generator().chain.setup.constants; }
 const std::vector<std::string>& station_purposes() { return generator().station_purposes; }
 const std::vector<std::string>& cave_feature_kinds() { return generator().feature_kinds; }
 const std::vector<std::string>& base_purposes() { return generator().base_purposes; }
@@ -157,6 +197,8 @@ std::shared_ptr<const adventure> world_view(const originator::generator_result& 
     auto world = std::make_shared<adventure>();
     world->seed = instance.seed();
     world->clearance_radius = clearance;
+    world->window_key = instance.key().words;
+    world->from_window = true;
     world->route = graph_from(*chain.get("graph", instance.seed(), instance.key()));
     const auto area = chain.get("area", instance.seed(), instance.key());
     const auto regions = area->field("area_regions", "key");

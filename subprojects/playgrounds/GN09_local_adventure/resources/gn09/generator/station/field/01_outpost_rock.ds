@@ -1,0 +1,10 @@
+// Своя порода аванпоста: блок в осях станции (u, y, v) со скруглёнными краями и природной неровностью
+// наружу (до relief). Положительно внутри — роль заливки: поле берёт сглаженный максимум с природным.
+// Строка — элемент буфера `station_rock` экземпляра генератора station.
+{
+  ctx_save = { qx = x - centre_x, qy = y - centre_y, qz = z - centre_z }
+  ctx_save = { bu = abs(ctx:saved:qx * axis_u_x + ctx:saved:qz * axis_u_z) - half_x + rounding, bh = abs(ctx:saved:qy) - half_y + rounding, bv = abs(ctx:saved:qx * axis_v_x + ctx:saved:qz * axis_v_z) - half_z + rounding }
+  ctx_save = { ou = max(ctx:saved:bu, 0), oh = max(ctx:saved:bh, 0), ov = max(ctx:saved:bv, 0) }
+  ctx_save = { d = sqrt(ctx:saved:ou * ctx:saved:ou + ctx:saved:oh * ctx:saved:oh + ctx:saved:ov * ctx:saved:ov) + min(max(ctx:saved:bu, max(ctx:saved:bh, ctx:saved:bv)), 0) - rounding }
+  relief * (0.5 + 0.35 * broad + 0.15 * detail) - ctx:saved:d
+}

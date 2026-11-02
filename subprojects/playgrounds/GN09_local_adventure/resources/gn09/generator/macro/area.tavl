@@ -6,5 +6,5 @@
 name = area
 buffers = ./area_buffers.tavl
 steps = [
-  { name = locate, body = ./scripts/area.lua, writes = [ cells, area_regions, area_counts ] }
+  { name = locate, body = ./05_area.lua, writes = [ cells, area_regions, area_counts ] }
 ]

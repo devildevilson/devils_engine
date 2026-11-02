@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "devils_engine/originator/tools.h"
+#include "devils_engine/originator/geometry.h"
+#include "devils_engine/originator/generator_chain.h"
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/core.h"
 
@@ -956,7 +958,128 @@ void tool_polyline_distance(const tool_call& call, const size_t begin, const siz
   }
 }
 
+// Материал и выборка четвертных вокселей принадлежат потребителю; общий инструмент
+// превращает занятые четверти в грани с устойчивым порядком и мировыми нормалями.
+void tool_quarter_voxel_mesh(const tool_call& call, const size_t, const size_t) {
+  struct point { double x, y, z; };
+  const auto solid = call.input(0).read(), shade = call.input(1).read();
+  const auto origin = call.input(2).read(), u = call.input(3).read(), v = call.input(4).read();
+  const auto grid_origin = call.input(5).read(), grid_size = call.input(6).read();
+  const int32_t i0 = int32_t(grid_origin.get(0, 0)), k0 = int32_t(grid_origin.get(0, 1));
+  const int32_t y0 = int32_t(grid_origin.get(0, 2));
+  const int32_t width = int32_t(grid_size.get(0, 0)), depth = int32_t(grid_size.get(0, 1));
+  const int32_t height = int32_t(grid_size.get(0, 2));
+  if (width <= 0 || depth <= 0 || height <= 0 || size_t(width) * size_t(depth) * size_t(height) > solid.count() ||
+      size_t(width) * size_t(depth) * size_t(height) > shade.count()) {
+    utils::error{}("originator step '{}': quarter_voxel_mesh grid {}x{}x{} exceeds voxel buffers", call.step_name,
+                   width, depth, height);
+  }
+  const double cell = call.params->number("cell");
+  if (!std::isfinite(cell) || cell <= 0.0) utils::error{}("originator step '{}': quarter_voxel_mesh needs positive cell", call.step_name);
+  const point o{origin.get(0, 0), origin.get(0, 1), origin.get(0, 2)};
+  const point du{u.get(0, 0), u.get(0, 1), u.get(0, 2)}, dv{v.get(0, 0), v.get(0, 1), v.get(0, 2)};
+  const auto ma = call.output(0).write(), mb = call.output(1).write(), mc = call.output(2).write();
+  const auto mn = call.output(3).write(), ms = call.output(4).write(), count = call.output(5).write();
+  size_t made = 0;
+  const auto write3 = [](const field_accessor& f, const size_t row, const point p) {
+    f.set(row, p.x, 0); f.set(row, p.y, 1); f.set(row, p.z, 2);
+  };
+  const auto world = [&](const double x, const double y, const double z) {
+    return point{o.x + du.x * x + dv.x * z, o.y + y, o.z + du.z * x + dv.z * z};
+  };
+  const auto normal = [&](const double x, const double y, const double z) {
+    return point{du.x * x + dv.x * z, y, du.z * x + dv.z * z};
+  };
+  const auto sample = [&](const int32_t i, const int32_t y, const int32_t k) {
+    if (i < i0 || i >= i0 + width || k < k0 || k >= k0 + depth || y < y0 || y >= y0 + height) return uint8_t(0);
+    const size_t index = (size_t(y - y0) * depth + (k - k0)) * width + (i - i0);
+    return uint8_t(solid.get(index));
+  };
+  const auto material = [&](const int32_t i, const int32_t y, const int32_t k) {
+    const size_t index = (size_t(y - y0) * depth + (k - k0)) * width + (i - i0);
+    return uint8_t(shade.get(index));
+  };
+  const auto emit = [&](point a, point b, point c, const point n, const uint8_t material) {
+    const point ab{b.x - a.x, b.y - a.y, b.z - a.z}, ac{c.x - a.x, c.y - a.y, c.z - a.z};
+    const double winding = (ab.y * ac.z - ab.z * ac.y) * n.x + (ab.z * ac.x - ab.x * ac.z) * n.y +
+                           (ab.x * ac.y - ab.y * ac.x) * n.z;
+    if (winding < 0.0) std::swap(b, c);
+    if (made >= ma.count()) utils::error{}("originator step '{}': quarter_voxel_mesh needs more than {} triangles", call.step_name, ma.count());
+    write3(ma, made, a); write3(mb, made, b); write3(mc, made, c); write3(mn, made, n);
+    ms.set(made, material);
+    ++made;
+  };
+  mesh_quarter_voxels<point>(i0, k0, y0, width, depth, height, cell, sample, material, world, normal, emit);
+  count.set(0, double(made));
+}
+
+// Обрезка списка треугольников с необязательными прямоугольными исключениями.
+// Сценарий задаёт связь геометрии и исключений через целочисленный tag; библиотека
+// знает только треугольник, ориентированную коробку и полуоткрытую границу чанка.
+void tool_clip_triangle_mesh(const tool_call& call, const size_t, const size_t) {
+  struct point { double x, y, z; };
+  const auto a = call.input(0).read(), b = call.input(1).read(), c = call.input(2).read();
+  const auto n = call.input(3).read(), material = call.input(4).read();
+  const auto centre = call.input(5).read(), axis_x = call.input(6).read(), axis_y = call.input(7).read();
+  const auto axis_z = call.input(8).read(), half = call.input(9).read(), tags = call.input(10).read();
+  const auto out_position = call.output(0).write(), out_normal = call.output(1).write();
+  const auto out_material = call.output(2).write(), out_count = call.output(3).write();
+  const size_t source = a.count(), exclusions = size_t(call.params->integer("exclusions"));
+  if (source > b.count() || source > c.count() || source > n.count() || source > material.count() ||
+      exclusions > centre.count() || exclusions > axis_x.count() || exclusions > axis_y.count() ||
+      exclusions > axis_z.count() || exclusions > half.count() || exclusions > tags.count()) {
+    utils::error{}("originator step '{}': clip_triangle_mesh input is shorter than its declared count", call.step_name);
+  }
+  const uint64_t tag = uint64_t(call.params->integer("tag"));
+  const double side = call.params->number("side");
+  if (!std::isfinite(side) || side <= 0.0) utils::error{}("originator step '{}': clip_triangle_mesh needs positive side", call.step_name);
+  const point low{call.params->number("x") * side, call.params->number("y") * side, call.params->number("z") * side};
+  const point high{low.x + side, low.y + side, low.z + side};
+  const auto read3 = [](const const_field_accessor& f, const size_t i) {
+    return point{f.get(i, 0), f.get(i, 1), f.get(i, 2)};
+  };
+  size_t made = size_t(out_count.get(0));
+  for (size_t row = 0; row < source; ++row) {
+    const point p = read3(a, row), q = read3(b, row), r = read3(c, row);
+    if (!triangle_box_bounds_overlap(p, q, r, low, high)) continue;
+    const point middle{(p.x + q.x + r.x) * (1.0 / 3.0), (p.y + q.y + r.y) * (1.0 / 3.0),
+                       (p.z + q.z + r.z) * (1.0 / 3.0)};
+    bool skip = false;
+    for (size_t j = 0; j < exclusions && !skip; ++j) {
+      if (read_key_word(tags, j) != tag) continue;
+      const point centre_at = read3(centre, j), x = read3(axis_x, j), y = read3(axis_y, j);
+      const point z = read3(axis_z, j), h = read3(half, j);
+      const point d{middle.x - centre_at.x, middle.y - centre_at.y, middle.z - centre_at.z};
+      const auto dot = [&](const point axis) { return d.x * axis.x + d.y * axis.y + d.z * axis.z; };
+      skip = std::abs(dot(x)) < h.x - 1e-4 && std::abs(dot(y)) < h.y - 1e-4 && std::abs(dot(z)) < h.z - 1e-4;
+    }
+    if (skip) continue;
+    const auto polygon = clip_triangle_to_box(p, q, r, low, high);
+    if (polygon.count < 3) continue;
+    const point normal = read3(n, row);
+    for (size_t j = 1; j + 1 < polygon.count; ++j) {
+      for (const point vertex : {polygon.vertices[0], polygon.vertices[j], polygon.vertices[j + 1]}) {
+        if (made >= out_position.count()) {
+          utils::error{}("originator step '{}': clip_triangle_mesh needs more than {} output vertices", call.step_name,
+                         out_position.count());
+        }
+        out_position.set(made, vertex.x, 0); out_position.set(made, vertex.y, 1); out_position.set(made, vertex.z, 2);
+        out_normal.set(made, normal.x, 0); out_normal.set(made, normal.y, 1); out_normal.set(made, normal.z, 2);
+        out_material.set(made, material.get(row));
+        ++made;
+      }
+    }
+  }
+  out_count.set(0, double(made));
+}
+
 void tool_registry::add_volume_tools() {
+  add(tool_description{.name = "clip_triangle_mesh", .shape = aperture::sequential,
+                       .input_count = 11, .output_count = 4, .body = tool_clip_triangle_mesh,
+                       .footprint = no_temporary_memory});
+  add(tool_description{.name = "quarter_voxel_mesh", .shape = aperture::sequential,
+                       .input_count = 7, .output_count = 6, .body = tool_quarter_voxel_mesh,
+                       .footprint = no_temporary_memory});
   add(tool_description{.name = "marching_tetrahedra",
                        .shape = aperture::sequential,
                        .input_count = 2,

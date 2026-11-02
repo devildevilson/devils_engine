@@ -6,5 +6,5 @@
 name = tunnel_link
 buffers = ./link_buffers.tavl
 steps = [
-  { name = link, body = ./scripts/link.lua, reads = [ tunnel_self, tunnel_partner ], writes = [ tunnel_link, tunnel_pair ] }
+  { name = link, body = ./03_link.lua, reads = [ tunnel_self, tunnel_partner ], writes = [ tunnel_link, tunnel_pair ] }
 ]

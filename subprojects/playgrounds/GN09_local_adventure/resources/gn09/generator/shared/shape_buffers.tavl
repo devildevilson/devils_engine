@@ -1,0 +1,72 @@
+// Строки форм природного поля — ОБЩИЙ документ буферов: окно макрографа пишет ими окружение для лодки
+// (галерея на каждом ребре, выступы, карманы, шар поворота в каждом узле), пещера места — свои ходы и
+// ниши (тот же генератор галерей в меньшем масштабе). Формулы — shared/field/*.ds, виды объявлены в
+// документе цепочки (`shapes`). Ёмкости — верхние границы, занятое число в `environment_counts`.
+//
+// В этом файле НЕТ отделителей `//---`.
+
+// ОКРУЖЕНИЕ ДЛЯ ЛОДКИ — формы природного поля окна, из которых собирается поле из примитивов
+// (originator primitive_field): галерея на каждом ребре (сечение, вздутия, гарантированная капсула
+// хода), выступы и карманы — отдельными строками, шар поворота в каждом узле. Формулы — shared/field/*.ds.
+{
+  name = galleries
+  format = [
+    // центры узлов ребра: от них — гарантированная капсула хода и карман
+    ends_a = d3
+    ends_b = d3
+    // порты галереи и её базис
+    port_a = d3
+    port_b = d3
+    axis = d3
+    right = d3
+    up = d3
+    distance = d1
+    core_radius = d1
+    reach = d1
+    first_t = d1
+    second_t = d1
+    base_width = d1
+    first_width = d1
+    second_width = d1
+    base_roof = d1
+    vertical_gain = d1
+    biome_width = d1
+    // масштаб импульсов свода (2 и 2.5 м у маршрута)
+    pulse = d1
+    // радиус хода лодки по ребру (shared/field/02_route.ds); у ходов пещер 0 — их вид route не берёт
+    route_radius = d1
+    constriction = ub1
+    biome = ui1
+    // вид породы для палитры (rock_kind хоста: 1 karst, 2 rift, 3 chimney)
+    rock = ui1
+  ]
+  size = gallery_capacity
+}
+
+// Смещённые полости вдоль галереи (по две на ребро): центр, базис ребра и полуоси (вдоль, поперёк, вверх).
+{
+  name = lobes
+  format = [ centre = d3, axis = d3, right = d3, up = d3, size = d3, rock = ui1 ]
+  size = lobe_capacity
+}
+
+// Декоративные карманы рёбер: горловина от устья и шарообразная камера.
+{
+  name = pockets
+  format = [ mouth = d3, centre = d3, radius = d1, core_radius = d1 ]
+  size = pocket_capacity
+}
+
+{
+  name = turns
+  // rock — вид породы для палитры (rock_kind хоста); relief — насколько неровная стенка уходит за радиус
+  // (наружу, до 2 relief)
+  format = [ centre = d3, radius = d1, rock = ui1, relief = d1 ]
+  size = turn_capacity
+}
+
+{
+  name = environment_counts
+  format = [ galleries = ui1, turns = ui1, lobes = ui1, pockets = ui1 ]
+  size = one
+}

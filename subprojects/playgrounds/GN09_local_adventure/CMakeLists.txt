@@ -9,8 +9,8 @@ target_link_libraries(GN09_local_adventure PRIVATE
   devils_engine::originator_config
   devils_engine::originator_lua
   devils_engine::utils)
-# Генераторы мест (сейчас пещеры) — ресурсы originator в модуле resources/gn09: правила роста на lua
-# и числа в конфиге, C++ даёт только блоки. Читаются из дерева исходников, как у других площадок.
+# Цепочка мира и правила генерации — ресурсы originator в resources/gn09.
+# Читаются из дерева исходников, как у других площадок.
 target_compile_definitions(GN09_local_adventure PRIVATE
   GN09_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources")
 set_target_properties(GN09_local_adventure PROPERTIES

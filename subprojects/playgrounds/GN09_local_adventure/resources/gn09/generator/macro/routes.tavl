@@ -8,5 +8,5 @@
 name = routes
 buffers = ./routes_buffers.tavl
 steps = [
-  { name = lay, body = ./scripts/routes.lua, reads = [ sector_counts ], writes = [ route_nodes, route_edges, route_counts ] }
+  { name = lay, body = ./04_routes.lua, reads = [ sector_counts ], writes = [ route_nodes, route_edges, route_counts ] }
 ]

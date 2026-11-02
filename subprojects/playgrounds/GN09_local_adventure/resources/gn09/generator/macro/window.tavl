@@ -5,7 +5,8 @@
 
 name = window
 buffers = ./window_buffers.tavl
+shared_buffers = [ ../shared/shape_buffers.tavl ]
 steps = [
-  { name = environment, body = ./scripts/window.lua, reads = [ nodes, edges, graph_meta ],
-    writes = [ limits, galleries, turns, environment_counts ] }
+  { name = environment, body = ./07_window.lua, reads = [ nodes, edges, graph_meta ],
+    writes = [ limits, galleries, turns, lobes, pockets, environment_counts ] }
 ]

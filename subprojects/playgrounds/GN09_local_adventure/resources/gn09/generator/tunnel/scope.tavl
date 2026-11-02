@@ -6,5 +6,5 @@
 name = tunnel_scope
 buffers = ./scope_buffers.tavl
 steps = [
-  { name = scope, body = ./scripts/scope.lua, reads = [ tunnel_pair, nodes, graph_meta ], writes = [ tunnel_around, around_counts ] }
+  { name = scope, body = ./04_scope.lua, reads = [ tunnel_pair, nodes, graph_meta ], writes = [ tunnel_around, around_counts ] }
 ]

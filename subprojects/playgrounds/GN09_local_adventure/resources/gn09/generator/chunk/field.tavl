@@ -8,9 +8,9 @@
 name = chunk_field
 buffers = ./field_buffers.tavl
 steps = [
-  { name = sample, body = ./scripts/field.lua, writes = [ lattice, samples ] },
-  { name = surface, body = ./scripts/surface.lua, reads = [ lattice, samples ], writes = [ surface, middles, surface_counts ] },
-  { name = structures, body = ./scripts/structures.lua,
+  { name = sample, body = ./05_field.lua, writes = [ lattice, samples, surface_counts, chunk_meta ] },
+  { name = surface, body = ./06_surface.lua, reads = [ lattice, samples ], writes = [ surface, middles, surface_counts ] },
+  { name = structures, body = ./07_structures.lua,
     reads = [ anchors, anchor_counts, chunk_tunnels, tunnel_counts ], writes = [ chunk_meta, structure_surface, surface_counts ] },
-  { name = props, body = ./scripts/props.lua, reads = [ places ], writes = [ props, surface_counts ] }
+  { name = props, body = ./08_props.lua, reads = [ places ], writes = [ props, surface_counts ] }
 ]

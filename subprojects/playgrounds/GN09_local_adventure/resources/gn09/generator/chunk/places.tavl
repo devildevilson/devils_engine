@@ -6,5 +6,5 @@
 name = chunk_places
 buffers = ./places_buffers.tavl
 steps = [
-  { name = select, body = ./scripts/places.lua, reads = [ nodes, graph_meta ], writes = [ places, chunk_counts ] }
+  { name = select, body = ./02_places.lua, reads = [ nodes, graph_meta ], writes = [ places, chunk_counts ] }
 ]

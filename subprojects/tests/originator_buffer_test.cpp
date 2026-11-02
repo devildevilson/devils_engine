@@ -1,9 +1,12 @@
+#include <bit>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
 #include <doctest/doctest.h>
 
 #include "devils_engine/originator/buffer.h"
+#include "devils_engine/originator/generator_chain.h"
 
 using namespace devils_engine;
 
@@ -194,4 +197,44 @@ TEST_CASE("originator fast path refuses a type that does not match the storage")
   shade.set(0, 0.5);
   CHECK(owner.get(0) == doctest::Approx(7.0));
   CHECK(shade.get(0) == doctest::Approx(0.5).epsilon(0.01));
+}
+
+TEST_CASE("double field keeps world coordinates exactly") {
+  using namespace devils_engine;
+  const std::vector<std::pair<std::string_view, std::string_view>> fields = {{"centre", "d3"}};
+  originator::buffer nodes("nodes", originator::make_buffer_layout(originator::storage_kind::aos, fields, "nodes"), 4);
+  const double far_away = 98304.123456789012;
+  nodes.field(0).set(2, far_away, 1);
+  CHECK(nodes.field(0).get(2, 1) == far_away);
+  CHECK(float(far_away) != far_away); // в v3 то же число округлилось бы
+  CHECK(nodes.field(0).type().byte_size() == 24);
+  CHECK(originator::parse_field_type("d2").base == originator::field_base::d);
+}
+
+TEST_CASE("64-bit integer fields keep every bit on the integer path") {
+  using namespace devils_engine;
+  const std::vector<std::pair<std::string_view, std::string_view>> fields = {{"key", "ul2"}, {"offset", "l1"}};
+  originator::buffer keys("keys", originator::make_buffer_layout(originator::storage_kind::aos, fields, "keys"), 3);
+  const uint64_t hash = 0xfedcba9876543211ull; // старший бит взведён и младший бит за пределами 2^53
+  keys.field(0).set_integer(1, std::bit_cast<int64_t>(hash), 1);
+  CHECK(std::bit_cast<uint64_t>(keys.field(0).get_integer(1, 1)) == hash);
+  CHECK(uint64_t(keys.field(0).get(1, 1)) != hash); // через double младшие биты теряются
+  keys.field(1).set_integer(2, INT64_MIN + 1);
+  CHECK(keys.field(1).get_integer(2) == INT64_MIN + 1);
+  // Путь через double зажимает и не уходит в UB на краю.
+  keys.field(0).set(0, -5.0);
+  CHECK(keys.field(0).get_integer(0) == 0);
+  keys.field(0).set(0, 1e30);
+  CHECK(std::bit_cast<uint64_t>(keys.field(0).get_integer(0)) == UINT64_MAX);
+  keys.field(1).set(0, -1e30);
+  CHECK(keys.field(1).get_integer(0) == INT64_MIN);
+  CHECK(originator::parse_field_type("ul2").base == originator::field_base::ul);
+  CHECK(originator::parse_field_type("l1").base == originator::field_base::l);
+  // Слово ключа — одна компонента ul.
+  originator::write_key_word(keys.field(0), 2, hash, 1);
+  CHECK(originator::read_key_word(keys.field(0), 2, 1) == hash);
+  // Обрезка копирует байты, а не значения через double.
+  const auto kept = keys.truncated(3);
+  CHECK(originator::read_key_word(kept.field(0), 2, 1) == hash);
+  CHECK(kept.field(1).get_integer(2) == INT64_MIN + 1);
 }

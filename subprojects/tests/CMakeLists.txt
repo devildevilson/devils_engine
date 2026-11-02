@@ -352,11 +352,26 @@ target_link_libraries(originator_device_test PRIVATE devils_engine::originator d
 devils_add_doctest(originator_translate_test originator_translate_test.cpp)
 target_link_libraries(originator_translate_test PRIVATE devils_engine::originator devils_engine::originator_script devils_engine::painter devils_engine::utils)
 
+devils_add_doctest(originator_column_test originator_column_test.cpp)
+target_link_libraries(originator_column_test PRIVATE devils_engine::originator devils_engine::originator_script devils_engine::utils)
+
 devils_add_doctest(originator_primitives_test originator_primitives_test.cpp)
 target_link_libraries(originator_primitives_test PRIVATE devils_engine::originator devils_engine::originator_primitives devils_engine::utils)
 
 devils_add_doctest(originator_scatter_test originator_scatter_test.cpp)
 target_link_libraries(originator_scatter_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_chain_test originator_chain_test.cpp)
+target_link_libraries(originator_chain_test PRIVATE devils_engine::originator devils_engine::originator_lua devils_engine::utils)
+
+devils_add_doctest(originator_field_test originator_field_test.cpp)
+target_link_libraries(originator_field_test PRIVATE devils_engine::originator devils_engine::originator_lua devils_engine::utils)
+
+devils_add_doctest(originator_neighbourhood_test originator_neighbourhood_test.cpp)
+target_link_libraries(originator_neighbourhood_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_skeleton_test originator_skeleton_test.cpp)
+target_link_libraries(originator_skeleton_test PRIVATE devils_engine::originator devils_engine::utils)
 
 devils_add_doctest(originator_volume_test originator_volume_test.cpp)
 target_link_libraries(originator_volume_test PRIVATE devils_engine::originator devils_engine::utils)

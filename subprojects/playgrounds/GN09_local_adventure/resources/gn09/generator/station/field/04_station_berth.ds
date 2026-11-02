@@ -1,0 +1,46 @@
+// Сметённый корпус лодки от узла до причала: расстояние до параллелограмма осей лодки минус радиус
+// хода. Если проекция внутри, ближайшая точка на плоскости; иначе минимум по четырём рёбрам.
+{
+  ctx_save = { o_x = node_centre_x - berth_axis_x * sub_axis_half,
+               o_y = node_centre_y - berth_axis_y * sub_axis_half,
+               o_z = node_centre_z - berth_axis_z * sub_axis_half,
+               e_x = berth_x - node_centre_x, e_y = berth_y - node_centre_y, e_z = berth_z - node_centre_z,
+               f_x = berth_axis_x * (2 * sub_axis_half), f_y = berth_axis_y * (2 * sub_axis_half),
+               f_z = berth_axis_z * (2 * sub_axis_half) }
+  ctx_save = { d_x = x - ctx:saved:o_x, d_y = y - ctx:saved:o_y, d_z = z - ctx:saved:o_z,
+               n_x = ctx:saved:e_y * ctx:saved:f_z - ctx:saved:e_z * ctx:saved:f_y,
+               n_y = ctx:saved:e_z * ctx:saved:f_x - ctx:saved:e_x * ctx:saved:f_z,
+               n_z = ctx:saved:e_x * ctx:saved:f_y - ctx:saved:e_y * ctx:saved:f_x }
+  ctx_save = { ee = ctx:saved:e_x * ctx:saved:e_x + ctx:saved:e_y * ctx:saved:e_y + ctx:saved:e_z * ctx:saved:e_z,
+               ef = ctx:saved:e_x * ctx:saved:f_x + ctx:saved:e_y * ctx:saved:f_y + ctx:saved:e_z * ctx:saved:f_z,
+               ff = ctx:saved:f_x * ctx:saved:f_x + ctx:saved:f_y * ctx:saved:f_y + ctx:saved:f_z * ctx:saved:f_z,
+               de = ctx:saved:d_x * ctx:saved:e_x + ctx:saved:d_y * ctx:saved:e_y + ctx:saved:d_z * ctx:saved:e_z,
+               df = ctx:saved:d_x * ctx:saved:f_x + ctx:saved:d_y * ctx:saved:f_y + ctx:saved:d_z * ctx:saved:f_z,
+               nn = ctx:saved:n_x * ctx:saved:n_x + ctx:saved:n_y * ctx:saved:n_y + ctx:saved:n_z * ctx:saved:n_z }
+  ctx_save = { det = ctx:saved:ee * ctx:saved:ff - ctx:saved:ef * ctx:saved:ef }
+  ctx_save = { s = (ctx:saved:de * ctx:saved:ff - ctx:saved:df * ctx:saved:ef) / max(ctx:saved:det, 1e-12),
+               t = (ctx:saved:df * ctx:saved:ee - ctx:saved:de * ctx:saved:ef) / max(ctx:saved:det, 1e-12),
+               t0 = clamp(ctx:saved:de / max(ctx:saved:ee, 1e-12), 0, 1),
+               t1 = clamp((ctx:saved:df - ctx:saved:ef) / max(ctx:saved:ff, 1e-12), 0, 1),
+               t2 = clamp((ctx:saved:de - ctx:saved:ef) / max(ctx:saved:ee, 1e-12), 0, 1),
+               t3 = clamp(ctx:saved:df / max(ctx:saved:ff, 1e-12), 0, 1) }
+  ctx_save = { a_x = ctx:saved:d_x - ctx:saved:e_x * ctx:saved:t0,
+               a_y = ctx:saved:d_y - ctx:saved:e_y * ctx:saved:t0,
+               a_z = ctx:saved:d_z - ctx:saved:e_z * ctx:saved:t0,
+               b_x = ctx:saved:d_x - ctx:saved:e_x - ctx:saved:f_x * ctx:saved:t1,
+               b_y = ctx:saved:d_y - ctx:saved:e_y - ctx:saved:f_y * ctx:saved:t1,
+               b_z = ctx:saved:d_z - ctx:saved:e_z - ctx:saved:f_z * ctx:saved:t1,
+               c_x = ctx:saved:d_x - ctx:saved:f_x - ctx:saved:e_x * ctx:saved:t2,
+               c_y = ctx:saved:d_y - ctx:saved:f_y - ctx:saved:e_y * ctx:saved:t2,
+               c_z = ctx:saved:d_z - ctx:saved:f_z - ctx:saved:e_z * ctx:saved:t2,
+               d0_x = ctx:saved:d_x - ctx:saved:f_x * ctx:saved:t3,
+               d0_y = ctx:saved:d_y - ctx:saved:f_y * ctx:saved:t3,
+               d0_z = ctx:saved:d_z - ctx:saved:f_z * ctx:saved:t3 }
+  ctx_save = { plane = { value_or = { ctx:saved:nn > 1e-9 and ctx:saved:s >= 0 and ctx:saved:s <= 1 and ctx:saved:t >= 0 and ctx:saved:t <= 1,
+                    abs(ctx:saved:d_x * ctx:saved:n_x + ctx:saved:d_y * ctx:saved:n_y + ctx:saved:d_z * ctx:saved:n_z) / sqrt(max(ctx:saved:nn, 1e-12)), 1e30 } },
+               edge0 = sqrt(ctx:saved:a_x * ctx:saved:a_x + ctx:saved:a_y * ctx:saved:a_y + ctx:saved:a_z * ctx:saved:a_z),
+               edge1 = sqrt(ctx:saved:b_x * ctx:saved:b_x + ctx:saved:b_y * ctx:saved:b_y + ctx:saved:b_z * ctx:saved:b_z),
+               edge2 = sqrt(ctx:saved:c_x * ctx:saved:c_x + ctx:saved:c_y * ctx:saved:c_y + ctx:saved:c_z * ctx:saved:c_z),
+               edge3 = sqrt(ctx:saved:d0_x * ctx:saved:d0_x + ctx:saved:d0_y * ctx:saved:d0_y + ctx:saved:d0_z * ctx:saved:d0_z) }
+  min(min(ctx:saved:plane, ctx:saved:edge0), min(ctx:saved:edge1, min(ctx:saved:edge2, ctx:saved:edge3))) - sub_path_radius
+}

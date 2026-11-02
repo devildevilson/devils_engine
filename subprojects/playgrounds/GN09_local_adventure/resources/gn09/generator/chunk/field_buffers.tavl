@@ -1,4 +1,6 @@
 // Решётка узлов чанка с полосой и значения поля в них. `d`: значение поля сравнивается с C++ побитово.
+// Если над решёткой нет ни одной формы, а фон выше нуля, чанк — сплошная порода: сэмплы не считаются
+// (surface_counts.sampled = 0) и поверхности нет.
 {
   name = lattice
   format = [ position = d3 ]
@@ -33,7 +35,7 @@
 
 {
   name = surface_counts
-  format = [ vertices = ui1, middles = ui1, structure = ui1, props = ui1 ]
+  format = [ vertices = ui1, middles = ui1, structure = ui1, props = ui1, sampled = ui1, shapes = ui1 ]
   size = one
 }
 
@@ -47,6 +49,7 @@
 
 {
   name = chunk_meta
-  format = [ seed = ul1 ]
+  // seed — зерно мира для блока построек; lower — нижняя граница фона поля (field_bound).
+  format = [ seed = ul1, lower = d1 ]
   size = one
 }

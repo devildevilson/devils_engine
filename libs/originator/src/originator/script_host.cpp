@@ -1,5 +1,6 @@
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/generator_chain.h"
+#include "devils_engine/originator/geometry.h"
 
 #include "devils_engine/originator/script_translate.h"
 
@@ -67,7 +68,48 @@ constexpr const char* safe_libraries[] = {"coroutine", "string", "table", "math"
 // в те же таблицы, поэтому инструмент с таким именем затёр бы функцию МОЛЧА — и тело шага получило
 // бы вместо очереди обычный вызов или вместо `run_script` инструмент. Кто кого затрёт, зависело бы
 // ещё и от порядка регистрации, а такую пропажу по результату генерации не видно.
-constexpr const char* reserved_api_names[] = {"run", "run_script", "tool_exists", "queue"};
+constexpr const char* reserved_api_names[] = {"run", "run_script", "tool_exists", "queue", "segment_box_distance",
+                                               "exclusion_set"};
+
+struct geometry_point { double x, y, z; };
+
+geometry_point geometry_point_from(const sol::table& p) {
+  return {p.get<double>("x"), p.get<double>("y"), p.get<double>("z")};
+}
+
+double script_segment_box_distance(const sol::table& a, const sol::table& b, const sol::table& low,
+                                   const sol::table& high, const double threshold) {
+  return distance_segment_to_box(geometry_point_from(a), geometry_point_from(b),
+                                 geometry_point_from(low), geometry_point_from(high), threshold);
+}
+
+struct geometry_exclusions {
+  struct segment { geometry_point a, b; double radius; };
+  struct sphere { geometry_point centre; double radius; };
+  std::vector<segment> segments;
+  std::vector<sphere> spheres;
+
+  void add_segment(const sol::table& a, const sol::table& b, const double radius) {
+    segments.push_back({geometry_point_from(a), geometry_point_from(b), radius});
+  }
+  void add_point(const sol::table& centre, const double radius) {
+    spheres.push_back({geometry_point_from(centre), radius});
+  }
+  bool intersects_box(const sol::table& low_table, const sol::table& high_table) const {
+    const geometry_point low = geometry_point_from(low_table), high = geometry_point_from(high_table);
+    for (const segment& s : segments) {
+      if (distance_segment_to_box(s.a, s.b, low, high, s.radius) < s.radius) return true;
+    }
+    for (const sphere& s : spheres) {
+      if (distance_point_to_box(s.centre, low, high) < s.radius) return true;
+    }
+    return false;
+  }
+};
+
+std::shared_ptr<geometry_exclusions> make_geometry_exclusions() {
+  return std::make_shared<geometry_exclusions>();
+}
 
 char script_host_registry_key = 0;
 
@@ -452,6 +494,11 @@ void script_host::bind_types() {
     "name", &script_buffer_view::name,
     "extent", &view_extent,
     "clear", &script_buffer_view::clear);
+  env_.new_usertype<geometry_exclusions>(
+    "exclusion_set", sol::no_constructor,
+    "add_segment", &geometry_exclusions::add_segment,
+    "add_point", &geometry_exclusions::add_point,
+    "intersects_box", &geometry_exclusions::intersects_box);
 }
 
 void script_host::bind_tools() {
@@ -469,6 +516,8 @@ void script_host::bind_tools() {
   // Существует потому, что примитивы (FastNoise2, jc_voronoi) — ОТДЕЛЬНАЯ цель сборки: скрипт может
   // законно спросить, доступен ли инструмент, и выбрать другой путь.
   api.set_function("tool_exists", &script_host::has_tool, this);
+  api.set_function("segment_box_distance", &script_segment_box_distance);
+  api.set_function("exclusion_set", &make_geometry_exclusions);
 
   install_shortcuts(api, api["run"]);
 
@@ -975,11 +1024,28 @@ namespace {
 int module_write_refused(lua_State* L) {
   return luaL_error(L, "originator: a chain module is read-only (tried to set '%s')", luaL_tolstring(L, 2, nullptr));
 }
+int constants_write_refused(lua_State* L) {
+  return luaL_error(L, "originator: chain constants are read-only (tried to set '%s')", luaL_tolstring(L, 2, nullptr));
+}
 } // namespace
 
-// Модуль — кусок lua, возвращающий таблицу; кладётся в `modules.<имя>` окружения. Таблица модуля
-// запирается от записи: модуль один на хост, а хост переживает экземпляры, и запись в него стала бы
-// состоянием между сборками — то есть зависимостью мира от порядка.
+// Общие константы доступны ещё при загрузке модулей и не становятся состоянием между сборками.
+void script_host::set_constants(const parameters& values) {
+  sol::table data = lua_.create_table();
+  for (size_t i = 0; i < values.size(); ++i) {
+    const auto name = std::string(values.name_at(i));
+    if (values.is_string_at(i)) data[name] = std::string(values.string_at(i));
+    else data[name] = values.number_at(i);
+  }
+  sol::table meta = lua_.create_table();
+  meta[sol::meta_function::index] = data;
+  meta[sol::meta_function::new_index] = &constants_write_refused;
+  sol::table front = lua_.create_table();
+  front[sol::metatable_key] = meta;
+  env_["constants"] = front;
+}
+
+// Модуль возвращает таблицу; read-only proxy исключает состояние между сборками.
 void script_host::load_module(const std::string_view& module_name, const std::string_view& source,
                               const std::string_view& chunk_name) {
   sol::table modules = env_["modules"].get_or_create<sol::table>();
@@ -1224,6 +1290,7 @@ sol::table script_host::make_step_table(const step_context& context) {
     }
   }
   step["params"] = params;
+  step["constants"] = env_["constants"];
 
   sol::table writes(lua_, sol::create);
   for (auto* target : context.writes) {
@@ -1376,7 +1443,11 @@ invoker_source make_chain_invokers(const generator_chain& chain, std::function<v
       slot = std::make_unique<thread_host>();
       if (state->add_tools) state->add_tools(slot->tools);
       slot->host = std::make_unique<script_host>(slot->tools, state->pool);
-      for (const auto& module : state->chain->modules()) slot->host->load_module(module.name, module.text, module.id);
+      slot->host->set_constants(state->chain->constants());
+      for (const auto& module : state->chain->modules()) {
+        // program = true — формула вида формы (ds), а не lua-модуль: она входит только в отпечаток.
+        if (!module.program) slot->host->load_module(module.name, module.text, module.id);
+      }
       for (const auto& script : state->chain->scripts(generator.name)) {
         if (script.program) {
           slot->host->load_program(script.name, script.text);

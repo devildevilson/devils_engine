@@ -7,6 +7,11 @@
 #include "world_chain.h"
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -27,6 +32,13 @@ struct options {
   uint64_t seed = 0;
   double radius = 1.0;
   uint32_t frames = 0;
+  double flight = 0.0;
+  // Все аппаратные потоки, кроме главного и рендера: генерация чанков — основная нагрузка полёта.
+  uint32_t workers = std::max(1u, std::thread::hardware_concurrency() > 2 ? std::thread::hardware_concurrency() - 2 : 1u);
+  // Опережение: 6 слоёв чанков впереди окна по ходу (зависимости, не поля).
+  uint32_t prefetch = 6;
+  // Гарантия: камера не входит в чанк, пока куб 5x5x5 вокруг него не построен.
+  int guard = 2;
   uint32_t mode = 0;
   bool grid = false;
   bool validation = false;
@@ -110,6 +122,10 @@ bool parse(const int argc, char** argv, options& result) {
     if (arg.starts_with("--seed=") && parse_number(arg.substr(7), result.seed)) continue;
     if (arg.starts_with("--mods=")) { gn09::set_world_mods(arg.substr(7)); continue; }
     if (arg.starts_with("--frames=") && parse_number(arg.substr(9), result.frames)) continue;
+    if (arg.starts_with("--flight=")) { result.flight = std::stod(std::string(arg.substr(9))); continue; }
+    if (arg.starts_with("--workers=") && parse_number(arg.substr(10), result.workers) && result.workers >= 1) continue;
+    if (arg.starts_with("--prefetch=") && parse_number(arg.substr(11), result.prefetch)) continue;
+    if (arg.starts_with("--guard=") && parse_number(arg.substr(8), result.guard)) continue;
     if (arg.starts_with("--view=") && parse_number(arg.substr(7), result.mode) &&
         result.mode <= 3) continue;
     uint32_t edge = 0;
@@ -194,7 +210,7 @@ glm::dvec3 hall_point(const gn09::hall& h, const double u, const double y, const
 std::vector<devils_engine::gn03::debug_line> graph_lines(const uint64_t seed, const glm::dvec3 observer) {
   using devils_engine::gn03::debug_line;
   static constexpr double reach = 480.0;
-  const auto sector = [](const double v) { return int(std::floor(v / gn09::sector_size)); };
+  const auto sector = [](const double v) { return int(std::floor(v / gn09::sector_size())); };
   const gn09::graph::window area{sector(observer.x - reach), sector(observer.z - reach),
                                  sector(observer.x + reach) + 1, sector(observer.z + reach) + 1};
   const gn09::graph route = gn09::generate_graph(seed, area);
@@ -243,8 +259,12 @@ std::vector<devils_engine::gn03::debug_line> graph_lines(const uint64_t seed, co
   return lines;
 }
 
+// Зерно мира, которое сейчас строит просмотрщик: опережение готовит зависимости именно этого мира.
+std::atomic<uint64_t> current_seed{0};
+
 devils_engine::gn03::factory_builder make_builder(const double radius) {
   return [radius](const std::vector<std::pair<std::string, double>>&, const uint64_t seed) {
+    current_seed = seed;
     return [radius, seed]() -> devils_engine::gn03::chunk_generator {
       // Чанк — экземпляр генератора chunk_field цепочки (окно 5x5 вокруг его сектора, пещеры мест
       // fan-in, поле `solid`). Кэш экземпляров общий для всех потоков потока чанков, поэтому соседние
@@ -407,9 +427,9 @@ int main(const int argc, char** argv) {
         for (int32_t k = 0; k < v.depth && !found; ++k) for (int32_t i = 0; i < v.width && !found; ++i) {
           const size_t index = (size_t(y) * v.depth + k) * v.width + i;
           if (!v.solid[index] || v.shade[index] != gn09::station_glass_shade) continue;
-          target = gn09::station_to_world(site, (v.i0 + i + 0.5) * gn09::station_cell,
-                                          (v.y0 + y + 0.5) * gn09::station_cell,
-                                          (v.k0 + k + 0.5) * gn09::station_cell);
+          target = gn09::station_to_world(site, (v.i0 + i + 0.5) * gn09::station_cell(),
+                                          (v.y0 + y + 0.5) * gn09::station_cell(),
+                                          (v.k0 + k + 0.5) * gn09::station_cell());
           // Наружу — от середины станции через окно, затем с отклонением.
           gn09::point mid{};
           for (const gn09::station_room& r : plan.rooms) {
@@ -422,8 +442,8 @@ int main(const int argc, char** argv) {
             const double du = (p.x - site.origin.x) * std::cos(site.yaw) + (p.z - site.origin.z) * std::sin(site.yaw);
             const double dv = -(p.x - site.origin.x) * std::sin(site.yaw) + (p.z - site.origin.z) * std::cos(site.yaw);
             for (const gn09::station_room& r : plan.rooms) {
-              if (du > (r.u0 - 3) * gn09::station_cell && du < (r.u1 + 3) * gn09::station_cell &&
-                  dv > (r.v0 - 3) * gn09::station_cell && dv < (r.v1 + 3) * gn09::station_cell) return false;
+              if (du > (r.u0 - 3) * gn09::station_cell() && du < (r.u1 + 3) * gn09::station_cell() &&
+                  dv > (r.v0 - 3) * gn09::station_cell() && dv < (r.v1 + 3) * gn09::station_cell()) return false;
             }
             return true;
           };
@@ -458,12 +478,18 @@ int main(const int argc, char** argv) {
       std::cerr << "stations have no emergency exits yet\n";
       return 2;
     } else if (cli.site_exterior) {
-      // Со стороны лодки на люк.
-      start = site.berth;
+      // Со стороны полости, сбоку от дока: видны шлюз, коридор шлюза и тело у линии породы.
       const gn09::station_room& airlock = plan.rooms[0];
-      target = site.pose == gn09::station_pose::wall
-        ? gn09::station_to_world(site, airlock.u0 * gn09::station_cell, 1.0, 0.0)
-        : centre_of(airlock, 1.5);
+      const gn09::point lock = centre_of(airlock, 1.5);
+      target = gn09::point{(lock.x + site.origin.x) * 0.5, (lock.y + site.origin.y + 1.5) * 0.5,
+                           (lock.z + site.origin.z) * 0.5};
+      start = site.berth;
+      const gn09::point side{-std::sin(site.yaw), 0.0, std::cos(site.yaw)};
+      for (const double shift : {14.0, -14.0, 9.0, -9.0, 5.0}) {
+        const gn09::point candidate{site.node_centre.x + side.x * shift, (site.node_centre.y + lock.y) * 0.5 + 3.0,
+                                    site.node_centre.z + side.z * shift};
+        if (gn09::density(start_world, candidate) < -1.0) { start = candidate; break; }
+      }
     } else {
       // Изнутри: из первой комнаты за шлюзом через её дальнюю дверь в следующую.
       const gn09::station_door& door = plan.doors.size() > 1 ? plan.doors[1] : plan.doors[0];
@@ -474,9 +500,9 @@ int main(const int argc, char** argv) {
       const gn09::point room = centre_of(from, 1.6);
       start = gn09::point{room.x + (room.x - gap.x) * 0.6, 1.6 + site.origin.y, room.z + (room.z - gap.z) * 0.6};
       if (gn09::station_room_quarters(from, int32_t(std::floor(((start.x - site.origin.x) * std::cos(site.yaw) +
-          (start.z - site.origin.z) * std::sin(site.yaw)) / gn09::station_cell)),
+          (start.z - site.origin.z) * std::sin(site.yaw)) / gn09::station_cell())),
           int32_t(std::floor((-(start.x - site.origin.x) * std::sin(site.yaw) +
-          (start.z - site.origin.z) * std::cos(site.yaw)) / gn09::station_cell))) != 0xF) start = room;
+          (start.z - site.origin.z) * std::cos(site.yaw)) / gn09::station_cell()))) != 0xF) start = room;
       target = centre_of(into, 1.6);
       (void)far;
     }
@@ -571,7 +597,7 @@ int main(const int argc, char** argv) {
   devils_engine::gn03::viewer_options viewer;
   viewer.window_title = "GN09 — caves and outposts";
   viewer.overlay_title = "GN09 local adventure";
-  viewer.overlay_summary = "Caves, built outposts, 17 x 6 m capsule route; GN03 chunk viewer";
+  viewer.overlay_summary = "Caves, built outposts, 34 x 12 m capsule route; GN03 chunk viewer";
   viewer.overlay_controls = "WASD/QE fly | Shift fast | M view | G chunk grid | L graph | N new seed | U overlay | Esc quit";
   viewer.seed = cli.seed;
   viewer.chunk_cells = gn09::chunk::cells;
@@ -594,7 +620,16 @@ int main(const int argc, char** argv) {
                                size_t(2 * cli.window_horizontal + 1) *
                                size_t(2 * cli.window_vertical + 1);
   viewer.arena_vertices = std::max<size_t>(2u << 20, window_chunks * 6000);
-  viewer.workers = 4;
+  viewer.workers = cli.workers;
+  // Опережение: зависимости чанков впереди по ходу (окна, места, пещеры, станции, туннели) — всё,
+  // кроме самого поля чанка.
+  viewer.prefetch_layers = cli.prefetch;
+  viewer.guard_radius = cli.guard;
+  viewer.prefetch = [radius = cli.radius](const devils_engine::originator::chunk_key& key) {
+    gn09::world_chain(radius).prefetch("chunk_field", current_seed.load(),
+                                       {{uint64_t(key.x), uint64_t(key.y), uint64_t(key.z)}});
+  };
+  viewer.flight_speed = cli.flight;
   viewer.frames = cli.frames;
   viewer.mode = cli.mode;
   viewer.grid = cli.grid;
@@ -613,5 +648,15 @@ int main(const int argc, char** argv) {
             << " sector=" << cli.sector_x << ',' << cli.sector_z << '\n';
   viewer.start_yaw = float(std::atan2(dz, dx));
   viewer.start_pitch = float(std::atan2(dy, std::hypot(dx, dz)));
+#ifdef __GLIBC__
+  // Сборки генератора выделяют и отпускают буферы под объявленную ёмкость в разных потоках, и куча glibc
+  // держит пик у себя: без возврата системе долгий полёт дорастал до 2+ ГБ RSS при ~0.6 ГБ живой кучи.
+  std::jthread trimmer([](const std::stop_token stop) {
+    while (!stop.stop_requested()) {
+      for (int i = 0; i < 100 && !stop.stop_requested(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      malloc_trim(0);
+    }
+  });
+#endif
   return devils_engine::gn03::run_viewer(viewer, make_builder(cli.radius));
 }

@@ -6,5 +6,5 @@
 name = chunk_anchors
 buffers = ./anchors_buffers.tavl
 steps = [
-  { name = select, body = ./scripts/anchors.lua, reads = [ nodes, graph_meta ], writes = [ anchors, anchor_counts ] }
+  { name = select, body = ./03_anchors.lua, reads = [ nodes, graph_meta ], writes = [ anchors, anchor_counts ] }
 ]

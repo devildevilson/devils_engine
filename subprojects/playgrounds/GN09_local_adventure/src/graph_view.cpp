@@ -59,8 +59,8 @@ std::vector<const hall*> visible_halls(const adventure& world) {
   const graph::window& area = world.route.area;
   std::vector<const hall*> result;
   for (const hall& h : world.halls) {
-    bool keep = h.centre.x >= area.min_x * sector_size && h.centre.x < area.max_x * sector_size &&
-                h.centre.z >= area.min_z * sector_size && h.centre.z < area.max_z * sector_size;
+    bool keep = h.centre.x >= area.min_x * sector_size() && h.centre.x < area.max_x * sector_size() &&
+                h.centre.z >= area.min_z * sector_size() && h.centre.z < area.max_z * sector_size();
     for (const node& n : world.route.nodes) keep = keep || inside_hall(h, n.centre);
     if (keep) result.push_back(&h);
   }
@@ -74,7 +74,7 @@ std::string world_json(const adventure& world) {
   const graph& route = world.route;
   out << "{\"seed\":" << world.seed << ",\"window\":[" << route.area.min_x << ','
       << route.area.min_z << ',' << route.area.max_x << ',' << route.area.max_z
-      << "],\"sector\":" << sector_size << ",\"entry\":" << route.entry
+      << "],\"sector\":" << sector_size() << ",\"entry\":" << route.entry
       << ",\"destination\":" << route.destination << ",\"nodes\":[";
   for (size_t i = 0; i < route.nodes.size(); ++i) {
     const node& n = route.nodes[i];
