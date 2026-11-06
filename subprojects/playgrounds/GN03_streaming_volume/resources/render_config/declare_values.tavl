@@ -28,3 +28,6 @@
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }
+// ОТЛАДОЧНЫЕ ЛИНИИ: по 16 байт на вершину, две вершины на линию — 65536 линий за кадр. Хост
+// (граф маршрутов GN09) отдаёт их в мировых метрах, окно приводит к чанку камеры каждый кадр.
+{ name = line_vertex_bytes, type = fixed, value = [2097152, 0, 0] }

@@ -15,3 +15,4 @@
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
 { name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
 { name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }
+{ name = line_vertices, format = c1, role = upload, size = line_vertex_bytes, swap = per_frame }

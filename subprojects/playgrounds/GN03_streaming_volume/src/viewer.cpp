@@ -2,14 +2,18 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <unordered_set>
 
 #include <glm/detail/type_half.hpp>
 #include <glm/geometric.hpp>
@@ -68,6 +72,7 @@ struct frame_profile {
   size_t uploaded_vertices = 0;
   size_t worst_upload_vertices = 0;
   size_t chunk_steps = 0;
+  size_t held_frames = 0; // кадры, когда гарантия держала камеру у границы недостроенного чанка
   size_t holes_at_worst = 0;
   size_t drawn_at_worst = 0;
   double worst_frame = 0.0;
@@ -114,6 +119,7 @@ struct frame_profile {
                 double(worst_upload_vertices * sizeof(gpu_vertex)) / (1024.0 * 1024.0));
     utils::info("GN03 frames: at the worst frame the arena drew {} vertices of which {} were holes",
                 drawn_at_worst, holes_at_worst);
+    utils::info("GN03 frames: the guard held the camera {} of {} frames", held_frames, frames);
     std::string spread;
     for (size_t i = 0; i < buckets.size(); ++i) {
       if (buckets[i] == 0) {
@@ -267,7 +273,9 @@ struct alignas(16) camera_block {
   // Размер чанка в метрах, дальность видимости, режим представления, сила сетки чанков.
   glm::vec4 params;
   glm::vec4 viewport_near;
-  glm::vec4 reserved[3];
+  // Атмосфера: [0] — цвет воды и признак подводного режима, [1] — начало и конец полной
+  // плотности тумана, дальность и сила фонаря, [2] — рассеянный свет и мутность воды.
+  glm::vec4 atmosphere[3];
 };
 static_assert(sizeof(camera_block) == 256);
 
@@ -407,7 +415,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
   painter::load_dispatcher1();
 
   vk::ApplicationInfo app_info{};
-  app_info.pApplicationName = "GN03 streaming volume";
+  app_info.pApplicationName = options.overlay_title.c_str();
   app_info.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
   app_info.pEngineName = "devils_engine";
   app_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
@@ -430,7 +438,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
   painter::load_dispatcher2(instance);
   const VkDebugUtilsMessengerEXT messenger =
     options.validation ? painter::create_debug_messenger(instance) : VK_NULL_HANDLE;
-  GLFWwindow* window = input::create_window(options.width, options.height, "GN03 — streaming volume");
+  GLFWwindow* window = input::create_window(options.width, options.height, options.window_title.c_str());
   VkSurfaceKHR surface_handle = VK_NULL_HANDLE;
   if (input::create_window_surface(instance, window, nullptr, &surface_handle) != uint32_t(vk::Result::eSuccess)) {
     utils::error{}("GN03 could not create the window surface");
@@ -467,7 +475,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     if (base.commit_parsed_resources(render_config) != 0) {
       utils::error{}("GN03 could not commit the render graph from '{}'", resource_root);
     }
-    if (options.uncapped) {
+    if (options.uncapped || options.async_present) {
       base.set_present_mode(painter::physical_device_present_mode::values::mailbox,
                             painter::physical_device_present_mode::values::immediate);
     }
@@ -491,9 +499,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     playground::visage_overlay overlay(
       common_resources + "fonts/crimson.roman.ttf", common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
-        "GN03 streaming volume",
-        "marching cubes over a chunked density field, generated around the camera in worker threads",
-        "WASD/QE fly | Shift fast | M view | G chunk grid | Tab/-/= tune | Enter apply | N new seed | U overlay | Esc quit"});
+        options.overlay_title, options.overlay_summary, options.overlay_controls});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(font_texture,
@@ -554,6 +560,30 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       base.get_current_buffer_resource_frame(props_slot).sub.size / sizeof(gpu_prop);
     std::vector<gpu_prop> prop_instances;
     prop_instances.reserve(prop_instance_limit);
+
+    // ОТЛАДОЧНЫЕ ЛИНИИ хоста. Список приходит в мировых метрах из фонового потока и меняется, только
+    // когда камера ушла далеко; к чанку камеры он приводится каждый кадр, как сущности.
+    const uint32_t lines_slot = base.find_resource("line_vertices");
+    if (lines_slot == painter::invalid_resource_slot) {
+      utils::error{}("GN03 buffer 'line_vertices' is absent");
+    }
+    const size_t line_vertex_limit =
+      base.get_current_buffer_resource_frame(lines_slot).sub.size / sizeof(glm::vec4);
+    std::vector<glm::vec4> line_vertices;
+    line_vertices.reserve(line_vertex_limit);
+    std::vector<debug_line> world_lines;
+    // Запрос линий — фоновая задача рабочих потоков стримера; результат забирается из этого ящика. Ящик
+    // новый у каждого стримера: задача, отброшенная вместе со старым стримером, не держит запрос вечно.
+    struct line_mailbox {
+      std::mutex lock;
+      bool busy = false, ready = false;
+      std::vector<debug_line> lines;
+    };
+    auto line_box = std::make_shared<line_mailbox>();
+    glm::dvec3 line_anchor{};
+    uint64_t line_seed = 0;
+    bool line_requested = false;
+    uint32_t lines_mode = options.lines ? std::min<uint32_t>(options.lines_mode, 2u) : 0u;
     size_t dropped_props = 0;
 
     if (options.memory == nullptr) {
@@ -580,7 +610,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     };
 
     auto window_state = options.window;
-    auto streamer = std::make_unique<chunk_streamer>(builder(overrides_of(), seed), options.workers);
+    auto streamer = std::make_unique<chunk_streamer>(builder(overrides_of(), seed), options.workers, options.prefetch);
 
     input::events::clear_bindings();
     bind_key("camera_forward", "key_w");
@@ -602,6 +632,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     // операции меняют не мир, а ОТЛИЧИЕ мира от выводимого.
     bind_key("collect", "key_f");
     bind_key("mark", "key_r");
+    bind_key("lines_mode", "key_l");
     escape_key = input::glfw_key_from_canonical("escape");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
@@ -633,7 +664,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     if (options.start_offset_valid) {
       camera.yaw = options.start_yaw;
     }
-    camera.move_speed = float(chunk_span) * 0.6f;
+    camera.move_speed = options.move_speed > 0 ? float(options.move_speed) : float(chunk_span) * 0.6f;
     camera.fast_multiplier = 5.0f;
 
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
@@ -677,8 +708,18 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
 
     window_state.centre = observer.key;
     streamer->set_window(window_state);
+    glm::dvec3 heading{0.0};
 
     frame_profile profile;
+    const auto loading_began = std::chrono::steady_clock::now();
+    auto flight_began = loading_began;
+    bool flight_started = !(options.realtime_flight && options.flight_speed > 0.0);
+    const auto initial_window = window_state;
+    double flight_distance = 0.0, near_ready_seconds = -1.0;
+    size_t ready_flight_frames = 0, holed_flight_frames = 0;
+    size_t active_over_budget = 0;
+    double active_frame_ms = 0.0, active_worst_ms = 0.0;
+    std::vector<double> active_frame_samples;
 
     while (!input::should_close(window)) {
       const auto frame_start = std::chrono::steady_clock::now();
@@ -710,9 +751,13 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       // таких прогона нельзя.
       if (options.flight_speed > 0.0) {
         motion = playground::camera_motion{};
-        motion.forward = 1.0f;
+        motion.forward = flight_started ? 1.0f : 0.0f;
         camera.pitch = 0.0f;
         camera.yaw = 0.35f;
+        if (options.flight_turn_seconds > 0 && flight_started) {
+          const double elapsed = std::chrono::duration<double>(now - flight_began).count();
+          camera.yaw += float(std::floor(elapsed / options.flight_turn_seconds)) * 1.57079632679f;
+        }
         camera.move_speed = float(options.flight_speed);
       }
       // Взгляд применяется камерой, а движение НАКАПЛИВАЕТСЯ ЗДЕСЬ, в double. Порядок тот же, что у
@@ -723,8 +768,30 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       // есть выбрасывает меньше чанков), а чистые кадры — в другую (кадр дешевле, значит мир едет
       // быстрее реального времени, и генератор перестаёт успевать вовсе). Ограничение сверху при
       // темпе в шестьдесят кадров даёт и одну дорогу, и одну скорость относительно генератора.
-      const float step_dt = options.flight_speed > 0.0 ? std::min(dt, 1.0f / 60.0f) : dt;
-      observer.position += glm::dvec3(camera.displacement(motion, step_dt));
+      const float step_dt = options.flight_speed > 0.0 && !options.realtime_flight ? std::min(dt, 1.0f / 60.0f) : dt;
+      glm::dvec3 moved = glm::dvec3(camera.displacement(motion, step_dt));
+      if (glm::length(moved) > 0.0) heading = glm::normalize(moved);
+      if (options.guard_radius >= 0 && glm::length(moved) > 0.0) {
+        const glm::dvec3 next = observer.position + moved;
+        const originator::chunk_key target{observer.key.x + int64_t(std::floor(next.x / chunk_span)),
+                                           observer.key.y + int64_t(std::floor(next.y / chunk_span)),
+                                           observer.key.z + int64_t(std::floor(next.z / chunk_span))};
+        if (!(target == observer.key)) {
+          bool ready = true;
+          const int64_t r = options.guard_radius;
+          for (int64_t z = -r; z <= r && ready; ++z)
+            for (int64_t y = -r; y <= r && ready; ++y)
+              for (int64_t x = -r; x <= r && ready; ++x) {
+                ready = streamer->present({target.x + x, target.y + y, target.z + z});
+              }
+          if (!ready) {
+            moved = glm::dvec3(0.0);
+            ++profile.held_frames;
+          }
+        }
+      }
+      observer.position += moved;
+      if (options.realtime_flight) flight_distance += glm::length(moved);
 
       // ВЫХОД ИЗ ЧАНКА: ключ меняется, а позиция заворачивается внутрь. Это и есть весь механизм
       // плавающего начала координат — ни арену, ни таблицу пересчитывать не нужно, потому что
@@ -734,6 +801,9 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
 
       if (pressed_once("mode_next", 0)) {
         mode = (mode + 1) % mode_names.size();
+      }
+      if (options.lines && pressed_once("lines_mode", 10)) {
+        lines_mode = (lines_mode + 1) % 3;
       }
       if (pressed_once("toggle_grid", 1)) {
         grid_visible = !grid_visible;
@@ -779,9 +849,10 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         // мир, которого нет.
         vk::Device(device).waitIdle();
         streamer.reset();
+        line_box = std::make_shared<line_mailbox>();
         arena = vertex_arena(arena_vertices, 768, base.frames_in_flight() + 1, options.scrub_budget);
         chunk_props.clear();
-        streamer = std::make_unique<chunk_streamer>(builder(overrides_of(), seed), options.workers);
+        streamer = std::make_unique<chunk_streamer>(builder(overrides_of(), seed), options.workers, options.prefetch);
         window_state.centre = observer.key;
         streamer->set_window(window_state);
         settings_dirty = false;
@@ -797,6 +868,25 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         window_state.centre = observer.key;
         streamer->set_window(window_state);
         ++profile.chunk_steps;
+        if (options.prefetch_layers != 0 && glm::length(heading) > 0.0) {
+          // Окно, сдвинутое вперёд по ходу на 1..N чанков, минус само окно; ближние сдвиги — срочнее.
+          std::vector<originator::chunk_key> ahead;
+          std::unordered_set<originator::chunk_key, chunk_key_hash> seen;
+          for (uint32_t d = 1; d <= options.prefetch_layers; ++d) {
+            const glm::dvec3 shift = heading * double(window_state.horizontal_radius + d);
+            const originator::chunk_key moved_centre{window_state.centre.x + int64_t(std::lround(shift.x)),
+                                                     window_state.centre.y + int64_t(std::lround(shift.y)),
+                                                     window_state.centre.z + int64_t(std::lround(shift.z))};
+            for (int64_t y = -window_state.vertical_radius; y <= window_state.vertical_radius; ++y)
+              for (int64_t z = -window_state.horizontal_radius; z <= window_state.horizontal_radius; ++z)
+                for (int64_t x = -window_state.horizontal_radius; x <= window_state.horizontal_radius; ++x) {
+                  const originator::chunk_key k{moved_centre.x + x, moved_centre.y + y, moved_centre.z + z};
+                  if (window_state.contains(k) || !seen.insert(k).second) continue;
+                  ahead.push_back(k);
+                }
+          }
+          streamer->set_prefetch(ahead);
+        }
       }
 
       {
@@ -910,7 +1000,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       // Матрица кадра считается ДО таблицы смещений, потому что таблица теперь отвечает и на вопрос
       // «виден ли чанк»: живая строка и видимая строка — одно и то же поле.
       const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
-      const float near_plane = 0.1f;
+      const float near_plane = options.near_plane;
       const auto view = camera.view();
       const auto projection = playground::infinite_reverse_z_projection(glm::radians(70.0f), aspect, near_plane);
       const auto view_projection = projection * view;
@@ -1002,6 +1092,52 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         }
       }
 
+      // Линии: забрать готовый список, при уходе камеры или смене зерна попросить новый.
+      if (options.lines) {
+        const glm::dvec3 world_observer = absolute_position(observer, chunk_span);
+        bool busy = false;
+        {
+          const std::lock_guard guard(line_box->lock);
+          if (line_box->ready) {
+            world_lines = std::move(line_box->lines);
+            line_box->ready = false;
+          }
+          busy = line_box->busy;
+        }
+        if (!busy &&
+            (!line_requested || line_seed != seed ||
+             glm::length(world_observer - line_anchor) > options.lines_refresh)) {
+          {
+            const std::lock_guard guard(line_box->lock);
+            line_box->busy = true;
+          }
+          streamer->submit([box = line_box, provider = options.lines, seed, world_observer] {
+            std::vector<debug_line> lines = provider(seed, world_observer);
+            const std::lock_guard guard(box->lock);
+            box->lines = std::move(lines);
+            box->ready = true;
+            box->busy = false;
+          });
+          line_anchor = world_observer;
+          line_seed = seed;
+          line_requested = true;
+        }
+        const glm::dvec3 origin = world_observer - observer.position;
+        line_vertices.clear();
+        for (const debug_line& line : world_lines) {
+          if (line_vertices.size() + 2 > line_vertex_limit) break;
+          const float colour = std::bit_cast<float>(line.colour);
+          line_vertices.emplace_back(glm::vec3(line.a - origin), colour);
+          line_vertices.emplace_back(glm::vec3(line.b - origin), colour);
+        }
+        write_buffer(base, "line_vertices", line_vertices.data(), line_vertices.size() * sizeof(glm::vec4));
+      }
+      const uint32_t line_count = lines_mode > 0 ? uint32_t(line_vertices.size()) : 0u;
+      const VkDrawIndirectCommand line_command{line_count, 1u, 0u, 0u};
+      base.write_constant_data(base.find_constant("line_draw"), line_command);
+      const VkDrawIndirectCommand line_xray_command{lines_mode == 2 ? line_count : 0u, 1u, 0u, 0u};
+      base.write_constant_data(base.find_constant("line_xray_draw"), line_xray_command);
+
       camera_block block{};
       block.view_projection = view_projection;
       block.inverse_view_projection = glm::inverse(block.view_projection);
@@ -1014,6 +1150,19 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       block.params = glm::vec4(float(chunk_span), view_distance, float(mode), grid_visible ? 1.0f : 0.0f);
       block.viewport_near =
         glm::vec4(float(pending_width), float(pending_height), near_plane, float(options.chunk_cells));
+      if (options.underwater) {
+        // Всё ближе (r - 1) чанков от камеры по каждой оси лежит в чанках окна при любом
+        // положении камеры в её чанке, а последний слой окна остаётся запасом на подгрузку.
+        const double inner = double(std::min(window_state.horizontal_radius,
+                                              window_state.vertical_radius) - 1) * chunk_span;
+        const float fog_end = options.fog_distance > 0.0f
+          ? std::min(options.fog_distance, float(inner)) : float(inner);
+        block.atmosphere[0] = glm::vec4(options.water_colour[0], options.water_colour[1],
+                                        options.water_colour[2], 1.0f);
+        block.atmosphere[1] = glm::vec4(0.7f * fog_end, fog_end, options.lamp_range, options.lamp);
+        block.atmosphere[2] = glm::vec4(options.ambient, options.fog_density, 0.0f, 0.0f);
+      }
+      block.atmosphere[2].z = options.rock_palette ? 1.0f : 0.0f;
       write_buffer(base, "camera_buffer", &block, sizeof(block));
 
       const VkDrawIndirectCommand surface_command{uint32_t(arena.high_water()), 1u, 0u, 0u};
@@ -1051,6 +1200,16 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
                     observer.key.x, observer.key.y, observer.key.z, world_camera.x, world_camera.y,
                     world_camera.z),
       };
+      if (options.lines) {
+        static constexpr std::array<const char*, 3> line_modes{"off", "depth", "x-ray"};
+        bool updating = false;
+        {
+          const std::lock_guard guard(line_box->lock);
+          updating = line_box->busy;
+        }
+        detail.push_back(std::format("lines {} ({}){} | L mode", world_lines.size(), line_modes[lines_mode],
+                                     updating ? ", updating" : ""));
+      }
       if (!tunables.empty()) {
         const auto& current = tunables[setting];
         detail.push_back(std::format("{} = {:.3f} [{:.2f}..{:.2f}] {}", current.range.name, current.value,
@@ -1087,6 +1246,32 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         ++profile.frames;
         profile.count(whole);
         profile.over_budget += whole > 16.6 ? 1 : 0;
+        if (options.realtime_flight && options.flight_speed > 0.0) {
+          if (!flight_started) {
+            bool loaded = true;
+            for (int64_t z = -initial_window.horizontal_radius; z <= initial_window.horizontal_radius; ++z)
+              for (int64_t y = -initial_window.vertical_radius; y <= initial_window.vertical_radius; ++y)
+                for (int64_t x = -initial_window.horizontal_radius; x <= initial_window.horizontal_radius; ++x)
+                  loaded &= streamer->present({initial_window.centre.x + x, initial_window.centre.y + y, initial_window.centre.z + z});
+            if (loaded) {
+              flight_started = true;
+              flight_began = std::chrono::steady_clock::now();
+              near_ready_seconds = std::chrono::duration<double>(flight_began - loading_began).count();
+            }
+          }
+          bool missing = false;
+          for (int z = -2; z <= 2; ++z) for (int y = -2; y <= 2; ++y) for (int x = -2; x <= 2; ++x) {
+            missing |= !streamer->present({observer.key.x + x, observer.key.y + y, observer.key.z + z});
+          }
+          if (flight_started) {
+            ++ready_flight_frames;
+            holed_flight_frames += missing;
+            active_over_budget += whole > 16.6;
+            active_frame_ms += whole;
+            active_frame_samples.push_back(whole);
+            active_worst_ms = std::max(active_worst_ms, whole);
+          }
+        }
         profile.final_used = arena.used();
         profile.final_holes = arena.hole_vertices();
         profile.final_drawn = arena.high_water();
@@ -1108,6 +1293,19 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
 
     vk::Device(device).waitIdle();
     profile.report();
+    if (options.realtime_flight && options.flight_speed > 0.0) {
+      const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - flight_began).count();
+      utils::info("GN03 real flight: {:.1f} m in {:.3f} s ({:.2f} m/s), initial window {:.3f} s, {} of {} later frames with a hole",
+                  flight_distance, seconds, flight_distance / std::max(seconds, 1e-9), near_ready_seconds,
+                  holed_flight_frames, ready_flight_frames);
+      std::sort(active_frame_samples.begin(), active_frame_samples.end());
+      const auto percentile = [&](double p) {
+        return active_frame_samples.empty() ? 0.0 : active_frame_samples[size_t(p * double(active_frame_samples.size()-1))];
+      };
+      utils::info("GN03 active frame percentiles: p50 {:.3f}, p95 {:.3f}, p99 {:.3f} ms",percentile(0.5),percentile(0.95),percentile(0.99));
+      utils::info("GN03 active flight frames: {} over budget, {:.3f} ms average, {:.3f} ms worst",
+                  active_over_budget, active_frame_ms / std::max<size_t>(1, ready_flight_frames), active_worst_ms);
+    }
     gpu.report();
     if (!options.dump_path.empty()) {
       dump_scene(base, options.dump_path);

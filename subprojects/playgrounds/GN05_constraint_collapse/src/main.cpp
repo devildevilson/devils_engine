@@ -6,18 +6,19 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
 
-#include "devils_engine/demiurg/module_system.h"
-#include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/playground/generator_resources.h"
 #include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/playground/cli.h"
 
 // GN05 — РАСКЛАДКА ПО ЖЁСТКИМ ЗАПРЕТАМ (wave function collapse).
 //
@@ -70,19 +71,15 @@ fs::path resource_root() {
 // Три генератора, один набор ресурсов. Лесенка тайлов у них общая — все три шага `table` указывают на
 // ОДИН файл, а не на три копии таблицы.
 struct generator_registry {
-  demiurg::module_system modules;
-  demiurg::resource_system resources;
+  playground::generator_resources source;
   originator::generator_config declared;
   originator::generator_config learned;
   originator::generator_config planet;
 
-  generator_registry() : modules(resource_root().generic_string() + "/") {
-    modules.load_modules({demiurg::module_system::list_entry{"gn05/", "", ""}});
-    originator::register_generator_resources(resources);
-    resources.parse_resources(&modules);
-    declared = originator::load_generator(resources, "generator/tiles");
-    learned = originator::load_generator(resources, "generator/learned");
-    planet = originator::load_generator(resources, "generator/planet");
+  generator_registry() : source(resource_root(), {{"gn05/", "", ""}}) {
+    declared = originator::load_generator(source.resources(), "generator/tiles");
+    learned = originator::load_generator(source.resources(), "generator/learned");
+    planet = originator::load_generator(source.resources(), "generator/planet");
   }
 };
 
@@ -107,53 +104,28 @@ std::string_view mode_name(const layout_mode mode) {
   }
 }
 
-bool starts_with(const std::string_view& text, const std::string_view& prefix) {
-  return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
-}
-
-options parse_options(const int argc, const char** argv) {
-  options result;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view argument = argv[i];
-    if (argument == "--verify") {
-      result.verify = true;
-    } else if (argument == "--no-frame") {
-      result.frame = false;
-    } else if (starts_with(argument, "--mode=")) {
-      const auto name = argument.substr(7);
-      if (name == "declared") result.mode = layout_mode::declared;
-      else if (name == "learned") result.mode = layout_mode::learned;
-      else if (name == "graph") result.mode = layout_mode::graph;
-      else utils::error{}("GN05: unknown mode '{}'", name);
-    } else if (starts_with(argument, "--size=")) {
-      result.side = std::stoul(std::string(argument.substr(7)));
-    } else if (starts_with(argument, "--seed=")) {
-      result.seed = std::stoull(std::string(argument.substr(7)));
-    } else if (starts_with(argument, "--rollbacks=")) {
-      result.rollbacks = std::stoll(std::string(argument.substr(12)));
-    } else if (starts_with(argument, "--window=")) {
-      result.window = std::stoll(std::string(argument.substr(9)));
-    } else if (starts_with(argument, "--dump=")) {
-      result.dump = std::string(argument.substr(7));
-    } else if (argument == "--help" || argument == "-h") {
-      std::cout << "GN05 constraint collapse lab\n"
-                << "  --mode=NAME     declared (по объявленным правилам), learned (по образцу), graph (по сфере)\n"
-                << "  --size=N        сторона растра (по умолчанию 96)\n"
-                << "  --seed=N        зерно пайплайна\n"
-                << "  --rollbacks=N   сколько откатов разрешить решателю (переопределяет конфиг)\n"
-                << "  --window=N      сторона окна обучения (переопределяет конфиг)\n"
-                << "  --no-frame      не обводить карту глубокой водой заранее\n"
-                << "  --verify        прогнать контрактные проверки всех трёх режимов\n"
-                << "  --dump=PATH     сохранить раскладку в PPM — ДЛЯ ГЛАЗА, не для конвейера\n";
-      std::exit(0);
-    } else {
-      utils::error{}("GN05: unknown argument '{}'", argument);
-    }
-  }
-  if (result.side < 2) {
-    utils::error{}("GN05: a raster smaller than two cells has no neighbours to constrain");
-  }
-  return result;
+std::optional<int> parse_options(const int argc, const char** argv, options& result) {
+  CLI::App app{"GN05 constraint collapse lab"};
+  app.option_defaults()->always_capture_default();
+  std::string mode = "declared";
+  bool no_frame = false;
+  app.add_flag("--verify", result.verify, "Проверить все три режима");
+  app.add_flag("--no-frame", no_frame, "Не обводить карту глубокой водой заранее");
+  app.add_option("--mode", mode, "Источник правил и соседства")
+    ->check(CLI::IsMember({"declared", "learned", "graph"}));
+  app.add_option("--size", result.side, "Сторона растра (не меньше двух клеток)")
+    ->check(CLI::Range(size_t(2), std::numeric_limits<size_t>::max()));
+  app.add_option("--seed", result.seed, "Зерно пайплайна");
+  app.add_option("--rollbacks", result.rollbacks, "Лимит откатов (-1 = из конфига)")
+    ->check(CLI::Range(int64_t(-1), std::numeric_limits<int64_t>::max()));
+  app.add_option("--window", result.window, "Окно обучения (-1 = из конфига)")
+    ->check(CLI::Range(int64_t(-1), std::numeric_limits<int64_t>::max()));
+  app.add_option("--dump", result.dump, "Сохранить раскладку в PPM");
+  if (auto code = playground::parse_cli(app, argc, argv)) return code;
+  result.frame = !no_frame;
+  if (mode == "learned") result.mode = layout_mode::learned;
+  else if (mode == "graph") result.mode = layout_mode::graph;
+  return std::nullopt;
 }
 
 originator::tool_registry& tools() {
@@ -635,7 +607,8 @@ int run_verify(const options& opts) {
 
 int main(const int argc, const char** argv) {
   try {
-    const auto opts = parse_options(argc, argv);
+    options opts;
+    if (auto code = parse_options(argc, argv, opts)) return *code;
     if (opts.verify) {
       return run_verify(opts);
     }

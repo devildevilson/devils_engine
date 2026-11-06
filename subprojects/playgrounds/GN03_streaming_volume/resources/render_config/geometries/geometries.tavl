@@ -6,3 +6,5 @@
 // экземпляр читается из storage-буфера по gl_InstanceIndex.
 { name = prop_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }
+// Линии тоже без вершинного буфера: вершина читается из storage-буфера по gl_VertexIndex.
+{ name = line_geometry, vertex_layout = "", index_type = none, topology = line_list, restart = false }

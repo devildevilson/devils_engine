@@ -289,3 +289,11 @@ boundary на localhost; in-memory тесты — детерминированн
 зафиксирован воспроизводимым тестом и `NETWORKING_STATUS.md`; если расходится сам тест, исправлять
 ожидание только после проверки направления данных, ownership и порядка события — здесь уже был случай,
 когда неверным оказался тест epoch orientation, а код был прав.
+
+## Актуализация карты 2026-11-07
+
+`subprojects/frontier_online` — ещё один consumer session/authority/follower; его текущая
+композиция и live runtime принадлежат проекту. Она не означает появления общего NetworkManager.
+Очередь мета-работ — [TASKS.md](../../TASKS.md), общий аудит —
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические записи в прежнем корневом AGENTS
+перенесены без потерь в [архив](../../docs/history/README.md).

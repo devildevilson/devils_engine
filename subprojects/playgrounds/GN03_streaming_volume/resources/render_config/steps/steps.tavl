@@ -20,6 +20,20 @@
   command = "draw constant prop_draw"
 }
 {
+  name = draw_lines_xray
+  material = line_xray_material
+  geometry = line_geometry
+  sets = [ line_data ]
+  command = "draw constant line_xray_draw"
+}
+{
+  name = draw_lines
+  material = line_material
+  geometry = line_geometry
+  sets = [ line_data ]
+  command = "draw constant line_draw"
+}
+{
   name = draw_overlay
   material = ui_material
   geometry = ui_geometry

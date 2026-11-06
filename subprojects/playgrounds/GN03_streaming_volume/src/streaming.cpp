@@ -1,5 +1,7 @@
 #include "streaming.h"
 
+#include <chrono>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -8,6 +10,12 @@
 #include <tuple>
 
 #include "devils_engine/utils/core.h"
+
+#if defined(__linux__)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace devils_engine::gn03 {
 
@@ -88,7 +96,8 @@ size_t chunk_streamer::key_hash::operator()(const originator::chunk_key& key) co
   return chunk_key_hash{}(key);
 }
 
-chunk_streamer::chunk_streamer(generator_factory factory, const size_t worker_count) : factory_(std::move(factory)) {
+chunk_streamer::chunk_streamer(generator_factory factory, const size_t worker_count, chunk_prefetcher prefetcher) :
+  factory_(std::move(factory)), prefetcher_(std::move(prefetcher)) {
   if (!factory_) {
     utils::error{}("GN03 streamer needs a generator factory");
   }
@@ -193,12 +202,39 @@ void chunk_streamer::set_window(const chunk_window& window) {
   wake_.notify_all();
 }
 
-bool chunk_streamer::next_request(originator::chunk_key& key) {
+void chunk_streamer::set_prefetch(const std::vector<originator::chunk_key>& keys) {
+  if (!prefetcher_) return;
+  {
+    const std::lock_guard lock(mutex_);
+    prefetch_.clear();
+    // Помнить подготовленное вечно незачем: повтор — это попадания в кэш производителей.
+    if (prefetched_.size() > 65536) prefetched_.clear();
+    for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
+      if (!prefetched_.contains(*it) && !state_.contains(*it)) prefetch_.push_back(*it);
+    }
+  }
+  wake_.notify_all();
+}
+
+bool chunk_streamer::next_request(originator::chunk_key& key, bool& prefetch, std::function<void()>& task) {
   std::unique_lock lock(mutex_);
-  wake_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
+  wake_.wait(lock, [this] { return stopping_ || !tasks_.empty() || !pending_.empty() || !prefetch_.empty(); });
   if (stopping_) {
     return false;
   }
+  if (!tasks_.empty()) {
+    task = std::move(tasks_.front());
+    tasks_.pop_front();
+    return true;
+  }
+  if (pending_.empty()) {
+    key = prefetch_.back();
+    prefetch_.pop_back();
+    prefetched_[key] = 1;
+    prefetch = true;
+    return true;
+  }
+  prefetch = false;
   key = pending_.back();
   pending_.pop_back();
   state_[key] = uint8_t(chunk_state::in_flight);
@@ -207,6 +243,11 @@ bool chunk_streamer::next_request(originator::chunk_key& key) {
 }
 
 void chunk_streamer::worker_loop() {
+#if defined(__linux__)
+  // Генерация — фоновая работа: её потоки уступают главному (ввод, кадр). Без этого при всех ядрах в
+  // генерации кадр ждал планировщика и выходил за 16.6 мс. Неудача (нет прав) — не ошибка.
+  setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 10);
+#endif
   // Тело генерации создаётся ВНУТРИ потока: у пайплайна свои буферы, у хоста скриптов свой
   // sol::state, и оба живут ровно столько, сколько живёт поток.
   chunk_generator generate;
@@ -220,7 +261,24 @@ void chunk_streamer::worker_loop() {
 
   originator::chunk_key key{};
   chunk_mesh mesh;
-  while (next_request(key)) {
+  bool prefetch = false;
+  std::function<void()> task;
+  while (next_request(key, prefetch, task)) {
+    if (task) {
+      task();
+      task = {};
+      continue;
+    }
+    if (prefetch) {
+      const auto started = std::chrono::steady_clock::now();
+      prefetcher_(key);
+      const double milliseconds =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+      const std::lock_guard lock(mutex_);
+      ++totals_.prefetched;
+      totals_.prefetch_milliseconds += milliseconds;
+      continue;
+    }
     mesh.vertices.clear();
     mesh.key = key;
     generate(key, mesh);
@@ -241,6 +299,20 @@ void chunk_streamer::worker_loop() {
     ready_.push_back(std::move(mesh));
     mesh = chunk_mesh{};
   }
+}
+
+void chunk_streamer::submit(std::function<void()> task) {
+  {
+    const std::lock_guard lock(mutex_);
+    tasks_.push_back(std::move(task));
+  }
+  wake_.notify_one();
+}
+
+bool chunk_streamer::present(const originator::chunk_key& key) const {
+  const std::lock_guard lock(mutex_);
+  const auto found = state_.find(key);
+  return found != state_.end() && chunk_state(found->second) == chunk_state::present;
 }
 
 bool chunk_streamer::pop_ready(chunk_mesh& out) {

@@ -1,6 +1,7 @@
 #version 450
 
 #include "camera_block.glsl"
+#include "atmosphere.glsl"
 
 layout(location = 0) in vec2 in_ndc;
 
@@ -12,6 +13,11 @@ layout(location = 0) out vec4 out_colour;
 // по-разному, край окна чанков был виден как полоса другого оттенка, то есть ровно то, что площадка
 // проверяет глазами, ломалось самой картинкой.
 void main() {
+  // Под водой фон ровно цвета воды: туман уходит именно в него, и край окна не виден.
+  if (atmosphere_underwater()) {
+    out_colour = vec4(camera.atmosphere[0].rgb, 1.0);
+    return;
+  }
   // Направление луча: точка ближней плоскости минус камера. Ближняя, а не дальняя, потому что
   // проекция обратная и бесконечная — у дальней плоскости w обращается в ноль.
   const vec4 near_point = camera.inverse_view_projection * vec4(in_ndc, 1.0, 1.0);

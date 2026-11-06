@@ -13,8 +13,7 @@
 #include <string_view>
 #include <vector>
 
-#include "devils_engine/demiurg/module_system.h"
-#include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/playground/generator_resources.h"
 #include "devils_engine/originator/computation_queue.h"
 #include "devils_engine/originator/script_translate.h"
 #include "devils_engine/originator/generator_resource.h"
@@ -25,6 +24,7 @@
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/thread/atomic_pool.h"
+#include "devils_engine/playground/cli.h"
 
 // GN01 — первая площадка кампании генератора.
 //
@@ -74,15 +74,11 @@ fs::path resource_root() {
 // Генератор приезжает через demiurg: хост знает одно имя, `generator/contract`, а что этот генератор
 // разложен на документ значений, документ буферов и папку скриптов — знает сама точка входа.
 struct generator_registry {
-  demiurg::module_system modules;
-  demiurg::resource_system resources;
+  playground::generator_resources source;
   originator::generator_config config;
 
-  generator_registry() : modules(resource_root().generic_string() + "/") {
-    modules.load_modules({demiurg::module_system::list_entry{"gn01/", "", ""}});
-    originator::register_generator_resources(resources);
-    resources.parse_resources(&modules);
-    config = originator::load_generator(resources, "generator/contract");
+  generator_registry() : source(resource_root(), {{"gn01/", "", ""}}) {
+    config = originator::load_generator(source.resources(), "generator/contract");
   }
 };
 
@@ -91,61 +87,25 @@ const generator_registry& generator() {
   return registry;
 }
 
-bool starts_with(const std::string_view& text, const std::string_view& prefix) {
-  return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
-}
-
-options parse_options(const int argc, const char** argv) {
-  options result;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view argument = argv[i];
-    if (argument == "--verify") {
-      result.verify = true;
-    } else if (argument == "--profile") {
-      result.profile = true;
-    } else if (argument == "--bench") {
-      result.bench = true;
-    } else if (argument == "--bench-queue") {
-      result.bench_queue = true;
-    } else if (argument == "--translate") {
-      result.translate = true;
-    } else if (argument == "--quiet") {
-      result.quiet = true;
-    } else if (starts_with(argument, "--size=")) {
-      result.width = size_t(std::stoull(std::string(argument.substr(7))));
-    } else if (starts_with(argument, "--chunked=")) {
-      result.chunks = size_t(std::stoull(std::string(argument.substr(10))));
-    } else if (starts_with(argument, "--sites=")) {
-      result.sites = size_t(std::stoull(std::string(argument.substr(8))));
-    } else if (starts_with(argument, "--threads=")) {
-      result.threads = size_t(std::stoull(std::string(argument.substr(10))));
-    } else if (starts_with(argument, "--seed=")) {
-      result.seed = std::stoull(std::string(argument.substr(7)));
-    } else if (starts_with(argument, "--layout=")) {
-      const auto value = argument.substr(9);
-      result.layout = originator::parse_storage_kind(value);
-      if (result.layout >= originator::storage_kind::count) {
-        utils::error{}("GN01: unknown layout '{}', expected aos or soa", value);
-      }
-    } else if (argument == "--help" || argument == "-h") {
-      std::cout << "GN01 generator contract lab\n"
-                << "  --size=N       ширина квадратной сетки (по умолчанию 1024)\n"
-                << "  --sites=N      число сайтов областей (по умолчанию 256)\n"
-                << "  --chunked=N    сверить генерацию по NxN чанкам с картой целиком\n"
-                << "  --layout=aos|soa  раскладка буфера cells\n"
-                << "  --threads=N    число рабочих потоков (0 = по числу ядер)\n"
-                << "  --seed=N       зерно пайплайна\n"
-                << "  --verify       прогнать контрактные проверки\n"
-                << "  --profile      замерить, куда уходят часы и что годно к устройству\n"
-                << "  --bench        замерить уровни исполнения\n"
-                << "  --bench-queue  замерить слияние проходов очереди\n"
-                << "  --translate    напечатать перевод правила ds в шейдер\n";
-      std::exit(0);
-    } else {
-      utils::error{}("GN01: unknown argument '{}'", argument);
-    }
-  }
-  return result;
+std::optional<int> parse_options(const int argc, const char** argv, options& result) {
+  CLI::App app{"GN01 generator contract lab"};
+  app.option_defaults()->always_capture_default();
+  std::string layout = "soa";
+  app.add_flag("--verify", result.verify, "Прогнать контрактные проверки");
+  app.add_flag("--profile", result.profile, "Учёт исполнения и готовности к устройству");
+  app.add_flag("--bench", result.bench, "Замерить уровни исполнения");
+  app.add_flag("--bench-queue", result.bench_queue, "Замерить слияние проходов очереди");
+  app.add_flag("--translate", result.translate, "Напечатать перевод ds в шейдер");
+  app.add_flag("--quiet", result.quiet, "Сократить отчёт");
+  app.add_option("--size", result.width, "Ширина квадратной сетки")->check(CLI::PositiveNumber);
+  app.add_option("--chunked", result.chunks, "Число делений карты по стороне (0 = без чанков)");
+  app.add_option("--sites", result.sites, "Число сайтов областей")->check(CLI::PositiveNumber);
+  app.add_option("--threads", result.threads, "Рабочие потоки (0 = по числу ядер)");
+  app.add_option("--seed", result.seed, "Зерно пайплайна");
+  app.add_option("--layout", layout, "Раскладка буфера cells")->check(CLI::IsMember({"aos", "soa"}));
+  if (auto code = playground::parse_cli(app, argc, argv)) return code;
+  result.layout = originator::parse_storage_kind(layout);
+  return std::nullopt;
 }
 
 // Загружает пайплайн из конфига и подставляет размеры, известные только в рантайме.
@@ -214,7 +174,7 @@ void load_bodies(originator::script_host& host, const originator::pipeline_descr
 // и lua-двойник правила шагом не является, поэтому точка входа его не называет.
 const std::string& classify_lua_body() {
   static const std::string text =
-    originator::read_generator_source(generator().resources, "generator/scripts/classify_lua");
+    originator::read_generator_source(generator().source.resources(), "generator/scripts/classify_lua");
   return text;
 }
 
@@ -1460,7 +1420,8 @@ int run_once(const options& opts) {
 
 int main(const int argc, const char** argv) {
   try {
-    const auto opts = parse_options(argc, argv);
+    options opts;
+    if (auto code = parse_options(argc, argv, opts)) return *code;
     if (opts.verify) {
       return run_verify(opts);
     }

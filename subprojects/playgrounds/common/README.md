@@ -27,3 +27,18 @@
 Первый consumer — `PF01_forward_plus`. Новая механика переносится сюда только когда она действительно
 является лабораторной оболочкой, а не особенностью renderer feature. Feature manifests, shaders и
 project look остаются у своих лабораторий.
+
+## Headless targets
+
+- `devils_engine::playground_cli`: CLI11 v2.7.2, pinned commit в корневом CMake, и
+  `devils_engine/playground/cli.h`. Consumer описывает options непосредственно через CLI11;
+  `parse_cli` возвращает optional exit code (help 0 / parse refusal 2) без `std::exit`.
+- `devils_engine::playground_generator`: `generator_resources.h`, владелец modules + resource
+  registry с безопасным порядком destruction. Consumer сам выбирает modules/generator IDs,
+  overrides, tool registration, pipeline либо chain.
+
+Эти interface targets не зависят от `playground_common`, visage или Vulkan. GN01 и GN05 —
+первые два consumer. CLI schema остаётся в executable; общий механизм не задаёт игру, семантику
+seed или выбор CPU/device. Для нового option добавлять описание в CLI11, не отдельную строку
+ручного help. Тест executable boundary — `common/tests/cli_contract.py`, CTest
+`playground_cli_contract`. Остальные площадки переносятся по [TASKS.md](../../../TASKS.md).

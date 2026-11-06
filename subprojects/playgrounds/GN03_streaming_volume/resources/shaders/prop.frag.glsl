@@ -1,6 +1,7 @@
 #version 450
 
 #include "camera_block.glsl"
+#include "atmosphere.glsl"
 
 layout(location = 0) in vec3 in_normal;
 layout(location = 1) in vec3 in_position;
@@ -32,6 +33,9 @@ void main() {
     // Собственное свечение, потому что кристалл стоит под сводом, куда солнце не приходит вовсе: без
     // него сущность в пещере не отличается от черноты, а ради неё пещеру и стоит осматривать.
     glow = 0.35;
+  } else if (kind == 3u) {
+    albedo = vec3(0.53, 0.28, 0.38); // кладка/гнездовой нарост GN09
+    glow = 0.12;
   }
 
   if (marked) {
@@ -41,14 +45,9 @@ void main() {
     glow = 0.5;
   }
 
-  const float sun = max(dot(normal, camera.sun_direction.xyz), 0.0);
-  const float sky = 0.5 + 0.5 * normal.y;
-  const vec3 light = vec3(1.0, 0.96, 0.88) * sun + camera.sky_colour.rgb * sky * 0.45;
+  const vec3 light = atmosphere_light(normal, in_position);
   vec3 colour = albedo * light + albedo * glow;
-
-  const float distance_to_camera = length(camera.camera_position.xyz - in_position);
-  const float fog = clamp(pow(distance_to_camera / max(camera.params.y, 1.0), 2.2), 0.0, 1.0);
-  colour = mix(colour, camera.sky_colour.rgb, fog);
+  colour = atmosphere_fog(colour, in_position);
 
   out_colour = vec4(colour, 1.0);
 }

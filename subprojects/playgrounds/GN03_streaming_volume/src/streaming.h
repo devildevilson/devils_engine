@@ -202,6 +202,8 @@ struct streamer_stats {
   double last_milliseconds = 0.0;
   double total_milliseconds = 0.0;
   size_t largest_chunk_vertices = 0;
+  size_t prefetched = 0;          // ключей опережения подготовлено
+  double prefetch_milliseconds = 0.0;
 };
 
 // Тело генерации одного чанка. Создаётся ОДИН раз на рабочий поток: у пайплайна свои буферы, у
@@ -209,10 +211,13 @@ struct streamer_stats {
 // перевыделяет, поэтому поток считает тысячи чанков без единой аллокации в пайплайне.
 using chunk_generator = std::function<void(const originator::chunk_key&, chunk_mesh&)>;
 using generator_factory = std::function<chunk_generator()>;
+// Опережение: готовит ЗАВИСИМОСТИ чанка (не сам чанк) впереди окна по ходу камеры. Вызывается из
+// рабочих потоков, когда окно разобрано; обязано быть потокобезопасным.
+using chunk_prefetcher = std::function<void(const originator::chunk_key&)>;
 
 class chunk_streamer {
 public:
-  chunk_streamer(generator_factory factory, size_t worker_count);
+  chunk_streamer(generator_factory factory, size_t worker_count, chunk_prefetcher prefetcher = {});
   ~chunk_streamer();
 
   chunk_streamer(const chunk_streamer&) = delete;
@@ -233,18 +238,34 @@ public:
   // потерянный между ними чанк выглядел бы как дырка в мире без единого сообщения.
   void forget(const originator::chunk_key& key);
 
+  // Ключи опережения по срочности (первый — самый срочный). Окно всегда важнее: опережение берётся,
+  // только когда очередь окна пуста. Уже подготовленные ключи пропускаются.
+  void set_prefetch(const std::vector<originator::chunk_key>& keys);
+
+  // Чанк посчитан и отдан потребителю (лежит в арене или пуст).
+  bool present(const originator::chunk_key& key) const;
+
+  // Фоновая задача на рабочих потоках стримера (вместо отдельного потока на каждый запрос): берётся
+  // раньше чанков — такие задачи редки и коротки, а под непрерывный поток чанков иначе не попали бы
+  // никогда. Задачи, не начатые к разрушению стримера, отбрасываются: их владелец узнаёт об этом сам.
+  void submit(std::function<void()> task);
+
   streamer_stats stats() const;
 
 private:
   void worker_loop();
-  bool next_request(originator::chunk_key& key);
+  // true — чанк окна, false в `prefetch` — ключ опережения, непустая `task` — фоновая задача; возврат
+  // false — остановка.
+  bool next_request(originator::chunk_key& key, bool& prefetch, std::function<void()>& task);
 
   struct key_hash {
     size_t operator()(const originator::chunk_key& key) const noexcept;
   };
 
   generator_factory factory_;
+  chunk_prefetcher prefetcher_;
   std::vector<std::thread> workers_;
+  std::vector<originator::chunk_key> prefetch_; // последний — самый срочный
 
   mutable std::mutex mutex_;
   std::condition_variable wake_;
@@ -254,9 +275,11 @@ private:
   std::vector<originator::chunk_key> pending_; // отсортированы: последний — самый близкий
   std::unordered_map<originator::chunk_key, uint8_t, key_hash> state_;
   std::deque<chunk_mesh> ready_;
+  std::deque<std::function<void()>> tasks_;
   std::vector<originator::chunk_key> evicted_;
   size_t in_flight_ = 0;
   size_t present_ = 0;
+  std::unordered_map<originator::chunk_key, uint8_t, key_hash> prefetched_;
   streamer_stats totals_{};
 };
 

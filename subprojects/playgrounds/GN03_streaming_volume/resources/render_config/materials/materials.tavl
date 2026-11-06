@@ -24,6 +24,20 @@
   depth = { test = true, write = true, compare = greater }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
+// Отладочные линии видны поверх пещеры двумя проходами: тусклый — без глубины, сквозь стены;
+// яркий — с глубиной, но без записи, чтобы не заслонять себя и рельеф.
+{
+  name = line_xray_material
+  shaders = { vertex = "line.vert.glsl", fragment = "line_xray.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = line_material
+  shaders = { vertex = "line.vert.glsl", fragment = "line.frag.glsl" }
+  depth = { test = true, write = false, compare = greater_or_equal }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
 {
   name = ui_material
   shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }

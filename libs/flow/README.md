@@ -202,7 +202,7 @@ playback speed и т.п.
 - накапливать UV delta и truncation итогового значения;
 - отдавать `sprite_sample` без знания о GPU/render internals.
 
-Покрытие: `tests/flow_test.cpp` проверяет directional buckets, action-on-entry,
+Покрытие: `subprojects/tests/flow_test.cpp` проверяет directional buckets, action-on-entry,
 переходы по `next`, UV accumulation/truncation, zero-duration chains и `.tavl`
 парсинг.
 
@@ -210,18 +210,19 @@ playback speed и т.п.
 
 Основной техдолг:
 
-- решить базовую модель времени: gameplay tick, render time, local clip time;
+- развивать time policy новых consumers поверх уже разделённых `presentation_playback`
+  (`elapsed_mcs`) и `gameplay_playback` (`elapsed_ticks`); разделение уже реализовано;
 - расширить 2D/2.5D модель после подключения к реальным sprite/image ресурсам;
 - описать 3D skeletal clip model;
-- определить формат animation resources и связь с `demiurg`;
+- расширять существующий TAVL animation resource и связь с `demiurg` при появлении новых clip types;
 - определить ECS components для текущего animation state;
 - сделать mapping из `mood` state в `flow` animation state;
 - добавить interpolation/blending/crossfade;
-- добавить animation callbacks через `act`;
-- определить, какие callbacks можно исполнять на render thread, а какие должны
-  публиковаться как intents/messages;
+- подключать новые gameplay consumers к action events; runtime не вызывает `act` из render thread;
+- сохранять разделение presentation sampling и gameplay action publication;
 - спроектировать GPGPU path для bone matrices и batched animation;
-- добавить тесты для sequence stepping, loops, callbacks и time sampling.
+- расширять `flow_test` вместе с новыми sampling/blending contracts; базовые stepping, loops,
+  action-on-entry и time split уже покрыты.
 
 Граница библиотеки должна быть такой: `flow` отвечает за визуальную
 интерпретацию состояний во времени. Gameplay state и правила переходов остаются

@@ -1,6 +1,7 @@
 #version 450
 
 #include "camera_block.glsl"
+#include "atmosphere.glsl"
 
 layout(location = 0) in vec3 in_normal;
 // Позиция ОТНОСИТЕЛЬНО ЧАНКА КАМЕРЫ, а не мировая: мировых координат в кадре нет вовсе. Для всего,
@@ -45,17 +46,55 @@ void main() {
 
   // Уклон поверх биома: пол своего цвета, стена и потолок серее. Уклон отвечает на вопрос «пол это
   // или стена», а биом — «какой это край мира», и это два разных вопроса.
-  const vec3 steep_colour = mix(biome_colour, vec3(0.38, 0.35, 0.31), 0.65); // стена
-  const vec3 cliff_colour = mix(biome_colour, vec3(0.20, 0.19, 0.18), 0.80); // потолок и обрыв
+  // ПАЛИТРА ПОРОДЫ (GN09): оттенок — номер вида полости, поверхность у границы двух
+  // пещер меняет цвет скачком, ровно где начинается другая полость. Номера совпадают с
+  // gn09::rock_kind. Уклон здесь серит слабее: стены — большая часть пещеры, и сильное
+  // смешение с серым стёрло бы различие видов.
+  const bool palette = camera.atmosphere[2].z > 0.5;
+  const int code = int(round(in_shade * 127.0));
+  float wall_grey = 0.65, cliff_grey = 0.80;
+  if (palette && code < 112) {
+    const vec3 rock[11] = vec3[11](
+      vec3(0.40, 0.38, 0.35),  // background
+      vec3(0.58, 0.55, 0.48),  // karst: светлый известняк
+      vec3(0.33, 0.39, 0.47),  // rift: синеватый сланец
+      vec3(0.60, 0.40, 0.24),  // chimney: охра
+      vec3(0.70, 0.62, 0.42),  // base_cavern: песчаник у базы
+      vec3(0.30, 0.36, 0.34),  // hall: тёмный базальт
+      vec3(0.58, 0.25, 0.19),  // ore_cave: железистая красная
+      vec3(0.35, 0.47, 0.22),  // nest_cave: оливковая, органика
+      vec3(0.78, 0.71, 0.33),  // thermal_cave: серная
+      vec3(0.47, 0.38, 0.55),  // pocket: фиолетово-серая
+      vec3(0.46, 0.46, 0.46)); // station_cut: срез под станцию
+    biome_colour = rock[clamp(code, 0, 10)];
+    wall_grey = 0.25;
+    cliff_grey = 0.45;
+  }
+  const vec3 steep_colour = mix(biome_colour, vec3(0.38, 0.35, 0.31), wall_grey); // стена
+  const vec3 cliff_colour = mix(biome_colour, vec3(0.20, 0.19, 0.18), cliff_grey); // потолок и обрыв
   vec3 albedo = mix(biome_colour, steep_colour, smoothstep(0.15, 0.65, slope));
   albedo = mix(albedo, cliff_colour, smoothstep(0.80, 1.35, slope));
 
-  const float sun = max(dot(normal, camera.sun_direction.xyz), 0.0);
-  // Полусферическое небо вместо постоянной подсветки: без него дно пещеры и северный склон
-  // одинаково черны, и рельефа в тени не видно вовсе.
-  const float sky = 0.5 + 0.5 * normal.y;
-  const vec3 light = vec3(1.0, 0.96, 0.88) * sun + camera.sky_colour.rgb * sky * 0.45;
+  const vec3 light = atmosphere_light(normal, in_position);
   vec3 colour = albedo * light;
+
+  // GN09 отдаёт построенные поверхности в свободном конце ленты оттенков (>0.875;
+  // природные биомы GN03 заканчиваются на 0.86). Их заметный материал и мягкая
+  // служебная подсветка позволяют отличать станцию от окружающей скалы в пещере.
+  if (in_shade > 0.875) {
+    const float steel = smoothstep(0.91, 0.97, in_shade);
+    const vec3 built = mix(vec3(0.51, 0.34, 0.27), vec3(0.40, 0.58, 0.67), steel);
+    // Под водой служебный свет станции слабее: она маяк в темноте, а не освещённый фасад.
+    const float service = atmosphere_underwater() ? 0.22 : 0.48;
+    colour = built * max(light, vec3(service));
+    if (in_shade > 0.98) colour = vec3(0.74, 0.55, 0.23) * max(light, vec3(service + 0.07));
+    // Стекло (GN09, 113): непрозрачная панель с отблеском — свет помещения изнутри и
+    // блик по краю взгляда. Прозрачности в этом проходе нет.
+    if (palette && code == 113) {
+      const float fresnel = pow(1.0 - abs(dot(normal, view_direction)), 3.0);
+      colour = vec3(0.16, 0.36, 0.42) * max(light, vec3(service + 0.10)) + vec3(0.55, 0.75, 0.80) * fresnel * 0.6;
+    }
+  }
 
   // Сетка чанков по требованию. Она и есть отладочное представление этой площадки: шов, если он
   // есть, лежит ровно на этих плоскостях, и без сетки «полоса на склоне» неотличима от рельефа.
@@ -84,9 +123,7 @@ void main() {
   // Туман до самой границы окна чанков: дальность приходит из окна, а цвет — тот же, что у неба у
   // горизонта. Иначе край мира виден как обрыв в пустоту, и «успевает ли мир строиться» становится
   // вопросом про туман, а не про генератор.
-  const float distance_to_camera = length(camera.camera_position.xyz - in_position);
-  const float fog = clamp(pow(distance_to_camera / max(camera.params.y, 1.0), 2.2), 0.0, 1.0);
-  colour = mix(colour, camera.sky_colour.rgb, fog);
+  colour = atmosphere_fog(colour, in_position);
 
   out_colour = vec4(colour, 1.0);
 }

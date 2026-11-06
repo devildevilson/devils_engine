@@ -34,6 +34,7 @@
 | расширяемые процедуры локальной геометрии мотивов и общая проверка выпуклых частей | `include/.../motif_geometry.h` |
 | lua-хост, биндинги, бюджет | `include/.../script_host.h` |
 | `devils_script` над буфером | `include/.../script_program.h` |
+| columnar ds и формы, заданные ds | `include/.../script_column.h`, `script_shape.h` |
 | куда уходят часы и что годно к устройству | `include/.../execution_profile.h` |
 | перевод `ds` -> GLSL, что переводится и где расходятся пути | `include/.../script_translate.h` |
 | FastNoise2 и jc_voronoi | `include/.../primitives.h` |
@@ -59,8 +60,9 @@
    середине очереди недопустимо.
 3. **Один способ выложить push-байты:** `device_call_header` + параметры по одному `float`. Второй
    шапки не заводить (она уже была и разъехалась).
-4. **Одна запись значения в поле:** `store_component`. Любой второй путь (в том числе перевод в GLSL)
-   обязан повторять её зажим и усечение.
+4. **Одна семантика записи значения:** `store_component` для числового пути, `store_integer` для
+   wide integer. Любой другой путь (в том числе перевод в GLSL) повторяет соответствующий зажим
+   и усечение; wide integer нельзя пропускать через double.
 5. **Быстрый путь только при точном совпадении рода**, не размера.
 5a. **Копия на устройстве — КЭШ, и она вправе быть ШИРЕ истины.** Узкий род живёт там 32-битным, а
    преобразование на границе делают те же `load_component`/`store_component`, что и на хосте. Не
@@ -178,8 +180,8 @@
 ## 4. Проверка
 
 ```
-cmake --build build-release -j 8            # ТОЛЬКО из корня репозитория
-cd build-release && ctest -R originator -j 4
+cmake --build build-release --target <focused_target> -j 8
+ctest --test-dir build-release -R originator --output-on-failure -j 4
 ```
 
 Сборка из подкаталога даёт ложное «utils/core.h: No such file or directory» во всех TU.
@@ -190,7 +192,7 @@ cd build-release && ctest -R originator -j 4
 | инструменты ядра/графа | `originator_tools_test`, `originator_scatter_test` |
 | скелет (явные списки точек и рёбер) | `originator_skeleton_test`, GN09 `--verify` (пещеры) |
 | цепочка генераторов, связанные буферы пайплайна, `step.links`/`step.key` | `originator_chain_test`, GN09 `--verify` |
-| поле из примитивов, `field_sample`/`field_march` | `originator_field_test`, GN09 `--verify` (сверка с `cave_density`) |
+| поле из примитивов, `field_sample`/`field_march` | `originator_field_test`, GN09 `--verify`; NEXT — `--verify-caves` (разные миры/контракты) |
 | соседство, общие ядра, `edge_csr`, `slope`/`vote` | `originator_neighbourhood_test`; дампы GN02 (`--dump`) побайтно до/после |
 | `marching_tetrahedra` | GN09 `--bench`: «0 surface vertices differ from the host mesh» и отпечаток чанков цепочки |
 | объём | `originator_volume_test` |
@@ -202,13 +204,13 @@ cd build-release && ctest -R originator -j 4
 | очередь, слияние | `originator_queue_test`, `originator_queue_lua_test` |
 | устройство | `originator_device_test`, `originator_device_queue_test` |
 | транслятор | `originator_translate_test` |
-| `ds` над буфером | `originator_script_test` |
+| `ds` над буфером | `originator_script_test`, `originator_column_test` |
 | разбор конфига, ресурсы | `originator_config_test`, `originator_pipeline_test` |
 
 Тесты с устройством сами проверяют `painter::compute_device_available()` и молча пропускают сверку,
 если GPU нет: зелёный прогон без устройства ничего не доказывает про GPU-путь.
 
-Живые потребители — площадки `subprojects/playgrounds/GN01..GN06`. У каждой свой `--verify`, и
+Живые потребители — GN01–GN06 и обе версии GN09. GN07 — отдельный experiment без линковки originator. У каждой свой `--verify`, и
 серьёзную правку разумно прогнать через них: они ловят то, чего не видит юнит-тест (иерархия
 названных мест, швы чанков, дыры в поверхности).
 
@@ -233,8 +235,8 @@ cd build-release && ctest -R originator -j 4
 - **Случайность на устройстве не равна CPU** (соль `ds` живёт в скомпилированном контейнере, хеш на
   GPU 32-битный). Не «чинить» это сверкой значений: сверять надо повторяемость и формулу на хосте.
 - **Прогон на ноутбуке меряет тепло.** Замеры — отдельным режимом, варианты чередуются, читать медиану.
-- **`view<>::operator[]` у demiurg** возвращает висячую ссылку; в этой библиотеке ходить через
-  `filter<T>`/`get<T>`.
+- **Demiurg views/pointers** требуют стабильного registry. `view<T>::operator[]` сейчас возвращает
+  `T*` по значению; прежняя запись о возврате висячей ссылки устарела. Через clear/reparse хранить handle.
 
 ---
 
@@ -252,3 +254,21 @@ cd build-release && ctest -R originator -j 4
 - **Числа в документации — измеренные.** Если числа нет, писать, что его нет, а не оценивать.
 - Порядок полей структур — по убыванию размера/выравнивания.
 - Не `std::map`: `std::vector` или `gtl::flat_hash_map`.
+
+## Актуализация 2026-11-07
+
+- Pipeline/queue остаются самостоятельными API: не переносить все лаборатории на chain ради формы.
+- `script_column.h` уже реализован: third consumer DS AST, VM fallback имеет отдельный контракт.
+  `select`/`value_or` вычисляют обе ветви; не переносить побочные эффекты в pure pointwise путь.
+- DS-вызов с круглыми скобками может быть операндом выражения (`sqrt(x) - 1`); прежний запрет
+  относился к форме `f = { ... }`. Элементы разделяются запятой или переводом строки.
+- `shapes` в документе chain и `add_script_kind` позволяют задавать формы через DS.
+  CPU wide kinds `d`/`ul`/`l` не требуют побитового совпадения с GPU и устройством отвергаются.
+- Роли natural/fill/cut и blend меняют composition поля; коробки влияния должны учитывать blend.
+- Decoded rows/views строятся без удержания instance lock и повторно проверяются при insert:
+  decoder может запросить view того же instance. Owning field handle нужен memoized sampler.
+- Cross-thread cycles chain недопустимы; same-thread cycle detection не доказывает отсутствие
+  межпоточного deadlock. Не добавлять внешний scheduler поверх parallel fan-in/helping waits.
+- Смена миров GN09 исторически разрешила изменение seed result; это не отменяет детерминизм
+  одного описания и независимость от порядка чанков. NEXT promises — в NEXT_CAVES_PLAN.md.
+- Новая очередь — [TASKS.md](../../TASKS.md), аудит — [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md).

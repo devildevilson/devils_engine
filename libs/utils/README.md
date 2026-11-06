@@ -262,9 +262,10 @@ back, elastic, bounce плюс linear) переводят долю пройде�
    `thread/channel/*` для `mailbox/spsc_queue/byte_ring/payload_channel` и
    `thread/pool/*` для `pool/stack_pool/atomic_pool`.
 
-4. Перенести serializer из `libs/aesthetics`.
-   Сделать в `utils` отдельный serializer для байтовых дампов C++ агрегатов, а в
-   `aesthetics` оставить ECS-специфичные адаптеры, список компонентов и события snapshot.
+4. Развивать уже перенесённый serializer по новым consumer contracts.
+   Перенос из `aesthetics` выполнен: canonical codec, section composition и sinks находятся
+   в `utils`; ECS-специфичные адаптеры и snapshot events остаются в `aesthetics`.
+   Не открывать перенос повторно; следующие задачи — migrations и owner-level save format.
 
 5. Сгруппировать аллокаторы по сценариям.
    Например `utils/memory/linear`, `utils/memory/pool`, `utils/memory/block`, плюс короткий

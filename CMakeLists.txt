@@ -423,6 +423,18 @@ FetchContent_Declare(
   OVERRIDE_FIND_PACKAGE
 )
 
+# CLI parsing is opt-in at the executable boundary; engine libraries do not inherit it.
+set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(CLI11_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  CLI11
+  GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+  GIT_TAG cbd58a3696887b34c70949aef21a71735a0c2ad5 # v2.7.2
+  GIT_SUBMODULES ""
+)
+
 #FetchContent_Declare(
 #  RE-flex
 #  GIT_REPOSITORY https://github.com/Genivia/RE-flex.git
@@ -644,7 +656,7 @@ function(protobuf_generate_cpp SRCS HDRS)
 endfunction()
 ]==])
 
-FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi JoltPhysics) # RE-flex
+FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest CLI11 cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi JoltPhysics) # RE-flex
 
 macro(install)
 endmacro()

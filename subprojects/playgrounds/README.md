@@ -2,6 +2,7 @@
 
 Здесь живут небольшие независимые площадки движка. Каждая лаборатория имеет код для сортировки,
 человеческое имя и собственный `README.md`. Текущая программа работ описана в корневом
+[TASKS.md](../../TASKS.md); история кампаний — в
 [`PLAYGROUNDS.md`](../../PLAYGROUNDS.md).
 
 ## Правила структуры
@@ -34,6 +35,14 @@
 | `PF08` | `PF08_weather_effects` | закрыта | погода, осадки, surface memory, lightning и aurora в динамически освещённом мире |
 | `PF09` | `PF09_territory_zoning` | активна | стриминг плоских игровых зон, проходы-рёбра и движение |
 | `PF10` | `PF10_functional_planet` | активна, high-res lightweight display + adjacency работают | displaced sphere, 4032-node land graph, mountain barriers, smooth borders/hydrology, surface text и selection |
+| `GN01` | `GN01_generator_contract` | закрытый contract fixture, обслуживается | pipeline, buffers, determinism; общий CLI/resources |
+| `GN02` | `GN02_planet_generator` | planet fixture, обслуживается | planet package, graph tools и viewer |
+| `GN03` | `GN03_streaming_volume` | streaming fixture, обслуживается | volume surface, arena, world memory; shell также используется GN09 |
+| `GN04` | `GN04_texture_generation` | device fixture | GPU queue; без GPU проверка может пропустить сверку |
+| `GN05` | `GN05_constraint_collapse` | constraint fixture, обслуживается | declared/learned/graph; общий CLI/resources |
+| `GN06` | `GN06_dungeon_layout` | граница среза описана в локальном AUDIT | structure, motifs, site layout |
+| `GN07` | `GN07_location_brief` | самостоятельный brief/graph/plan fixture | без зависимости от originator |
+| `GN09` | `GN09_local_adventure` | legacy world + NEXT, геометрия NEXT ждёт визуальной оценки | потоковый мир из макрографа, залов, пещер мест, станций и туннелей; лодка 34×12 м, генерация через originator/Lua/ds и окно GN03 |
 | `NET06` | `NET06_in_memory_transport` | закрыта | детерминированные delay/loss/reorder/duplicate/bandwidth/reconnect без сокетов |
 | `NET07` | `NET07_replication_baselines` | закрыта | explicit baseline/delta replication поверх fault laboratory |
 | `PHY01` | `PHY01_jolt_basics` | активна | Jolt runtime/world ownership, rigid bodies, queries, jobs и deterministic math probe |

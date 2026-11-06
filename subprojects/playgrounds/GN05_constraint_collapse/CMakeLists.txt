@@ -10,6 +10,8 @@ target_compile_definitions(GN05_constraint_collapse PRIVATE
   GN05_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources")
 
 target_link_libraries(GN05_constraint_collapse PRIVATE
+  devils_engine::playground_cli
+  devils_engine::playground_generator
   devils_engine::originator
   devils_engine::originator_config
   devils_engine::originator_lua
