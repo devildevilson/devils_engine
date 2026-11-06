@@ -1,0 +1,3 @@
+name = cave_inspect_home
+buffers = ./inspect_home_buffers.tavl
+steps = [ { name = home, body = ./05_inspect_home.lua, writes = [ cave_inspect_request ] } ]

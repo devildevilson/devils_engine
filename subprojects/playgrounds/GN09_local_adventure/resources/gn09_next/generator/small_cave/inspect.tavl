@@ -1,0 +1,3 @@
+name = cave_inspect
+buffers = ./inspect_buffers.tavl
+steps = [ { name = intersections, body = ./06_inspect.lua, reads = [ passages, cave_meta ], writes = [ cave_probe, cave_portals, cave_inspection ] } ]

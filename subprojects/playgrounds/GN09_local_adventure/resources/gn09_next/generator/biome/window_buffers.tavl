@@ -1,0 +1,1 @@
+{ name = biome_pixels, extent = [ biome_map_side, biome_map_side ], format = [ position = d3, kind = ui1, region = l2, blend = d1 ] }

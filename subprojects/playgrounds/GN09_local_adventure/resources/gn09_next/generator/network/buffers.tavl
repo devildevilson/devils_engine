@@ -1,0 +1,6 @@
+{ name = network_node, size = one, format = [ centre = d3, key = ul1, degree = ui1, biome = ui1, blend = d1, address = l2 ] }
+{ name = network_nodes, size = network_node_capacity, format = [ centre = d3, key = ul1, main = ui1, owner = l2 ] }
+{ name = network_edges, size = network_edge_capacity, format = [ a = ul1, b = ul1, route = ul1 ] }
+{ name = network_paths, size = network_edge_capacity, format = [ a = d3, b = d3, route = ul1 ] }
+{ name = network_routes, size = network_route_capacity, format = [ to = l2, ordinary = ui1, mandatory = ui1, key = ul1 ] }
+{ name = network_meta, size = one, format = [ nodes = ui1, edges = ui1, routes = ui1, degree = ui1 ] }

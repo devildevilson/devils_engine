@@ -1,0 +1,6 @@
+{
+ ctx_save = { dx = x-a_x, dy = y-a_y, dz = z-a_z, ex = b_x-a_x, ey = b_y-a_y, ez = b_z-a_z }
+ ctx_save = { t = min(1,max(0,(ctx:saved:dx*ctx:saved:ex+ctx:saved:dy*ctx:saved:ey+ctx:saved:dz*ctx:saved:ez)/(ctx:saved:ex*ctx:saved:ex+ctx:saved:ey*ctx:saved:ey+ctx:saved:ez*ctx:saved:ez+0.000001))) }
+ ctx_save = { qx = ctx:saved:dx-ctx:saved:ex*ctx:saved:t, qy = ctx:saved:dy-ctx:saved:ey*ctx:saved:t, qz = ctx:saved:dz-ctx:saved:ez*ctx:saved:t }
+ radius*(start+(finish-start)*ctx:saved:t)*(0.85+0.15*terrain_detail)-sqrt(ctx:saved:qx*ctx:saved:qx+ctx:saved:qy*ctx:saved:qy+ctx:saved:qz*ctx:saved:qz)
+}

@@ -1,0 +1,3 @@
+name = network
+buffers = ./buffers.tavl
+steps = [ { name = topology, body = ./01_topology.lua, reads = [ biome_sample ], writes = [ network_node, network_nodes, network_edges, network_paths, network_routes, network_meta ] } ]

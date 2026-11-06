@@ -1,0 +1,6 @@
+{
+ ctx_save = { dx = b_x-a_x, dy = b_y-a_y, dz = b_z-a_z, px = x-a_x, py = y-a_y, pz = z-a_z }
+ ctx_save = { t = clamp((ctx:saved:px*ctx:saved:dx+ctx:saved:py*ctx:saved:dy+ctx:saved:pz*ctx:saved:dz)/max(ctx:saved:dx*ctx:saved:dx+ctx:saved:dy*ctx:saved:dy+ctx:saved:dz*ctx:saved:dz,1e-12),0,1) }
+ ctx_save = { qx = ctx:saved:px-ctx:saved:t*ctx:saved:dx, qy = ctx:saved:py-ctx:saved:t*ctx:saved:dy, qz = ctx:saved:pz-ctx:saved:t*ctx:saved:dz }
+ sqrt(ctx:saved:qx*ctx:saved:qx+ctx:saved:qy*ctx:saved:qy+ctx:saved:qz*ctx:saved:qz)-radius
+}

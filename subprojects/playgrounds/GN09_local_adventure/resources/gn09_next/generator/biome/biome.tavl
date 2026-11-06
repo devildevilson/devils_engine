@@ -1,0 +1,3 @@
+name = biome
+buffers = ./buffers.tavl
+steps = [ { name = map, body = ./01_map.lua, writes = [ biome ] } ]

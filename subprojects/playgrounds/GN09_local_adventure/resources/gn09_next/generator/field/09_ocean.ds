@@ -1,0 +1,8 @@
+// One continuous seabed bowl, with a low coast and a broad smooth descent.
+{
+ ctx_save = { qx = (x-centre_x)/half_x, qz = (z-centre_z)/half_z }
+ ctx_save = { radial = ctx:saved:qx*ctx:saved:qx+ctx:saved:qz*ctx:saved:qz,
+              depth = max(0.1,depth*(1+0.12*terrain_broad)) }
+ ctx_save = { height = 0.5*(ctx:saved:depth+half_y)+0.5*(half_y-ctx:saved:depth)*sign(y-centre_y) }
+ (sqrt(ctx:saved:radial+(y-centre_y)*(y-centre_y)/(ctx:saved:height*ctx:saved:height))-1)*40+relief*(0.75*terrain_broad+0.25*terrain_detail)
+}

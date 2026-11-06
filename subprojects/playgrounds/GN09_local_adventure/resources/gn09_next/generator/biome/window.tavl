@@ -1,0 +1,3 @@
+name = biome_window
+buffers = ./window_buffers.tavl
+steps = [ { name = raster, body = ./05_window.lua, writes = [ biome_pixels ] } ]

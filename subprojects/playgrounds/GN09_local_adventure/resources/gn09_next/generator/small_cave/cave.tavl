@@ -1,0 +1,8 @@
+name = small_cave
+buffers = ./buffers.tavl
+shared_buffers = [ ../shared_geometry/passages.tavl ]
+steps = [
+ { name = graph, body = ./01_graph.lua, reads = [ cave_site ], writes = [ cave_nodes, cave_edges, cave_meta ] },
+ { name = passages, body = ./02_passages.lua, reads = [ cave_nodes, cave_edges ], writes = [ passages, cave_meta, cave_details, cave_detail_meta ] },
+ { name = chambers, body = ./03_chambers.lua, reads = [ cave_nodes ], writes = [ cave_chambers, cave_meta ] }
+]

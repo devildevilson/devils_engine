@@ -1,0 +1,3 @@
+name = small_cave_scope
+buffers = ./scope_buffers.tavl
+steps = [ { name = nearby_systems, body = ./04_scope.lua, writes = [ small_cave_keys, small_cave_count ] } ]

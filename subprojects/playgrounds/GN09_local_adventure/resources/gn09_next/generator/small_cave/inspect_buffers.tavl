@@ -1,0 +1,3 @@
+{ name = cave_probe, size = cave_probe_capacity, format = [ position = d3, value = d1 ] }
+{ name = cave_portals, size = cave_portal_capacity, format = [ position = d3, direction = d3 ] }
+{ name = cave_inspection, size = one, format = [ portals = ui1 ] }

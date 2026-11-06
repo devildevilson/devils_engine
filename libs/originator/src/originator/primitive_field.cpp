@@ -1,4 +1,5 @@
 #include "devils_engine/originator/primitive_field.h"
+#include "devils_engine/originator/field_surface.h"
 
 #include <algorithm>
 #include <cmath>
@@ -224,16 +225,16 @@ double smooth_max(const double a, const double b, const double blend) {
   return std::max(a, b) + h * h * blend * 0.25;
 }
 
-// Сложить значение формы своей роли с текущим: природная и вырез — минимум, заливка и вставка —
-// сглаженный максимум. Метка — у формы, которая победила.
+// Природная форма и вырез объединяются минимумом, заливка и вставка — максимумом.
+// Положительный blend скругляет стык; при нуле прежний точный порядок сохраняется.
 void combine(const shape_role role, const double blend, const double value, const uint32_t tag, double& best,
              uint32_t& best_tag) {
   if (role == shape_role::fill || role == shape_role::insert) {
     if (value > best) best_tag = tag;
     best = smooth_max(best, value, blend);
-  } else if (value < best) {
-    best = value;
-    best_tag = tag;
+  } else {
+    if (value < best) best_tag = tag;
+    best = blend > 0 ? -smooth_max(-best, -value, blend) : std::min(best, value);
   }
 }
 
@@ -532,6 +533,8 @@ void tool_field_march(const tool_call& call, const size_t, const size_t) {
 } // namespace
 
 void tool_registry::add_field_tools() {
+  add(tool_description{.name = "field_surface", .shape = aperture::sequential, .input_count = 2, .output_count = 4,
+                       .body = tool_field_surface, .footprint = field_surface_footprint});
   add(tool_description{.name = "field_sample", .shape = aperture::sequential, .input_count = 1, .output_count = 2,
                        .optional_outputs = 1, .body = tool_field_sample, .footprint = no_temporary_memory});
   add(tool_description{.name = "field_bound", .shape = aperture::sequential, .input_count = 1, .output_count = 3,

@@ -1,0 +1,6 @@
+{ name = details, size = feature_capacity, format = [ a = d3, b = d3, radius = d1, start = d1, finish = d1, tag = ui1 ] }
+{ name = heaps, size = feature_capacity, format = [ centre = d3, half = d3, angular = d1, phase = d1, tilt = d2, tag = ui1 ] }
+{ name = roots, size = feature_capacity, format = [ position = d3, direction = d3, radius = d1 ] }
+{ name = probes, size = feature_probe_capacity, format = [ position = d3, value = d1, raw = d1 ] }
+{ name = attempts, size = feature_capacity, format = [ origin = d3, direction = d3, radius = d1, source = ui1, end = ui1 ] }
+{ name = features_meta, size = one, format = [ details = ui1, heaps = ui1, roots = ui1, attempts = ui1, probes = ui1, rejected = ui1, curtains = ui1, severed = ui1 ] }

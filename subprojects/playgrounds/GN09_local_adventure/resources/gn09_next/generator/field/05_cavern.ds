@@ -1,0 +1,4 @@
+{
+ ctx_save = { qx = (x-centre_x)/half_x, qy = (y-centre_y)/half_y, qz = (z-centre_z)/half_z }
+ (sqrt(ctx:saved:qx*ctx:saved:qx+ctx:saved:qy*ctx:saved:qy+ctx:saved:qz*ctx:saved:qz)-1)*min(half_x,min(half_y,half_z))+relief*(0.7*terrain_broad+0.3*terrain_detail)
+}

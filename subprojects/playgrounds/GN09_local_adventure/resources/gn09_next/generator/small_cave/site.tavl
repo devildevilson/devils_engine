@@ -1,0 +1,3 @@
+name = cave_site
+buffers = ./site_buffers.tavl
+steps = [ { name = rock_volume, body = ./00_site.lua, writes = [ cave_site_probe, cave_site ] } ]

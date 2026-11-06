@@ -317,8 +317,9 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
     for (size_t l = 0; l < points.count; ++l) points.tags[l] = uint32_t(tag);
   };
   words.add_kind_batch(shape.name, std::move(decode), std::move(batch));
-  if (shape.role == "fill") words.set_role(shape.name, shape_role::fill, shape.blend);
-  else if (shape.role == "cut") words.set_role(shape.name, shape_role::cut);
+  if (shape.role.empty()) words.set_role(shape.name, shape_role::natural, shape.blend);
+  else if (shape.role == "fill") words.set_role(shape.name, shape_role::fill, shape.blend);
+  else if (shape.role == "cut") words.set_role(shape.name, shape_role::cut, shape.blend);
   else if (shape.role == "insert") words.set_role(shape.name, shape_role::insert, shape.blend);
 }
 

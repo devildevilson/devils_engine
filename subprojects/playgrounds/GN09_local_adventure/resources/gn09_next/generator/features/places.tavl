@@ -1,0 +1,3 @@
+name = feature_place_collect
+buffers = ./collect_buffers.tavl
+steps = [ { name = nearby, body = ./05_collect_places.lua, writes = [ feature_keys, feature_count ] } ]

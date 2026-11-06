@@ -1,0 +1,3 @@
+{ name = terrain_keys, size = terrain_scope_capacity, format = [ key = ul2 ] }
+{ name = biome_terrain_keys, size = terrain_scope_capacity, format = [ key = ul2 ] }
+{ name = terrain_count, size = one, format = [ terrain = ui1, biomes = ui1 ] }

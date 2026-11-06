@@ -1,0 +1,4 @@
+{
+ ctx_save = { qx = abs(x-centre_x)-half_x, qy = abs(y-centre_y)-half_y, qz = abs(z-centre_z)-half_z }
+ sqrt(max(ctx:saved:qx,0)*max(ctx:saved:qx,0)+max(ctx:saved:qy,0)*max(ctx:saved:qy,0)+max(ctx:saved:qz,0)*max(ctx:saved:qz,0))+min(max(ctx:saved:qx,max(ctx:saved:qy,ctx:saved:qz)),0)
+}

@@ -328,3 +328,21 @@ generators = [ { name = shape, native = shape, buffers = shape_buffers,
     CHECK(tags[i] == field.value(points[i]).tag);
   }
 }
+
+TEST_CASE("natural and cut shapes can round a union without changing distant surfaces") {
+  auto words=make_vocabulary();
+  std::vector<std::pair<ball,originator::field_box>> rows;
+  for(double x:{-1.0,1.0})rows.push_back({{{x,0,0},2},originator::field_box::around({x,0,0},{x,0,0},5.5)});
+  originator::field_term_rows term{"ball",originator::shape_vocabulary::pack(std::move(rows))};
+  originator::primitive_field field(*words,std::span(&term,1));
+  originator::field_vector join{0,std::sqrt(3.0),0},side{3,0,0};
+  const double sharp=field.value(join).value;
+  for(auto role:{originator::shape_role::natural,originator::shape_role::cut}) {
+    words->set_role("ball",role,0.35);
+    CHECK(field.value(join).value<sharp-0.05);
+    CHECK(field.value(side).value==doctest::Approx(0));
+    std::vector<originator::field_vector> points{join,side,{10,10,10}};
+    std::vector<double> values(points.size());field.sample_points(points,values,{},2);
+    for(size_t i=0;i<points.size();++i)CHECK(values[i]==doctest::Approx(field.value(points[i]).value));
+  }
+}

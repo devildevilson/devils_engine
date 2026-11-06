@@ -1,0 +1,2 @@
+{ name = cave_site_probe, size = cave_probe_capacity, format = [ position = d3, direction = d3, value = d1, hit = d1 ] }
+{ name = cave_site, size = one, format = [ origin = d3, centre = d3, entry = d3, direction = d3, quality = d1, has_entry = ui1 ] }

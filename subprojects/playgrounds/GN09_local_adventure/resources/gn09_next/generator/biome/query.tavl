@@ -1,0 +1,3 @@
+name = biome_query
+buffers = ./query_buffers.tavl
+steps = [ { name = nearest, body = ./03_query.lua, writes = [ biome_sample ] } ]

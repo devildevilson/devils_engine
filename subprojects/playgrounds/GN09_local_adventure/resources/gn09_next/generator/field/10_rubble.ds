@@ -1,0 +1,8 @@
+{
+ ctx_save = { dx = x-centre_x, dy = y-centre_y, dz = z-centre_z }
+ ctx_save = { rx = ctx:saved:dx*cos(phase)+ctx:saved:dz*sin(phase), rz = -ctx:saved:dx*sin(phase)+ctx:saved:dz*cos(phase) }
+ ctx_save = { py = ctx:saved:dy*cos(tilt_x)+ctx:saved:rz*sin(tilt_x), pz = -ctx:saved:dy*sin(tilt_x)+ctx:saved:rz*cos(tilt_x) }
+ ctx_save = { qx = abs((ctx:saved:rx*cos(tilt_y)+ctx:saved:py*sin(tilt_y))/half_x), qy = abs((-ctx:saved:rx*sin(tilt_y)+ctx:saved:py*cos(tilt_y))/half_y), qz = abs(ctx:saved:pz/half_z) }
+ ctx_save = { a = ctx:saved:qx*ctx:saved:qx, b = ctx:saved:qy*ctx:saved:qy, c = ctx:saved:qz*ctx:saved:qz }
+ (1-mix(sqrt(ctx:saved:a+ctx:saved:b+ctx:saved:c),sqrt(sqrt(ctx:saved:a*ctx:saved:a+ctx:saved:b*ctx:saved:b+ctx:saved:c*ctx:saved:c)),angular))*min(half_x,min(half_y,half_z))+0.6*terrain_detail
+}

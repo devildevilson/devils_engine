@@ -1,0 +1,3 @@
+name = biome_point_home
+buffers = ./source_buffers.tavl
+steps = [ { name = sources, body = ./02_point_sources.lua, writes = [ biome_keys, biome_source_count ] } ]

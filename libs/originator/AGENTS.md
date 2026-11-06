@@ -27,6 +27,7 @@
 | id ресурса -> тексты генератора, документ цепочки -> собранная цепочка | `include/.../generator_resource.h` |
 | цепочка генераторов: связи, ключи экземпляров, кэш, обрезка выходов, сверка пересчётом | `include/.../generator_chain.h` |
 | поле из примитивов: словарь форм, коробки влияния, область, луч | `include/.../primitive_field.h` |
+| поверхность поля с локальным уточнением и согласованием граней/рёбер | `include/.../field_surface.h` |
 | соседство как привязка: CSR или трафарет, ядра blur/frontier/flood | `include/.../neighbourhood.h` |
 | программа пристыковки авторских блоков, проходы и прямые стыки | `include/.../motif_layout.h` |
 | полоса одной ширины вокруг оси, L1/L2/M, реальные порты кромок, наклонные проёмы, SAT и обрезка свободных торцов | `include/.../motif_path.h` |
@@ -193,6 +194,7 @@ cd build-release && ctest -R originator -j 4
 | соседство, общие ядра, `edge_csr`, `slope`/`vote` | `originator_neighbourhood_test`; дампы GN02 (`--dump`) побайтно до/после |
 | `marching_tetrahedra` | GN09 `--bench`: «0 surface vertices differ from the host mesh» и отпечаток чанков цепочки |
 | объём | `originator_volume_test` |
+| локально уточнённая поверхность поля | `originator_surface_test`, GN09 NEXT `--verify-caves` |
 | решатель | `originator_collapse_test` |
 | постройки (нора и зоны здания, план в мере против картинки) | `originator_structure_test` |
 | авторские планы и цельные полосы путей | `originator_motif_test`, GN06 `--mode=site --verify` |

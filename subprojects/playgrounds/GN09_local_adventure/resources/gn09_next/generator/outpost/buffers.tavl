@@ -1,0 +1,11 @@
+{ name = station_cut, size = room_capacity, format = [ centre = d3, half = d3, tag = ui1 ] }
+{ name = station_rooms, size = room_capacity, format = [ centre = d3, half = d3, floor = ui1, parent = i1 ] }
+{ name = station_walls, size = wall_capacity, format = [ centre = d3, probe_low = d3, probe_high = d3, value = d1, value_low = d1, value_high = d1, room = ui1, axis = ui1, sign = i1, outside = ui1, opening = ui1 ] }
+{ name = station_mesh, size = station_triangle_capacity, format = [ a = d3, b = d3, c = d3, normal = d3, shade = ui1 ] }
+{ name = station_meta, size = one, format = [ low = d3, high = d3, built = ui1, cuts = ui1, rooms = ui1, walls = ui1, triangles = ui1, floors = ui1, dock = d3, hatch = d3, entry = d3, trunk_length = d1, pose = ui1 ] }
+
+{ name = ports, size = one, format = [ key = ul2, mouth = d3, direction = d3, dock = d3, kind = ui1 ] }
+{ name = outpost_rays, size = outpost_ray_capacity, format = [ origin = d3, direction = d3, distance = d1 ] }
+{ name = outpost_proposals, size = outpost_proposal_capacity, format = [ body = d3, dock = d3, direction = d3, depth = d1, distance = d1 ] }
+{ name = outpost_probes, size = outpost_probe_capacity, format = [ position = d3, value = d1, clearance = d1 ] }
+{ name = outpost_meta, size = one, format = [ rays = ui1, proposals = ui1, probes = ui1, chosen = i1, occupancy = d1, fallback_dock = ui1 ] }

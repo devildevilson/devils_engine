@@ -1,0 +1,2 @@
+{ name = small_cave_keys, size = small_cave_scope_capacity, format = [ key = ul3 ] }
+{ name = small_cave_count, size = one, format = [ value = ui1 ] }

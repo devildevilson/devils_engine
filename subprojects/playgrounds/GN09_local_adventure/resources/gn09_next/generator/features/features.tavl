@@ -1,0 +1,7 @@
+name = features
+buffers = ./buffers.tavl
+steps = [
+ { name = anchor_proposals, body = ./01_probes.lua, reads = [ ribs, buttresses ], writes = [ attempts, probes, features_meta ] },
+ { name = rock, body = ./02_sample.lua, reads = [ features_meta ], writes = [ probes ] },
+ { name = chains, body = ./03_build.lua, reads = [ ribs, buttresses, attempts ], writes = [ details, heaps, roots, features_meta, probes ] }
+]

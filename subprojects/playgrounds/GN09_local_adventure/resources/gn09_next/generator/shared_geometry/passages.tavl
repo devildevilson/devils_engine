@@ -1,0 +1,1 @@
+{ name = passages, size = terrain_capacity, format = [ a = d3, b = d3, right = d3, up = d3, length2 = d1, width_a = d1, width_b = d1, roof_a = d1, roof_b = d1, floor_a = d1, floor_b = d1, reach = d1, relief = d1, phase = d1, tag = ui1 ] }

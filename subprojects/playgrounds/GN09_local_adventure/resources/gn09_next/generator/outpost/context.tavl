@@ -1,0 +1,3 @@
+name = outpost_context
+buffers = ./context_buffers.tavl
+steps = [ { name = locate, body = ./00_context.lua, writes = [ outpost_context ] } ]

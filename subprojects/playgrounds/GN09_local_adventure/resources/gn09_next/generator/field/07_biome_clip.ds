@@ -1,0 +1,8 @@
+{
+ ctx_save = { u = x/(child_span*1.3), v = z/(child_span*1.3) }
+ ctx_save = { qx = x+child_warp*(sin(ctx:saved:u+child_phase_a)*cos(ctx:saved:v+child_phase_b)+0.35*sin(2.1*ctx:saved:v+child_phase_a))/1.35,
+              qz = z+child_warp*(sin(ctx:saved:v+child_phase_b)*cos(ctx:saved:u+child_phase_a)+0.35*sin(1.7*ctx:saved:u+child_phase_b))/1.35 }
+ ctx_save = { ax = ctx:saved:qx-child_owner_x, az = ctx:saved:qz-child_owner_y, bx = ctx:saved:qx-child_other_x, bz = ctx:saved:qz-child_other_y,
+              dx = child_owner_x-child_other_x, dz = child_owner_y-child_other_y }
+ (ctx:saved:ax*ctx:saved:ax+ctx:saved:az*ctx:saved:az-ctx:saved:bx*ctx:saved:bx-ctx:saved:bz*ctx:saved:bz)/(2*sqrt(ctx:saved:dx*ctx:saved:dx+ctx:saved:dz*ctx:saved:dz))-child_margin
+}

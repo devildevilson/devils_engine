@@ -1,0 +1,18 @@
+{
+ ctx_save = { dx = x-a_x, dy = y-a_y, dz = z-a_z,
+              ex = b_x-a_x, ey = b_y-a_y, ez = b_z-a_z }
+ ctx_save = { raw_t = (ctx:saved:dx*ctx:saved:ex+ctx:saved:dy*ctx:saved:ey+ctx:saved:dz*ctx:saved:ez)/length2 }
+ ctx_save = { t = min(1,max(0,ctx:saved:raw_t)) }
+ ctx_save = { qx = ctx:saved:dx-ctx:saved:ex*ctx:saved:t,
+              qy = ctx:saved:dy-ctx:saved:ey*ctx:saved:t,
+              qz = ctx:saved:dz-ctx:saved:ez*ctx:saved:t,
+              width = width_a+(width_b-width_a)*ctx:saved:t,
+              roof = roof_a+(roof_b-roof_a)*ctx:saved:t,
+              floor_height = floor_a+(floor_b-floor_a)*ctx:saved:t }
+ ctx_save = { u = ctx:saved:qx*right_x+ctx:saved:qy*right_y+ctx:saved:qz*right_z,
+              v = ctx:saved:qx*up_x+ctx:saved:qy*up_y+ctx:saved:qz*up_z,
+              w = (ctx:saved:raw_t-ctx:saved:t)*sqrt(length2) }
+ ctx_save = { cap = min(ctx:saved:width,min(ctx:saved:roof,ctx:saved:floor_height)), height = 0.5*(ctx:saved:roof+ctx:saved:floor_height)+0.5*(ctx:saved:roof-ctx:saved:floor_height)*sign(ctx:saved:v),
+              relief = relief*(0.7*terrain_broad+0.3*terrain_detail) }
+ (sqrt(ctx:saved:u*ctx:saved:u/(ctx:saved:width*ctx:saved:width)+ctx:saved:v*ctx:saved:v/(ctx:saved:height*ctx:saved:height)+ctx:saved:w*ctx:saved:w/(ctx:saved:cap*ctx:saved:cap))-1)*ctx:saved:cap+ctx:saved:relief
+}

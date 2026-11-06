@@ -1,0 +1,3 @@
+name = biome_terrain
+buffers = ./biome_buffers.tavl
+steps = [ { name = chambers, body = ./02_chambers.lua, reads = [ biome ], writes = [ ocean, caverns, buttresses, cavern_meta, biome_clips, biome_cell ] } ]

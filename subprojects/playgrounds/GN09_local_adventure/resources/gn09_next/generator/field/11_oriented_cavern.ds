@@ -1,0 +1,7 @@
+{
+ ctx_save = { dx = x-centre_x, dy = y-centre_y, dz = z-centre_z }
+ ctx_save = { qx = (ctx:saved:dx*right_x+ctx:saved:dy*right_y+ctx:saved:dz*right_z)/half_x,
+              qy = (ctx:saved:dx*up_x+ctx:saved:dy*up_y+ctx:saved:dz*up_z)/half_y,
+              qz = (ctx:saved:dx*forward_x+ctx:saved:dy*forward_y+ctx:saved:dz*forward_z)/half_z }
+ (sqrt(ctx:saved:qx*ctx:saved:qx+ctx:saved:qy*ctx:saved:qy+ctx:saved:qz*ctx:saved:qz)-1)*min(half_x,min(half_y,half_z))+relief*(0.3*terrain_broad+0.7*terrain_detail)
+}

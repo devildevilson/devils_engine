@@ -22,6 +22,7 @@ add_library(devils_originator
   src/originator/skeleton_tools.cpp
   src/originator/pipeline.cpp
   src/originator/generator_chain.cpp
+  src/originator/field_surface.cpp
   src/originator/primitive_field.cpp
   src/originator/neighbourhood_tools.cpp
   src/originator/computation_queue.cpp
@@ -37,6 +38,7 @@ add_library(devils_originator
   include/devils_engine/originator/motif_geometry.h
   include/devils_engine/originator/pipeline.h
   include/devils_engine/originator/generator_chain.h
+  include/devils_engine/originator/field_surface.h
   include/devils_engine/originator/primitive_field.h
   include/devils_engine/originator/neighbourhood.h
   include/devils_engine/originator/computation_queue.h

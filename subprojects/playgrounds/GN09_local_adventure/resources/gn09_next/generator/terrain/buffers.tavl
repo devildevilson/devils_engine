@@ -1,0 +1,5 @@
+{ name = shelters, size = terrain_capacity, format = [ a = d3, b = d3, radius = d1, tag = ui1 ] }
+{ name = ribs, size = terrain_capacity, format = [ a = d3, b = d3, radius = d1, start = d1, finish = d1, chain = ul1, class = ui1, scar = d3, tag = ui1 ] }
+{ name = terrain_meta, size = one, format = [ feature_key = ul3, feature_low = d3, feature_high = d3, collapses = ui1, passages = ui1, shelters = ui1, ribs = ui1 ] }
+
+{ name = collapse_voids, size = terrain_capacity, format = [ centre = d3, half = d3, relief = d1, phase = d1, tag = ui1 ] }
