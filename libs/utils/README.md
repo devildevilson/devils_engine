@@ -95,14 +95,14 @@
   буферами. `unseal` публикует payload и preview только после полной проверки; лимит
   распакованного payload по умолчанию 256 MiB, задаётся последним аргументом.
   Checksum обнаруживает повреждение, но не аутентифицирует отправителя.
-- `named_serializer.h` оборачивает JSON через glaze и умеет
-  сериализовать отражаемые структуры в Lua-table строку.
+- C++/Lua и TAVL/Lua data conversion принадлежит `bindings_base/data_conversion.h`;
+  удалённый `named_serializer.h` больше не генерирует Lua text и не предоставляет JSON API.
 - `compression.h` дает zstd-сжатие общего назначения с уровнями `fast`, `normal`, `high`,
   `best` и vector-обертками.
 
 ECS payload остаётся в `aesthetics::serial::dump_world/stage_world`; композиция полного
 checkpoint принадлежит проекту, пример — `tile_frontier/core/actor_checkpoint.h`.
-Zpp удалён из исходников и зависимостей сборки. Glaze оставлен: JSON используется в demiurg.
+Zpp и glaze удалены из исходников и зависимостей сборки. Demiurg profiles используют TAVL.
 
 ### Аллокаторы и управление памятью
 
@@ -276,7 +276,7 @@ back, elastic, bounce плюс linear) переводят долю пройде�
    перенести под `utils/spatial/` и покрыть едиными тестами query-контракта.
 
 7. Уменьшить тяжесть частых заголовков.
-   `core.h`, `type_traits.h`, `named_serializer.h` тянут много зависимостей. После разбиения
+   `core.h` и `type_traits.h` тянут много зависимостей. После разбиения
    стоит проверить include graph и сократить transitive includes для горячих библиотек.
 
 8. Добавить/расширить тесты.

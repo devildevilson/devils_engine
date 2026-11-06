@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_LUA_RESOURCE_BINDINGS_H
 #define DEVILS_ENGINE_SIMUL_LUA_RESOURCE_BINDINGS_H
 
+#include "devils_engine/bindings/critical_error.h"
+
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -219,6 +221,12 @@ inline void install_resource_lua_bindings(
     require_stack->push_back(script_id);
     auto ret = lua_view.safe_script(script->text, env, sol::script_pass_on_error, chunk_name);
     require_stack->pop_back();
+    try {
+      bindings::rethrow_critical_error(lua_view.lua_state());
+    } catch (const utils::critical_error&) {
+      require_cache[abs_id] = sol::nil;
+      throw;
+    }
     if (!ret.valid()) {
       require_cache[abs_id] = sol::nil;
       const sol::error err = ret;

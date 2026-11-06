@@ -21,6 +21,13 @@ namespace devils_engine {
 namespace utils {
 inline constexpr double epsilon = 0.000001;
 
+// Отдельная идентичность критического отказа нужна на C++/Lua границе. Обычная Lua-ошибка
+// может быть обработана pcall, но отказ инварианта движка не становится успешным выполнением.
+class critical_error : public std::runtime_error {
+public:
+  using std::runtime_error::runtime_error;
+};
+
 constexpr std::string_view make_sane_file_name(const std::string_view& str) {
   const size_t slash1_index = str.rfind("/");
   if (slash1_index == std::string_view::npos) {
@@ -54,7 +61,7 @@ struct error {
         location.function_name(),
         message);
       spdlog::error("{}", full_message);
-      throw std::runtime_error(full_message);
+      throw critical_error(full_message);
     }
   }
 };
@@ -98,8 +105,16 @@ constexpr const T& min(const T& a) {
 
 template <typename T, typename... Ts>
 constexpr const T& min(const T& a, const T& b, Ts&&... args) {
-  const T& m = max(b, std::forward<Ts>(args)...);
-  return a < m ? a : m;
+  static_assert((std::is_same_v<T, std::remove_cvref_t<Ts>> && ...));
+  // type_traits.h also has a by-value binary min. Recursing through that overload
+  // would return a reference to a destroyed temporary at the bottom of the recursion.
+  const T* selected = &a;
+  const auto consider = [&](const T& value) {
+    if (value < *selected) selected = &value;
+  };
+  consider(b);
+  (consider(args), ...);
+  return *selected;
 }
 
 constexpr double floor(const double val) noexcept {

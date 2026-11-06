@@ -26,16 +26,20 @@ endif()
 # развязывает круг «visage линкует bindings, bindings линкует visage».
 add_library(devils_bindings_base
   src/bindings/env.cpp
+  src/bindings/critical_error.cpp
+  src/bindings/data_conversion.cpp
+  include/devils_engine/bindings/data_conversion.h
+  include/devils_engine/bindings/critical_error.h
   include/devils_engine/bindings/env.h
   include/devils_engine/bindings/lua_header.h
 )
 
 target_link_libraries(devils_bindings_base
-  PUBLIC sol2::sol2 ${DEVILS_LUA_LIBRARIES}
-  PRIVATE devils_engine::options devils_engine::utils
+  PUBLIC sol2::sol2 ${DEVILS_LUA_LIBRARIES} devils_engine::utils devils_engine::options
+  PRIVATE tavl
 )
 
-target_include_directories(devils_bindings_base INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
+target_include_directories(devils_bindings_base PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_bindings_base PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/bindings>")
 
 if (WIN32)

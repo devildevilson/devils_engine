@@ -272,3 +272,12 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
 - Смена миров GN09 исторически разрешила изменение seed result; это не отменяет детерминизм
   одного описания и независимость от порядка чанков. NEXT promises — в NEXT_CAVES_PLAN.md.
 - Новая очередь — [TASKS.md](../../TASKS.md), аудит — [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md).
+
+## Технический аудит 2026-11-07
+
+256 МиБ RAM — диагностический ориентир, допустимый бюджет задаёт проект.
+8 аппаратных потоков — минимум машины, а не верхний предел потоков процесса. Cache capacity/trim/footprint по отдельности не ограничивают весь heap.
+F-02 исправлен: script_host устанавливает critical-error policy и проверяет latch после
+защищённых вызовов. utils::critical_error доходит до host даже через pcall/xpcall/coroutine.
+TLS hosts по chain id требуют lifetime audit. Allocation admission принадлежит host; не вводить
+новый scheduler поверх tools/chain. См. TECHNICAL_AUDIT.md и TECH-02/03/11.

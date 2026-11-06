@@ -378,3 +378,20 @@ target_link_libraries(originator_skeleton_test PRIVATE devils_engine::originator
 
 devils_add_doctest(originator_volume_test originator_volume_test.cpp)
 target_link_libraries(originator_volume_test PRIVATE devils_engine::originator devils_engine::utils)
+
+# Native critical errors and raw data conversion share the headless Lua boundary.
+devils_add_doctest(bindings_data_test bindings_data_test.cpp)
+target_link_libraries(bindings_data_test PRIVATE devils_engine::bindings_base)
+
+devils_add_doctest(fixed_pool_move_test fixed_pool_move_test.cpp)
+target_link_libraries(fixed_pool_move_test PRIVATE devils_engine::utils)
+
+devils_add_doctest(demiurg_profile_test demiurg_profile_test.cpp)
+target_link_libraries(demiurg_profile_test PRIVATE devils_engine::demiurg minizip)
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if (Python3_Interpreter_FOUND)
+  add_test(NAME module_profile_migration
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/test_convert_module_profile.py)
+  set_tests_properties(module_profile_migration PROPERTIES LABELS devils_engine)
+endif()

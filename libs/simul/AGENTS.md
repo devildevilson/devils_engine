@@ -36,3 +36,10 @@
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
 [указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
 хронологию экспериментов — в отдельном audit/history.
+
+## Технический аудит 2026-11-07
+
+Восемь потоков — общий ориентир main/systems/pool/native backends. hardware_concurrency minus
+reserved пока не обеспечивает этот предел на машине с большим числом CPU. Host должен владеть
+thread и RAM/job admission budgets, не добавляя scheduler внутрь originator.
+Открытые TECH-03/04 и измерения — в TECHNICAL_AUDIT.md.

@@ -1,3 +1,4 @@
+#include "devils_engine/bindings/critical_error.h"
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -667,6 +668,7 @@ bool system::update(const size_t time, const size_t timestamp, const uint64_t rn
   // не должна оставлять nk в рассинхроне (незакрытое окно -> ассерт на следующем nk_begin).
   sol::protected_function pf = entry;
   const auto r = pf(time, timestamp, bindings::rng_state{rng_state});
+  bindings::rethrow_critical_error(lua.lua_state());
   if (!r.valid()) {
     const sol::error err = r;
     utils::warn("visage: entry error: {}", err.what());

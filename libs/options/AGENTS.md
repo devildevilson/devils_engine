@@ -31,3 +31,11 @@ Compile/link policy, а не разбор аргументов executable. Ед�
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
 [указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
 хронологию экспериментов — в отдельном audit/history.
+
+## Технический аудит 2026-11-07
+
+Замер O2/O3 selected field/column/codec kernels — в TECHNICAL_AUDIT.md и raw JSON.
+Рекомендация — сохранить Release O3: O2 не решает превышение data memory. MinSizeRel сейчас
+получает O3 поверх Os — это открытая ошибка профиля; MSVC /ZI требует отдельной проверки.
+256 МиБ — диагностический runtime ориентир, CPU минимум — 8 аппаратных потоков.
+Расходы компилятора/LTO оцениваются отдельно от runtime проекта.

@@ -77,7 +77,6 @@ set(HDR_LIST
   include/devils_engine/utils/deterministic_math.h
   include/devils_engine/utils/deterministic_sort.h
 
-  include/devils_engine/utils/named_serializer.h
   include/devils_engine/utils/serialization.h
   include/devils_engine/utils/state_schema.h
   include/devils_engine/utils/atomic_file.h
@@ -113,7 +112,7 @@ target_compile_options(engine_c_part1 PRIVATE
 )
 
 target_link_libraries(devils_utils
-  PUBLIC atomic_queue::atomic_queue Threads::Threads spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
+  PUBLIC atomic_queue::atomic_queue Threads::Threads spdlog::spdlog gtl #ReflexLibStatic #alpaca::alpaca
   PRIVATE engine_c_part1 ${ZSTD_TARGET} ZLIB::ZLIB devils_engine::options cpuinfo
 )
 

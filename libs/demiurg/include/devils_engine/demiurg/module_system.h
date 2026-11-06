@@ -12,6 +12,8 @@
 
 #include "resource_manifest.h"
 
+#include "module_profile.h"
+
 namespace devils_engine {
 namespace demiurg {
 class resource_system;
@@ -26,11 +28,7 @@ public:
     archive
   };
 
-  struct list_entry {
-    std::string path;
-    std::string hash;
-    std::string file_date;
-  };
+  using list_entry = module_profile_entry;
 
   struct loaded_module {
     std::string id;

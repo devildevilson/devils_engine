@@ -6,6 +6,7 @@
 
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/script_host.h"
+#include "devils_engine/utils/core.h"
 
 using namespace devils_engine;
 
@@ -483,4 +484,17 @@ TEST_CASE("originator queue in lua refuses a count it cannot trust") {
       end
     )lua");
   }
+}
+
+TEST_CASE("native tool critical error cannot be hidden by a Lua step pcall") {
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+  originator::script_host host(tools, nullptr);
+  host.load_body("critical", R"(return function(step)
+    pcall(function() originator.run("tool_that_does_not_exist", {}) end)
+    error("critical error was swallowed")
+  end)", "critical_boundary_test");
+  originator::parameters params;
+  originator::step_context context{.name = "critical", .params = &params};
+  CHECK_THROWS_AS(host.invoker()(context), utils::critical_error);
 }

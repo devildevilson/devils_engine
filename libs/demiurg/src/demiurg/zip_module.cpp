@@ -1,4 +1,7 @@
 #include "devils_engine/utils/core.h"
+
+#include <algorithm>
+#include <limits>
 #include "resource_system.h"
 #include "zip_module.h"
 
@@ -25,9 +28,11 @@ std::string_view zip_module::name() const {
 }
 
 void zip_module::open() {
+  if (native_handle != nullptr) utils::error{}("Archive '{}' is already open", _path);
   native_handle = mz_zip_reader_create();
   const auto err = mz_zip_reader_open_file(native_handle, _path.c_str());
   if (err != MZ_OK) {
+    mz_zip_reader_delete(&native_handle);
     utils::error{}("Could not open archive '{}'", _path);
   }
 }
@@ -157,80 +162,58 @@ void zip_module::resources_list(std::vector<resource_candidate>& out, const uint
   }
 }
 
+namespace {
+
+// Minizip read возвращает число байт, а не MZ_OK. Одна проверенная граница для всех
+// container overloads; close проверяет CRC, guard закрывает entry при критическом отказе.
+template <typename Container>
+void read_entry(void* handle, const std::string& archive, const std::string& path, Container& output) {
+  if (handle == nullptr) utils::error{}("Archive '{}' is not open while reading entry '{}'", archive, path);
+  auto result = mz_zip_reader_locate_entry(handle, path.c_str(), 0);
+  if (result != MZ_OK) utils::error{}("Could not locate entry '{}' in archive '{}': minizip {}", path, archive, result);
+  result = mz_zip_reader_entry_open(handle);
+  if (result != MZ_OK) utils::error{}("Could not open entry '{}' in archive '{}': minizip {}", path, archive, result);
+  struct entry_guard {
+    void* handle;
+    bool open = true;
+    ~entry_guard() noexcept {
+      if (open) mz_zip_reader_entry_close(handle);
+    }
+  } guard{handle};
+  mz_zip_file* info = nullptr;
+  result = mz_zip_reader_entry_get_info(handle, &info);
+  if (result != MZ_OK || info == nullptr) {
+    utils::error{}("Could not inspect entry '{}' in archive '{}': minizip {}", path, archive, result);
+  }
+  if (info->uncompressed_size < 0 || uint64_t(info->uncompressed_size) > output.max_size()) {
+    utils::error{}("Entry '{}' in archive '{}' declares {} bytes, container limit {}", path, archive, info->uncompressed_size, output.max_size());
+  }
+  output.resize(static_cast<size_t>(info->uncompressed_size));
+  size_t offset = 0;
+  while (offset < output.size()) {
+    const auto requested = static_cast<int32_t>(std::min(output.size() - offset, size_t(INT32_MAX)));
+    const auto got = mz_zip_reader_entry_read(handle, output.data() + offset, requested);
+    if (got < 0) utils::error{}("Could not read entry '{}' in archive '{}' at byte {}: minizip {}", path, archive, offset, got);
+    if (got == 0) utils::error{}("Short read of entry '{}' in archive '{}': got {} of {} bytes", path, archive, offset, output.size());
+    offset += size_t(got);
+  }
+  result = mz_zip_reader_entry_close(handle);
+  guard.open = false;
+  if (result != MZ_OK) utils::error{}("Could not finish entry '{}' in archive '{}' (CRC/close): minizip {}", path, archive, result);
+}
+
+} // namespace
+
 void zip_module::load_binary(const std::string& path, std::vector<uint8_t>& mem) const {
-  int32_t err = 0;
-  err = mz_zip_reader_locate_entry(native_handle, path.c_str(), 0);
-  // мы можем не найти энтри?
-  if (err != MZ_OK) {
-    utils::error{}("Could not get entry '{}' from archive '{}'", path, _path);
-  }
-
-  err = mz_zip_reader_entry_open(native_handle);
-  if (err != MZ_OK) {
-    utils::error{}("Could not open entry '{}' from archive '{}'", path, _path);
-  }
-
-  mz_zip_file* file_info = nullptr;
-  err = mz_zip_reader_entry_get_info(native_handle, &file_info);
-  if (err != MZ_OK) {
-    utils::error{}("Could not get entry info '{}' from archive '{}'", path, _path);
-  }
-
-  mem.resize(file_info->uncompressed_size, 0);
-  err = mz_zip_reader_entry_read(native_handle, mem.data(), mem.size());
-  if (err != MZ_OK) {
-    utils::error{}("Could not read entry data '{}' from archive '{}'", path, _path);
-  }
+  read_entry(native_handle, _path, path, mem);
 }
 
 void zip_module::load_binary(const std::string& path, std::vector<char>& mem) const {
-  int32_t err = 0;
-  err = mz_zip_reader_locate_entry(native_handle, path.c_str(), 0);
-  if (err != MZ_OK) {
-    utils::error{}("Could not get entry '{}' from archive '{}'", path, _path);
-  }
-
-  err = mz_zip_reader_entry_open(native_handle);
-  if (err != MZ_OK) {
-    utils::error{}("Could not open entry '{}' from archive '{}'", path, _path);
-  }
-
-  mz_zip_file* file_info = nullptr;
-  err = mz_zip_reader_entry_get_info(native_handle, &file_info);
-  if (err != MZ_OK) {
-    utils::error{}("Could not get entry info '{}' from archive '{}'", path, _path);
-  }
-
-  mem.resize(file_info->uncompressed_size, 0);
-  err = mz_zip_reader_entry_read(native_handle, mem.data(), mem.size());
-  if (err != MZ_OK) {
-    utils::error{}("Could not read entry data '{}' from archive '{}'", path, _path);
-  }
+  read_entry(native_handle, _path, path, mem);
 }
 
 void zip_module::load_text(const std::string& path, std::string& mem) const {
-  int32_t err = 0;
-  err = mz_zip_reader_locate_entry(native_handle, path.c_str(), 0);
-  if (err != MZ_OK) {
-    utils::error{}("Could not get entry '{}' from archive '{}'", path, _path);
-  }
-
-  err = mz_zip_reader_entry_open(native_handle);
-  if (err != MZ_OK) {
-    utils::error{}("Could not open entry '{}' from archive '{}'", path, _path);
-  }
-
-  mz_zip_file* file_info = nullptr;
-  err = mz_zip_reader_entry_get_info(native_handle, &file_info);
-  if (err != MZ_OK) {
-    utils::error{}("Could not get entry info '{}' from archive '{}'", path, _path);
-  }
-
-  mem.resize(file_info->uncompressed_size, 0);
-  err = mz_zip_reader_entry_read(native_handle, mem.data(), mem.size());
-  if (err != MZ_OK) {
-    utils::error{}("Could not read entry data '{}' from archive '{}'", path, _path);
-  }
+  read_entry(native_handle, _path, path, mem);
 }
 } // namespace demiurg
 } // namespace devils_engine

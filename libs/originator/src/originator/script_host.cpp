@@ -1,3 +1,4 @@
+#include "devils_engine/bindings/critical_error.h"
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/generator_chain.h"
 #include "devils_engine/originator/geometry.h"
@@ -343,6 +344,7 @@ void script_buffer_view::clear() const {
 script_host::script_host(tool_registry& tools, thread::atomic_pool* pool) : tools_(&tools), pool_(pool) {
   lua_.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::math, sol::lib::string, sol::lib::table, sol::lib::utf8);
 
+  bindings::install_critical_error_policy(lua_.lua_state());
   env_ = sol::environment(lua_, sol::create);
   env_["_G"] = env_;
 
@@ -539,6 +541,7 @@ void script_host::install_shortcuts(sol::table& api, const sol::object& run) {
     "return function(run, name) return function(args) return run(name, args) end end";
 
   const auto factory_result = lua_.safe_script(factory_source, env_, sol::script_pass_on_error, "originator/shortcut");
+  bindings::rethrow_critical_error(lua_.lua_state());
   if (!factory_result.valid()) {
     const sol::error err = factory_result;
     utils::error{}("originator: could not build the tool shortcut factory: {}", err.what());
@@ -548,6 +551,7 @@ void script_host::install_shortcuts(sol::table& api, const sol::object& run) {
   for (size_t i = 0; i < tools_->size(); ++i) {
     const auto& name = tools_->at(i).name;
     const auto made = factory(run, name);
+    bindings::rethrow_critical_error(lua_.lua_state());
     if (!made.valid()) {
       const sol::error err = made;
       utils::error{}("originator: could not build the shortcut for tool '{}': {}", name, err.what());
@@ -999,6 +1003,7 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
 
 void script_host::load_body(const std::string_view& step_name, const std::string_view& source, const std::string_view& chunk_name) {
   const auto result = lua_.safe_script(source, env_, sol::script_pass_on_error, std::string(chunk_name));
+  bindings::rethrow_critical_error(lua_.lua_state());
   if (!result.valid()) {
     const sol::error err = result;
     utils::error{}("originator step '{}': could not load body '{}': {}", step_name, chunk_name, err.what());
@@ -1053,6 +1058,7 @@ void script_host::load_module(const std::string_view& module_name, const std::st
     utils::error{}("originator: module '{}' is loaded twice", module_name);
   }
   const auto result = lua_.safe_script(source, env_, sol::script_pass_on_error, std::string(chunk_name));
+  bindings::rethrow_critical_error(lua_.lua_state());
   if (!result.valid()) {
     const sol::error err = result;
     utils::error{}("originator: could not load module '{}' ({}): {}", module_name, chunk_name, err.what());
@@ -1372,6 +1378,7 @@ step_invoker script_host::invoker() {
       lua_sethook(lua_.lua_state(), nullptr, 0, 0);
     }
 
+    bindings::rethrow_critical_error(lua_.lua_state());
     if (!result.valid()) {
       const sol::error err = result;
       utils::error{}("originator step '{}': body failed: {}", context.name, err.what());

@@ -9,7 +9,6 @@
 #include "devils_engine/catalogue/logging.h"
 #include "devils_engine/thread/atomic.h"
 #include "devils_engine/utils/fileio.h"
-#include "devils_engine/utils/named_serializer.h"
 #include "devils_engine/utils/sha256.h"
 #include "devils_engine/utils/string-utils.hpp"
 #include "devils_engine/utils/time-utils.hpp"

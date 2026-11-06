@@ -36,3 +36,10 @@ Rendering и GPU assets, цель `devils_engine::painter`. Начинать с 
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
 [указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
 хронологию экспериментов — в отдельном audit/history.
+
+## Технический аудит 2026-11-07
+
+Минимальное устройство — Vulkan 1.0. 256 МиБ VRAM — диагностический ориентир; graphics_base и assets_base VMA allocators учитываются вместе,
+включая retiring/staging/per-frame generations. Driver heap budget — не project quota.
+Painter пока сохраняет отдельную exception policy; это не отменяет проверок external config в Release.
+GPU-измерения в техническом аудите не выполнялись: нужны реальные allocation/residency counters.

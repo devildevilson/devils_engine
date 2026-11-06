@@ -9,6 +9,8 @@
 #include "devils_engine/utils/shared.h"
 #include "devils_engine/utils/time-utils.hpp"
 #include "env.h"
+#include "devils_engine/bindings/critical_error.h"
+#include "devils_engine/bindings/data_conversion.h"
 
 namespace devils_engine {
 namespace bindings {
@@ -51,6 +53,7 @@ constexpr auto safe_libraries = {
 };
 
 sol::environment create_env(sol::state_view s) {
+  install_critical_error_policy(s.lua_state());
   auto env = sol::environment(s, sol::create);
   env["_G"] = env;
   s["security_env"] = env;
@@ -477,10 +480,30 @@ static double hypot2(const double x, const double y) {
 // еще дополнительно желательно вылетать если у нас случайно произошел бесконечный цикл
 // как сделать?
 
+namespace {
+sol::object parse_tavl_data(const std::string& text, sol::this_state state) {
+  return tavl_to_lua(sol::state_view(state), text);
+}
+std::string write_tavl_data(const sol::object& object) {
+  return lua_to_tavl(object);
+}
+} // namespace
+
 void basic_functions(sol::table t) {
+  install_critical_error_policy(t.lua_state());
+  sol::state_view state(t.lua_state());
+  t["pcall"] = state["pcall"];
+  t["xpcall"] = state["xpcall"];
   sol::table base = t.get_or("base", sol::nil);
   if (!base.valid()) {
     base = t.create_named("base");
+  }
+  base.set_function("parse_tavl", &parse_tavl_data);
+  base.set_function("write_tavl", &write_tavl_data);
+  {
+    data_detail::stack_guard stack(t.lua_state());
+    push_data_null(t.lua_state());
+    base["null"] = sol::stack::get<sol::object>(t.lua_state(), -1);
   }
   base.set_function("pack_u32f32", &pack_u32f32);
   base.set_function("pack_u32u32", &pack_u32u32);
@@ -532,6 +555,7 @@ void basic_functions(sol::table t) {
 } // namespace devils_engine
 
 void sol_lua_check_error(sol::this_state s, const sol::unsafe_function_result& res) {
+  devils_engine::bindings::rethrow_critical_error(res.lua_state());
   if (res.status() == sol::call_status::ok) {
     return;
   }
@@ -542,6 +566,7 @@ void sol_lua_check_error(sol::this_state s, const sol::unsafe_function_result& r
 }
 
 void sol_lua_check_error(sol::this_state s, const sol::protected_function_result& res) {
+  devils_engine::bindings::rethrow_critical_error(res.lua_state());
   if (res.status() == sol::call_status::ok) {
     return;
   }
@@ -552,6 +577,7 @@ void sol_lua_check_error(sol::this_state s, const sol::protected_function_result
 }
 
 void sol_lua_check_error(const sol::unsafe_function_result& res) {
+  devils_engine::bindings::rethrow_critical_error(res.lua_state());
   if (res.status() == sol::call_status::ok) {
     return;
   }
@@ -560,6 +586,7 @@ void sol_lua_check_error(const sol::unsafe_function_result& res) {
 }
 
 void sol_lua_check_error(const sol::protected_function_result& res) {
+  devils_engine::bindings::rethrow_critical_error(res.lua_state());
   if (res.status() == sol::call_status::ok) {
     return;
   }
@@ -568,6 +595,7 @@ void sol_lua_check_error(const sol::protected_function_result& res) {
 }
 
 void sol_lua_warn_error(const sol::protected_function_result& res) {
+  devils_engine::bindings::rethrow_critical_error(res.lua_state());
   if (res.status() == sol::call_status::ok) {
     return;
   }
@@ -576,6 +604,7 @@ void sol_lua_warn_error(const sol::protected_function_result& res) {
 }
 
 void sol_lua_warn_error(const sol::unsafe_function_result& res) {
+  devils_engine::bindings::rethrow_critical_error(res.lua_state());
   if (res.status() == sol::call_status::ok) {
     return;
   }

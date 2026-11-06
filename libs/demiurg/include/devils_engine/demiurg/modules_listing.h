@@ -9,6 +9,8 @@
 #include <vector>
 namespace fs = std::filesystem;
 
+#include "module_profile.h"
+
 namespace devils_engine {
 namespace demiurg {
 // нужно как то понять какой лист выбрал игрок в качестве текущего
@@ -27,11 +29,7 @@ public:
     // ресурс картинок
   };
 
-  struct list_entry {
-    std::string path;
-    std::string hash;
-    std::string file_date;
-  };
+  using list_entry = module_profile_entry;
 
   struct view {
     std::string path;
@@ -65,7 +63,6 @@ private:
   std::vector<std::unique_ptr<module_entry>> entries_arr;
   std::vector<list> lists;
 
-  void load_list(const std::string& path);
   void load_mod(const fs::directory_entry& entry);
 };
 } // namespace demiurg

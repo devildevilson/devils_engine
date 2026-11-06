@@ -476,3 +476,23 @@ TEST_CASE("mailbox reuses slot capacity across frames [thread::mailbox]") {
   REQUIRE(v != nullptr);
   CHECK(v->size() == 500);
 }
+
+TEST_CASE("pool destruction drains accepted work and releases captures after joining") {
+  for (const size_t workers : {size_t(0), size_t(8)}) {
+    std::atomic<int> completed = 0;
+    auto token = std::make_shared<int>(19);
+    std::weak_ptr<int> weak = token;
+    {
+      thread::atomic_pool pool(workers);
+      for (int i = 0; i < 100; ++i) {
+        pool.submit([token, &completed] {
+          std::this_thread::yield();
+          completed.fetch_add(*token == 19 ? 1 : 0);
+        });
+      }
+      token.reset();
+    }
+    CHECK(completed.load() == 100);
+    CHECK(weak.expired());
+  }
+}

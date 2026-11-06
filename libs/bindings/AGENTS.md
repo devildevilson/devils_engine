@@ -24,8 +24,7 @@
 
 Базовые функции — `originator_queue_lua_test`, `originator_config_test`,
 `act_call_context_test` по затронутому API; Nuklear — smoke реального visage consumer.
-Отдельного bindings test executable сейчас нет; при существенном новом контракте добавить focused
-проверку, а не считать косвенное покрытие полным.
+Для data conversion и critical-error boundary есть bindings_data_test.
 
 Собирать из корня: `cmake --build build-release --target <test_target> -j 8`, затем
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
@@ -37,3 +36,15 @@
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
 [указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
 хронологию экспериментов — в отдельном audit/history.
+
+## Технический аудит 2026-11-07
+
+Production API — data_conversion.h в bindings_base: to_lua/from_lua (reflect), tavl_to_lua/
+lua_to_tavl (data documents). Raw tables, owned values, strict field/type/sequence checks,
+conversion_limits; null sentinel сохраняет optional в arrays, wide uint64 — immutable userdata.
+Нет pointer/handle serialization или исполнения Lua text. Подробности — README.md.
+install_critical_error_policy ставить после open_libraries до загрузки sandbox/user code.
+На КАЖДОЙ host protected-call границе вызывать rethrow_critical_error, даже при valid result
+(coroutine.resume может вернуть управление). Это восстанавливает исходный utils::critical_error;
+обычные Lua errors остаются catchable. Не регистрировать новые Lua states в обход этой границы.
+Проверки: bindings_data_test и originator_queue_lua_test.

@@ -97,6 +97,8 @@ public:
   ~fixed_pool_mt() noexcept;
 
   fixed_pool_mt(const fixed_pool_mt& allocator) noexcept = delete;
+  // Передаёт backing storage и выданные blocks. Возвращать их после move нужно новому owner.
+  // Moved-from pool пуст; allocate() возвращает nullptr до следующего move assignment.
   fixed_pool_mt(fixed_pool_mt&& move) noexcept;
   fixed_pool_mt& operator=(const fixed_pool_mt& allocator) noexcept = delete;
   fixed_pool_mt& operator=(fixed_pool_mt&& move) noexcept;

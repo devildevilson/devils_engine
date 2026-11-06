@@ -391,11 +391,29 @@ External job сейчас означает переход, который loader
 - просканировать root;
 - найти папки и zip/mod файлы;
 - посчитать hash для архивов;
-- загрузить `.json` списки;
-- сохранить list-файл;
+- загрузить versioned `.tavl` списки одним codec с `module_system`;
+- атомарно сохранить list-файл;
 - вернуть available lists и module entries.
 
 Это не основной runtime registry, а tooling/helper вокруг выбора набора модулей.
+
+Профиль `selected.tavl` (порядок modules определяет override priority):
+
+```tavl
+version = 1
+modules = [
+  { path = "core/", hash = "", file_date = "" }
+  { path = "example.zip", hash = "", file_date = "" }
+]
+```
+
+`set_modules_list("selected")` выбирает этот профиль. Пути относительны modules root;
+hash пустой или lowercase SHA256. Неверные version/types/duplicate/unknown fields и paths
+отклоняются у codec. Hash validation при runtime load сохраняет прежнюю семантику.
+JSON runtime fallback удалён. Миграция выполняется явно:
+`python3 scripts/convert_module_profile.py path/selected.json`.
+Скрипт создаёт соседний `.tavl`, не перезаписывает существующие файлы и требует вручную
+исправить абсолютные/выходящие из root пути. Исходный JSON остаётся на месте.
 
 ## Что Уже Умеет
 

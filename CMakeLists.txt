@@ -247,15 +247,6 @@ endif()
 #set(BUILD_SHARED_LIBS ON)
 
 FetchContent_Declare(
-  glaze
-  GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-  GIT_TAG        v8.3.0 # version 5.1.2
-  GIT_SHALLOW    TRUE
-  GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE
-)
-
-FetchContent_Declare(
   gtl
   GIT_REPOSITORY https://github.com/greg7mdp/gtl.git
   #GIT_TAG        v1.2.0
@@ -656,7 +647,7 @@ function(protobuf_generate_cpp SRCS HDRS)
 endfunction()
 ]==])
 
-FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest CLI11 cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi JoltPhysics) # RE-flex
+FetchContent_MakeAvailable(gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest CLI11 cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi JoltPhysics) # RE-flex
 
 macro(install)
 endmacro()

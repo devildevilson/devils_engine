@@ -8,7 +8,7 @@
 
 ## Границы и контракты
 
-- `serialization.h`, `state_schema.h`, `serialization_sink.h`, `named_serializer.h` — общие bytes/schema.
+- `serialization.h`, `state_schema.h`, `serialization_sink.h` — общие bytes/schema.
   ECS-проекция остаётся в aesthetics, сетевой state projection — в network. Не копировать codec.
 - `atomic_file.h` — same-directory transaction; не заменять проверенную atomic publication на
   запись прямо в destination. `fileio.h` сохраняет отдельную роль обычного I/O.
@@ -38,3 +38,13 @@ CMake проверяет зависимости zstd/ZLIB; не предпола
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
 [указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
 хронологию экспериментов — в отдельном audit/history.
+
+## Технический аудит 2026-11-07
+
+Ориентир ресурсов и critical-error policy — в корневом AGENTS и TECHNICAL_AUDIT.md.
+Исправлены F-01 (pool teardown: drain + join до разрушения членов), F-03 (move переносит
+выданные blocks; source пуст), F-08 (variadic min). Регрессии: thread_general_test,
+fixed_pool_move_test, utils_contract_test. Destruction требует остановленных producers.
+Core разбирается на narrow headers с сохранением публичных имён; Lua converter принадлежит
+bindings_base. Zpp_bits и glaze в живом коде отсутствуют; named_serializer удалён.
+utils::error бросает critical_error; не подавлять этот тип ради успешного продолжения.

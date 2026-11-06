@@ -37,3 +37,11 @@ Modules, registry, stable resource handles, staged load/unload. `module_system.h
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
 [указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
 хронологию экспериментов — в отдельном audit/history.
+
+## Технический аудит 2026-11-07
+
+F-04/F-05 исправлены: ZIP проверяет byte counts/short read/CRC; listing использует filesystem
+extension и проверяет поиск до разыменования. Профили — versioned TAVL (module_profile.h),
+единый reader/writer для listing и system, atomic publication. Пути относительны modules root,
+порядок modules сохраняется. Legacy JSON мигрирует scripts/convert_module_profile.py; скрытого
+fallback нет. Проверка — demiurg_profile_test. Dependency cycle warn/skip остаётся задачей аудита.

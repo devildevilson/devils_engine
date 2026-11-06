@@ -464,3 +464,12 @@ TEST_CASE("atomic file reports replace failure before commit [utils::atomic_file
 
   fs::remove_all(root);
 }
+
+TEST_CASE("variadic minimum considers every argument") {
+  CHECK(devils_engine::utils::min(9, 1, 7) == 1);
+  CHECK(devils_engine::utils::min(9, 7, 1, 5) == 1);
+  CHECK(devils_engine::utils::min(1, 1, 1) == 1);
+  const int a = 9, b = 1, c = 7, tied = 1;
+  CHECK(&devils_engine::utils::min(a, b, c) == &b);
+  CHECK(&devils_engine::utils::min(b, tied, c) == &b);
+}

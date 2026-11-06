@@ -57,3 +57,23 @@ TEST_CASE("FSM resource parses native TAVL transition rows and parenthesized act
 
   fs::remove_all(root);
 }
+
+TEST_CASE("FSM transitions cannot borrow another field's array") {
+  namespace fs = std::filesystem;
+  using namespace devils_engine;
+  const auto root = fs::temp_directory_path() / "devils_engine_fsm_rejection_test";
+  for (const auto& text : {"transitions = wrong\nunrelated = [ idle = run ]\n", "transitions = []\ntransitions = []", "transitions =", "other = []"}) {
+    fs::remove_all(root);
+    fs::create_directories(root / "core" / "fsm");
+    { std::ofstream out(root / "core" / "fsm" / "bad.tavl"); out << text; }
+    demiurg::module_system modules(root.generic_string() + "/");
+    modules.load_default_modules();
+    demiurg::resource_system resources;
+    resources.register_type<mood::fsm_resource>("fsm", "tavl");
+    resources.parse_resources(&modules);
+    auto* resource = resources.get<mood::fsm_resource>("fsm/bad");
+    REQUIRE(resource != nullptr);
+    CHECK_THROWS_AS(resource->load(utils::safe_handle_t{}), std::runtime_error);
+  }
+  fs::remove_all(root);
+}

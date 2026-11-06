@@ -65,6 +65,14 @@ atomic_pool::atomic_pool(const size_t thread_count)
 }
 
 atomic_pool::~atomic_pool() noexcept {
+  if (is_dependent(std::this_thread::get_id())) {
+    utils::error{}("atomic_pool: destruction from a worker would wait for its own task");
+  }
+  // Producers должны быть остановлены владельцем до teardown. Все уже принятые задачи
+  // завершаются, включая caller-only pool. Нельзя уничтожать captures, allocator и CV
+  // раньше join: jthread members присоединялись после разрушения этих полей.
+  compute();
+  wait();
   stop_source.request_stop();
   // тот же барьер: гарантируем, что воркер, засыпающий прямо сейчас, увидит stop и не проспит
   // notify_all (иначе jthread не завершится и join в векторе workers зависнет).
@@ -72,6 +80,9 @@ atomic_pool::~atomic_pool() noexcept {
     std::lock_guard<std::mutex> lk(cv_mtx);
   }
   cv.notify_all();
+  for (auto& worker : workers) {
+    if (worker.joinable()) worker.join();
+  }
 }
 
 //void atomic_pool::submitbase(task_t f) noexcept {

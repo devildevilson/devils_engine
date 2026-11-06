@@ -459,6 +459,7 @@ private:
 
     sol::protected_function require = env["require"];
     const auto ret = require(c.ui_entry_script);
+    bindings::rethrow_critical_error(lua.lua_state());
     if (!ret.valid()) {
       const sol::error err = ret;
       utils::error{}("visage: could not require entry module '{}': {}", c.ui_entry_script, err.what());

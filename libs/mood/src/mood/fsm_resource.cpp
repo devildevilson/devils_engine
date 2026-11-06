@@ -159,14 +159,17 @@ void parse_fsm_config(demiurg::resource_interface& resource, fsm_config& config)
     if (event.type == ev_t::eof) {
       break;
     }
+    if (is_trivia(event.type) || event.type == ev_t::row_end) continue;
     if (event.type != ev_t::got_row_identifier || token_text(parser, event) != "transitions") {
-      continue;
+      utils::error{}("fsm resource '{}': expected top-level transitions field at {}:{}", resource.id, event.token.span.line + 1, event.token.span.column + 1);
     }
 
+    if (found_transitions) utils::error{}("fsm resource '{}': duplicate transitions array at {}:{}", resource.id, event.token.span.line + 1, event.token.span.column + 1);
     found_transitions = true;
-    do {
-      parsed = poll(parser, resource);
-    } while (parsed.event.type != ev_t::array_begin && parsed.event.type != ev_t::eof);
+    parsed = next_transition_event(parser, resource);
+    if (parsed.event.type == ev_t::got_row_operator && token_text(parser, parsed.event) == "=") {
+      parsed = next_transition_event(parser, resource);
+    }
     if (parsed.event.type != ev_t::array_begin) {
       utils::error{}("fsm resource '{}': transitions must be a TAVL array", resource.id);
     }

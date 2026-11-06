@@ -160,36 +160,19 @@ fixed_pool_mt::~fixed_pool_mt() noexcept {
   operator delete(m_memory, std::align_val_t{m_aligment});
 }
 
-fixed_pool_mt::fixed_pool_mt(fixed_pool_mt&& move) noexcept : m_aligment(move.m_aligment), m_block_size(move.m_block_size), m_size(move.m_size), m_memory(move.m_memory), m_stack(nullptr) {
-  m_stack.store(move.m_stack.exchange(nullptr));
-
-  // переделываем
-  move.m_memory = reinterpret_cast<char*>(operator new(m_size, std::align_val_t{m_aligment}));
-  int64_t offset = (m_size / m_block_size) * m_block_size;
-  while (offset > 0) {
-    const size_t cur_pos = offset - m_block_size;
-    auto cur_stack_el = new (&move.m_memory[cur_pos]) stack_element_t();
-    utils::forw::atomic_list_push<0>(move.m_stack, cur_stack_el);
-  }
-}
+fixed_pool_mt::fixed_pool_mt(fixed_pool_mt&& move) noexcept
+  : m_aligment(move.m_aligment), m_block_size(move.m_block_size),
+    m_size(std::exchange(move.m_size, 0)), m_memory(std::exchange(move.m_memory, nullptr)),
+    m_stack(move.m_stack.exchange(nullptr)) {}
 
 fixed_pool_mt& fixed_pool_mt::operator=(fixed_pool_mt&& move) noexcept {
+  if (this == &move) return *this;
   operator delete(m_memory, std::align_val_t{m_aligment});
-
   m_aligment = move.m_aligment;
   m_block_size = move.m_block_size;
-  m_size = move.m_size;
-  m_memory = move.m_memory;
+  m_size = std::exchange(move.m_size, 0);
+  m_memory = std::exchange(move.m_memory, nullptr);
   m_stack.store(move.m_stack.exchange(nullptr));
-
-  move.m_memory = reinterpret_cast<char*>(operator new(m_size, std::align_val_t{m_aligment}));
-  int64_t offset = (m_size / m_block_size) * m_block_size;
-  while (offset > 0) {
-    const size_t cur_pos = offset - m_block_size;
-    auto cur_stack_el = new (&move.m_memory[cur_pos]) stack_element_t();
-    utils::forw::atomic_list_push<0>(move.m_stack, cur_stack_el);
-  }
-
   return *this;
 }
 

@@ -6,7 +6,7 @@
 #include "catalogue_domain.h"
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
-#include "devils_engine/utils/named_serializer.h"
+#include "devils_engine/demiurg/module_profile.h"
 #include "devils_engine/utils/sha256cpp.h"
 #include "devils_engine/utils/time-utils.hpp"
 #include "folder_module.h"
@@ -168,10 +168,10 @@ std::vector<module_system::list_entry> module_system::load_list(const std::strin
   if (list_name.empty()) {
     const auto core_file = "core.zip";
     const auto core_folder = "core/";
-    if (file_io::exists(path() + core_file)) {
+    if (file_io::exists((fs::path(path()) / core_file).generic_string())) {
       std::vector<list_entry> e{list_entry{core_file, "", ""}};
       return e;
-    } else if (file_io::exists(path() + core_folder)) {
+    } else if (file_io::exists((fs::path(path()) / core_folder).generic_string())) {
       std::vector<list_entry> e{list_entry{core_folder, "", ""}};
       return e;
     }
@@ -179,19 +179,7 @@ std::vector<module_system::list_entry> module_system::load_list(const std::strin
     utils::error{}("'{}' is not exist???", core_file);
   }
 
-  const auto list_path = std::string(list_name) + ".json";
-  if (!file_io::exists(path() + list_path)) {
-    utils::error{}("File '{}' not exists", list_path);
-  }
-
-  const auto cont = file_io::read(path() + list_path);
-  std::vector<list_entry> list_entries;
-  const auto ec = utils::from_json(list_entries, cont);
-  if (ec) {
-    utils::error{}("Could not parse json '{}' for struct '{}' (err code: {})", list_path, "std::vector<list_entry>", static_cast<size_t>(ec.ec));
-  }
-
-  return list_entries;
+  return read_module_profile(module_profile_path(path(), list_name)).modules;
 }
 
 void module_system::load_modules(std::vector<list_entry> paths) {
@@ -199,7 +187,7 @@ void module_system::load_modules(std::vector<list_entry> paths) {
   loaded_module_list.clear();
 
   for (const auto& entry : paths) {
-    const auto full_entry_path = path() + entry.path;
+    const auto full_entry_path = (fs::path(path()) / entry.path).generic_string();
     const auto e = fs::directory_entry(full_entry_path);
     if (!e.exists()) {
       // ошибка? не, попробуем все равно загрузиться

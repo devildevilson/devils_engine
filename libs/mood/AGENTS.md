@@ -31,3 +31,9 @@ FSM store и отдельные runtime conventions. Цель `devils_engine::mo
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
 [указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
 хронологию экспериментов — в отдельном audit/history.
+
+## Технический аудит 2026-11-07
+
+Нативные resource transitions уже без кавычек, actions в tuple; tavl v1.1.2 это поддерживает.
+Новый parser extension ради снятия кавычек не нужен. F-07 исправлен: transitions должен
+непосредственно содержать array. Unrelated/duplicate/missing/EOF — ошибки, fsm_config_test.
