@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include <filesystem>
 
 #include "devils_engine/utils/core.h"

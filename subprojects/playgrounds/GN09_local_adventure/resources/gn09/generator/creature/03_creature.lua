@@ -110,51 +110,44 @@ return function(step)
   for _, other in ipairs(near) do
     if other.key ~= own_key and halls_touch(h, other) and #halls < 3 then halls[#halls + 1] = other end
   end
-  local depth, around = {}, {}
-  for i = 0, node_count - 1 do depth[i] = -1; around[i] = {} end
-  for _, e in ipairs(edges) do
-    around[e.a][#around[e.a] + 1] = e.b
-    around[e.b][#around[e.b] + 1] = e.a
-  end
-  local queue, head = {}, 1
-  local function seed_halls()
-    for i = 0, node_count - 1 do
-      if depth[i] < 0 and not W.is_base(route[i].kind) and in_halls(halls, route[i]) then
-        depth[i] = 0
-        queue[#queue + 1] = i
-      end
+  local depth={}
+  for i=0,node_count-1 do depth[i]=-1 end
+  local around=originator.algorithms.adjacency(node_count,#edges,function(i)
+    local e=edges[i+1];return e.a,e.b
+  end)
+  local function seed_halls(seed)
+    for i=0,node_count-1 do
+      if depth[i]<0 and not W.is_base(route[i].kind) and in_halls(halls,route[i]) then seed(i,0) end
     end
   end
-  seed_halls()
-  local passages = {}
-  while head <= #queue do
-    local current = queue[head]
-    head = head + 1
-    for _, nxt in ipairs(around[current]) do
+  local passages={}
+  originator.algorithms.propagate{
+    adjacency=around,state=depth,max_visits=node_count*4,
+    initial=seed_halls,
+    transition=function(current,nxt,current_depth,old_depth,seed)
       if not W.is_base(route[nxt].kind) then
         local next_in_hall = in_halls(halls, route[nxt])
-        local next_depth = next_in_hall and 0 or depth[current] + 1
+        local next_depth = next_in_hall and 0 or current_depth + 1
         if next_depth <= 4 and body_fits(route[current], route[nxt], h.body_radius) then
           passages[#passages + 1] = { math.min(current, nxt), math.max(current, nxt) }
-          if depth[nxt] < 0 then
+          if old_depth < 0 then
             if not next_in_hall and #halls < 3 then
               for _, other in ipairs(near) do
                 local listed = false
                 for _, x in ipairs(halls) do if x == other then listed = true break end end
                 if not listed and inside(other, route[nxt]) then
                   halls[#halls + 1] = other
-                  seed_halls()
+                  seed_halls(seed)
                   break
                 end
               end
             end
-            depth[nxt] = in_halls(halls, route[nxt]) and 0 or next_depth
-            queue[#queue + 1] = nxt
+            return in_halls(halls, route[nxt]) and 0 or next_depth
           end
         end
       end
-    end
-  end
+    end,
+  }
   table.sort(passages, function(x, y) return x[1] < y[1] or (x[1] == y[1] and x[2] < y[2]) end)
 
   local function write_keys(buffer, keys, what)

@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "devils_engine/originator/pipeline.h"
 
 #include <algorithm>
@@ -377,7 +378,7 @@ pipeline::pipeline(pipeline_description description, const size_table& sizes, co
 
 pipeline::pipeline(pipeline_description description, const size_table& sizes, const uint64_t seed,
                    std::span<const buffer* const> linked) :
-  description_(std::move(description)), linked_(linked.begin(), linked.end()), seed_(seed) {
+  description_(std::move(description)), seed_(seed), linked_(linked.begin(), linked.end()) {
   build(sizes);
   validate();
 }
@@ -665,6 +666,7 @@ void pipeline::run_step(const size_t index, const step_invoker& invoker) {
   const auto& step = description_.steps[index];
 
   step_context context;
+  context.generation = generation_;
   context.name = step.name;
   context.index = index;
   // Зерно шага — функция от зерна пайплайна и ИМЕНИ шага, а не позиция в потоке случайности:

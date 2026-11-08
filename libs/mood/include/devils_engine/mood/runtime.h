@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_MOOD_RUNTIME_H
 #define DEVILS_ENGINE_MOOD_RUNTIME_H
 
+#include "devils_engine/utils/log.h"
+
 #include <cstdint>
 #include <span>
 

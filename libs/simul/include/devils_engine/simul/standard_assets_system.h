@@ -1,6 +1,9 @@
 #ifndef DEVILS_ENGINE_SIMUL_STANDARD_ASSETS_SYSTEM_H
 #define DEVILS_ENGINE_SIMUL_STANDARD_ASSETS_SYSTEM_H
 
+#include "devils_engine/utils/log.h"
+#include "devils_engine/utils/platform.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>

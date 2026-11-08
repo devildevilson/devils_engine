@@ -1,3 +1,5 @@
+#include "devils_engine/playground/generator_resources.h"
+#include "devils_engine/playground/cli.h"
 #include <algorithm>
 #include <chrono>
 #include <charconv>
@@ -99,17 +101,13 @@ fs::path resource_root() {
 }
 
 struct generator_registry {
-  demiurg::module_system modules;
-  demiurg::resource_system resources;
+  playground::generator_resources source;
   originator::generator_config dungeon;
   originator::generator_config building;
 
-  generator_registry() : modules(resource_root().generic_string() + "/") {
-    modules.load_modules({demiurg::module_system::list_entry{"gn06/", "", ""}});
-    originator::register_generator_resources(resources);
-    resources.parse_resources(&modules);
-    dungeon = originator::load_generator(resources, "generator/dungeon");
-    building = originator::load_generator(resources, "generator/building");
+  generator_registry() : source(resource_root(), {{"gn06/", "", ""}}) {
+    dungeon = originator::load_generator(source.resources(), "generator/dungeon");
+    building = originator::load_generator(source.resources(), "generator/building");
   }
 };
 
@@ -130,131 +128,46 @@ originator::tool_registry& tools() {
   return registry;
 }
 
-bool starts_with(const std::string_view& text, const std::string_view& prefix) {
-  return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
-}
 
-options parse_options(const int argc, const char** argv) {
-  options result;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view argument = argv[i];
-    if (argument == "--verify") {
-      result.verify = true;
-    } else if (argument == "--ascii") {
-      result.ascii = true;
-    } else if (argument == "--viewer") {
-      result.viewer = true;
-    } else if (starts_with(argument, "--frames=")) {
-      result.viewer_frames = uint32_t(std::stoul(std::string(argument.substr(9))));
-      result.viewer_frames_set = true;
-    } else if (starts_with(argument, "--mode=")) {
-      const auto name = argument.substr(7);
-      if (name == "cave") result.mode = generator_mode::cave;
-      else if (name == "building") result.mode = generator_mode::building;
-      else if (name == "motifs") result.mode = generator_mode::motifs;
-      else if (name == "site") result.mode = generator_mode::site;
-      else utils::error{}("GN06: unknown mode '{}'", name);
-    } else if (starts_with(argument, "--size=")) {
-      result.side = std::stoul(std::string(argument.substr(7)));
-      result.side_set = true;
-    } else if (starts_with(argument, "--view=")) {
-      result.view = std::stoul(std::string(argument.substr(7)));
-      result.view_set = true;
-    } else if (starts_with(argument, "--window=")) {
-      // Четыре числа через запятую: окно участка В МЕРЕ. Разбор нарочно строгий — окно из трёх чисел
-      // означало бы, что автор имел в виду что-то ещё.
-      const auto text = std::string(argument.substr(9));
-      int64_t values[4] = {0, 0, 0, 0};
-      size_t from = 0;
-      size_t taken = 0;
-      while (taken < 4 && from <= text.size()) {
-        const auto comma = text.find(',', from);
-        const auto piece = text.substr(from, comma == std::string::npos ? std::string::npos : comma - from);
-        if (piece.empty()) break;
-        values[taken++] = std::stoll(piece);
-        if (comma == std::string::npos) break;
-        from = comma + 1;
-      }
-      if (taken != 4) {
-        utils::error{}("GN06: --window wants four numbers x,y,w,h in plot units, got '{}'", text);
-      }
-      result.window_x = values[0];
-      result.window_y = values[1];
-      result.window_w = values[2];
-      result.window_h = values[3];
-      result.window_set = true;
-    } else if (starts_with(argument, "--seed=")) {
-      result.seed = std::stoull(std::string(argument.substr(7)));
-    } else if (starts_with(argument, "--rooms=")) {
-      result.rooms = std::stoll(std::string(argument.substr(8)));
-    } else if (starts_with(argument, "--loops=")) {
-      result.extra_links = std::stoll(std::string(argument.substr(8)));
-    } else if (starts_with(argument, "--corridor=")) {
-      result.corridor_width = std::stoll(std::string(argument.substr(11)));
-    } else if (starts_with(argument, "--dump=")) {
-      result.dump = std::string(argument.substr(7));
-    } else if (starts_with(argument, "--scale=")) {
-      result.motif_scale = std::string(argument.substr(8));
-      result.motif_scale_set = true;
-    } else if (starts_with(argument, "--bounds=")) {
-      const auto text = argument.substr(9);
-      const auto comma = text.find(',');
-      if (comma == std::string_view::npos) {
-        utils::error{}("GN06: --bounds wants width,height in plot units");
-      }
-      const auto parse_dimension = [&](const std::string_view number) {
-        uint32_t dimension = 0;
-        const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), dimension);
-        if (error != std::errc{} || end != number.data() + number.size() || dimension < 32 || dimension > 4096) {
-          utils::error{}("GN06: --bounds dimensions must be in 32..4096, got '{}'", number);
-        }
-        return dimension;
-      };
-      result.site_bounds = {parse_dimension(text.substr(0, comma)), parse_dimension(text.substr(comma + 1))};
-      result.site_bounds_set = true;
-    } else if (starts_with(argument, "--entry-y=")) {
-      result.motif_entry_y = std::stoi(std::string(argument.substr(10)));
-      result.motif_entry_set = true;
-    } else if (argument == "--surface=cut") {
-      result.surface_cut = true;
-      result.surface_set = true;
-    } else if (argument == "--surface=flat") {
-      result.surface_cut = false;
-      result.surface_set = true;
-    } else if (argument == "--help" || argument == "-h") {
-      std::cout << "GN06 dungeon layout lab\n"
-                << "  --mode=NAME     building (по умолчанию), cave, motifs, site (граф одной локации)\n"
-                << "  --scale=NAME    small, medium или large для motifs/site\n"
-                << "  --bounds=W,H    жёсткий прямоугольный участок site, независимо от --scale\n"
-                << "  --entry-y=N     высота основного входа на западном краю (motifs/site)\n"
-                << "  --surface=NAME  flat или cut: синтетическое пересечение с поверхностью (motifs/site)\n"
-                << "  --viewer        интерактивный 2D-просмотр motifs/site (N/B seed, Tab части, R маршрут, PgUp/PgDn свойства)\n"
-                << "  --frames=N      закрыть просмотрщик после N кадров (для smoke-проверки)\n"
-                << "  --size=N        сторона УЧАСТКА в мере (по умолчанию 64)\n"
-                << "  --view=N        сторона картинки в клетках (по умолчанию как участок, один к одному)\n"
-                << "  --window=X,Y,W,H окно участка в мере (по умолчанию весь участок)\n"
-                << "  --seed=N        зерно пайплайна\n"
-                << "  --rooms=N       ёмкость списка комнат (переопределяет конфиг)\n"
-                << "  --loops=N       сколько петель добавить поверх остова\n"
-                << "  --corridor=N    толщина коридора в клетках\n"
-                << "  --ascii         напечатать карту в терминал\n"
-                << "  --dump=PATH     сохранить карту в PPM — ДЛЯ ГЛАЗА, не для конвейера\n"
-                << "  --verify        прогнать контрактные проверки\n";
-      std::exit(0);
-    } else {
-      utils::error{}("GN06: unknown argument '{}'", argument);
-    }
-  }
-  if (result.side < 8) {
-    utils::error{}("GN06: a plot smaller than eight units holds no room with a wall around it");
-  }
-  if (result.view_side() < 8) {
-    utils::error{}("GN06: a picture smaller than eight cells shows nothing worth looking at");
-  }
-  if (result.window_w == 0 || result.window_h == 0) {
-    utils::error{}("GN06: an empty window shows an empty picture, which is not a question worth asking");
-  }
-  return result;
+
+std::optional<int> parse_options(const int argc, const char* const* argv, options& result) {
+  CLI::App app{"GN06_dungeon_layout"};
+  app.option_defaults()->always_capture_default();
+  app.add_flag("--verify", result.verify, "Verify contracts");
+  app.add_flag("--ascii", result.ascii, "ASCII map");
+  app.add_flag("--viewer", result.viewer, "Open motif/site viewer");
+  std::string mode = "building", surface = "flat";
+  app.add_option("--mode", mode, "Generator mode")->check(CLI::IsMember({"building", "cave", "motifs", "site"}));
+  app.add_option("--size", result.side, "Plot side")->check(CLI::Range(size_t(8), std::numeric_limits<size_t>::max()));
+  app.add_option("--view", result.view, "Raster side (0 = plot side)")->check(CLI::Range(size_t(8), std::numeric_limits<size_t>::max()) | CLI::IsMember({"0"}));
+  app.add_option("--seed", result.seed, "World seed");
+  app.add_option("--rooms", result.rooms, "Room capacity")->check(CLI::Range(int64_t(-1), std::numeric_limits<int64_t>::max()));
+  app.add_option("--loops", result.extra_links, "Extra links")->check(CLI::Range(int64_t(-1), std::numeric_limits<int64_t>::max()));
+  app.add_option("--corridor", result.corridor_width, "Corridor width")->check(CLI::Range(int64_t(-1), std::numeric_limits<int64_t>::max()));
+  app.add_option("--dump", result.dump, "Output PPM");
+  app.add_option("--scale", result.motif_scale, "Motif scale")->check(CLI::IsMember({"small", "medium", "large"}));
+  app.add_option("--entry-y", result.motif_entry_y, "Entrance height");
+  app.add_option("--frames", result.viewer_frames, "Viewer frame limit");
+  app.add_option("--surface", surface, "Synthetic surface")->check(CLI::IsMember({"flat", "cut"}));
+  std::array<int64_t, 4> window{result.window_x, result.window_y, result.window_w, result.window_h};
+  playground::add_tuple(app, "--window", window, ',', [](const auto& v) { return v[2] != 0 && v[3] != 0; });
+  std::array<uint32_t, 2> bounds{result.site_bounds.width, result.site_bounds.height};
+  playground::add_tuple(app, "--bounds", bounds, ',', [](const auto& v) { return v[0] >= 32 && v[0] <= 4096 && v[1] >= 32 && v[1] <= 4096; });
+
+  if (auto code = playground::parse_cli(app, argc, argv)) return code;
+  result.mode = mode == "cave" ? generator_mode::cave : mode == "motifs" ? generator_mode::motifs : mode == "site" ? generator_mode::site : generator_mode::building;
+  result.side_set = app.count("--size") != 0;
+  result.view_set = app.count("--view") != 0;
+  result.window_set = app.count("--window") != 0;
+  result.window_x = window[0]; result.window_y = window[1]; result.window_w = window[2]; result.window_h = window[3];
+  result.site_bounds = {bounds[0], bounds[1]};
+  result.site_bounds_set = app.count("--bounds") != 0;
+  result.motif_scale_set = app.count("--scale") != 0;
+  result.motif_entry_set = app.count("--entry-y") != 0;
+  result.viewer_frames_set = app.count("--frames") != 0;
+  result.surface_set = app.count("--surface") != 0;
+  result.surface_cut = surface == "cut";
+  return std::nullopt;
 }
 
 int64_t building_number(const char* name) {
@@ -1614,13 +1527,14 @@ int run_building_verify(const options& opts) {
 
 int main(const int argc, const char** argv) {
   try {
-    const auto opts = parse_options(argc, argv);
+    options opts;
+    if (auto code = parse_options(argc, argv, opts)) return *code;
     if (opts.mode == generator_mode::site) {
       if (opts.side_set || opts.view_set || opts.window_set || opts.rooms >= 0 ||
           opts.extra_links >= 0 || opts.corridor_width >= 0)
         utils::error{}("GN06 site: --size, --view, --window, --rooms, --loops and --corridor do not apply");
-      const auto source = originator::read_generator_source(generator().resources, "generator/site");
-      const auto motifs = originator::read_generator_source(generator().resources, "generator/site_motifs");
+      const auto source = originator::read_generator_source(generator().source.resources(), "generator/site");
+      const auto motifs = originator::read_generator_source(generator().source.resources(), "generator/site_motifs");
       if (opts.viewer) {
         if (opts.verify || opts.ascii || !opts.dump.empty())
           utils::error{}("GN06 site viewer: --verify, --ascii and --dump are separate headless views");
@@ -1647,7 +1561,7 @@ int main(const int argc, const char** argv) {
       if (opts.view_set || opts.window_set || opts.rooms >= 0 ||
           opts.extra_links >= 0 || opts.corridor_width >= 0)
         utils::error{}("GN06 motifs: --view, --window, --rooms, --loops and --corridor belong to the older modes");
-      const auto catalogue = originator::read_generator_source(generator().resources, "generator/motifs");
+      const auto catalogue = originator::read_generator_source(generator().source.resources(), "generator/motifs");
       if (opts.viewer) {
         if (opts.verify || opts.ascii || !opts.dump.empty())
           utils::error{}("GN06 motifs viewer: --verify, --ascii and --dump are separate headless views");

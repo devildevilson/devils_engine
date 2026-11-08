@@ -64,7 +64,7 @@ set(HDR_LIST
 )
 
 add_library(devils_input ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_input PRIVATE devils_engine::options devils_engine::utils glfw Vulkan::Headers)
+target_link_libraries(devils_input PUBLIC devils_engine::options devils_engine::utils PRIVATE glfw Vulkan::Headers)
 target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_input PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/input>")
 

@@ -19,14 +19,6 @@ local function profile(seed,p)
   for key,value in pairs(va) do out[key]=value*(1-blend)+vb[key]*blend end
   return out
 end
-local function curve(a,b,c,d,t)
-  -- Catmull-Rom through logical waypoints; endpoints are repeated for end tangents.
-  local out={}
-  for _,axis in ipairs({'x','y','z'}) do
-    out[axis]=0.5*((2*b[axis])+(-a[axis]+c[axis])*t+(2*a[axis]-5*b[axis]+4*c[axis]-d[axis])*t*t+(-a[axis]+3*b[axis]-3*c[axis]+d[axis])*t*t*t)
-  end
-  return out
-end
 return function(step)
   local seed=step.world_seed
   local owner=W.get(step.reads.network_node:field("centre"),0)
@@ -39,6 +31,7 @@ return function(step)
   end
   local np,ns,nr,nc=0,0,0,0
   local passages,shelters,ribs=step.writes.passages,step.writes.shelters,step.writes.ribs
+  local write_segment=originator.algorithms.segment_writer(passages,{raw_direction=true,normalize_up=true,positive_y=true})
   local function protect(a,b,r)
     assert(ns<shelters:count(),'shelter capacity exceeded')
     W.capsule(shelters,ns,a,b,r,1);ns=ns+1
@@ -56,7 +49,7 @@ return function(step)
       local last=segment.a
       local steps=math.max(2,math.ceil(W.length(W.sub(segment.b,segment.a))/constants.terrain_segment_length))
       for j=1,steps do
-        local point=curve(previous,segment.a,segment.b,following,j/steps)
+        local point=originator.algorithms.catmull_rom(previous,segment.a,segment.b,following,j/steps)
         local pa,pb=profile(seed,last),profile(seed,point)
         local phase=base.prng64_normalize(base.mix(route,901))*math.pi*2
         local function pulse(p,values)
@@ -68,14 +61,7 @@ return function(step)
         local d=W.sub(point,last);local length=W.length(d)
         if length>0.01 then
           assert(np<passages:count(),'terrain passage capacity exceeded')
-          local horizontal=math.sqrt(d.x*d.x+d.z*d.z)
-          local right=horizontal<0.001 and {x=1,y=0,z=0} or {x=-d.z/horizontal,y=0,z=d.x/horizontal}
-          local up=W.normal({x=-d.y*right.z,y=d.x*right.z-d.z*right.x,z=d.y*right.x})
-          -- Cross(right,tangent) points up.
-          if up.y<0 then up=W.scale(up,-1) end
-          W.put(passages:field('a'),np,last);W.put(passages:field('b'),np,point)
-          W.put(passages:field('right'),np,right);W.put(passages:field('up'),np,up)
-          passages:field('length2'):set(np,length*length)
+          local right,up=write_segment(np,last,point)
           for _,item in ipairs({{'width_a',pa.width},{'width_b',pb.width},{'roof_a',pa.roof},{'roof_b',pb.roof},{'floor_a',pa.floor},{'floor_b',pb.floor}}) do passages:field(item[1]):set(np,item[2]) end
           passages:field('relief'):set(np,math.max(pa.relief,pb.relief))
           passages:field('phase'):set(np,phase)
@@ -145,14 +131,14 @@ return function(step)
   end
   local nodes=step.reads.network_nodes
   local edges=step.reads.network_edges
-  local adjacency={}
-  local positions={}
-  for i=0,nodes:count()-1 do positions[nodes:field('key'):get(i)]=W.get(nodes:field('centre'),i) end
-  for i=0,edges:count()-1 do
-    local a,b=edges:field('a'):get(i),edges:field('b'):get(i)
-    adjacency[a]=adjacency[a] or {};adjacency[b]=adjacency[b] or {}
-    adjacency[a][#adjacency[a]+1]=b;adjacency[b][#adjacency[b]+1]=a
+  local positions,keys={},{}
+  for i=0,nodes:count()-1 do
+    local key=nodes:field('key'):get(i)
+    keys[#keys+1]=key;positions[key]=W.get(nodes:field('centre'),i)
   end
+  local adjacency=originator.algorithms.adjacency(keys,edges:count(),function(i)
+    return edges:field('a'):get(i),edges:field('b'):get(i)
+  end)
   for i=0,nodes:count()-1 do
     local key=nodes:field('key'):get(i)
     local p=positions[key]

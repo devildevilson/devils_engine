@@ -1,6 +1,9 @@
+#include "script_math.h"
+#include "script_ast.h"
 #include "devils_engine/originator/script_column.h"
 
 #include <algorithm>
+#include <charconv>
 #include <array>
 #include <cmath>
 #include <format>
@@ -30,7 +33,7 @@ enum class op_code : uint8_t {
   add, sub, mul, div, mod, neg,
   lt, gt, le, ge, eq, ne, land, lor, lnot,
   choose, // c ? a : b
-  min, max, abs, floor, ceil, round, trunc, sqrt, isqrt, exp, sin, cos, tan, asin, acos, atan, atan2, sign,
+  pow, min, max, abs, floor, ceil, round, trunc, sqrt, isqrt, exp, sin, cos, tan, asin, acos, atan, atan2, sign,
   fma, fract, mix, clamp, smoothstep, step, inv
 };
 
@@ -48,7 +51,7 @@ struct named_function {
 constexpr named_function functions[] = {
   {"min", op_code::min, 2},     {"max", op_code::max, 2},       {"abs", op_code::abs, 1},
   {"floor", op_code::floor, 1}, {"ceil", op_code::ceil, 1},     {"round", op_code::round, 1},
-  {"trunc", op_code::trunc, 1}, {"sqrt", op_code::sqrt, 1},     {"inversesqrt", op_code::isqrt, 1},
+  {"pow", op_code::pow, 2}, {"trunc", op_code::trunc, 1}, {"sqrt", op_code::sqrt, 1},     {"inversesqrt", op_code::isqrt, 1},
   {"exp", op_code::exp, 1},     {"sin", op_code::sin, 1},       {"cos", op_code::cos, 1},
   {"tan", op_code::tan, 1},     {"asin", op_code::asin, 1},     {"acos", op_code::acos, 1},
   {"sign", op_code::sign, 1},   {"fma", op_code::fma, 3},       {"fract", op_code::fract, 1},
@@ -87,16 +90,18 @@ struct compiler {
   std::span<const std::string> scalars;
   std::vector<std::pair<std::string, uint16_t>> saved;
   uint32_t branch_depth = 0;
+  std::string refusal;
   static constexpr uint16_t none = UINT16_MAX;
 
   std::string_view text(const tavl::token& token) const { return parser->content(token.span); }
 
-  [[noreturn]] void refuse(const tavl::token& token, const std::string_view& what) const {
-    utils::error{}("originator column script '{}' @ {}:{}: {}", out->name, token.span.line, token.span.column, what);
+  uint16_t refuse(const tavl::token& token, const std::string_view& what) {
+    if (refusal.empty()) refusal = std::format("originator column script '{}' @ {}:{}: {}", out->name, token.span.line, token.span.column, what);
+    return none;
   }
 
   uint16_t add_reg(const column_program::implementation::source kind, const uint32_t index) {
-    if (out->regs.size() >= none) utils::error{}("originator column script '{}': too many registers", out->name);
+    if (out->regs.size() >= none) return refuse({}, "too many registers");
     out->regs.push_back({kind, index});
     return uint16_t(out->regs.size() - 1);
   }
@@ -115,6 +120,7 @@ struct compiler {
   }
 
   uint16_t emit(const op_code code, const uint16_t a, const uint16_t b = 0, const uint16_t c = 0) {
+    if (!refusal.empty()) return none;
     const uint16_t dst = add_reg(column_program::implementation::source::computed, uint32_t(out->computed++));
     out->ops.push_back({code, dst, a, b, c});
     return dst;
@@ -140,12 +146,12 @@ struct compiler {
       }
       return add_reg(column_program::implementation::source::scalar, uint32_t(i));
     }
-    refuse(token, std::format("'{}' is neither a column nor a scalar of this program", id));
+    return refuse(token, std::format("'{}' is neither a column nor a scalar of this program", id));
   }
 
   uint16_t required(const tavl::node_view node, const std::string_view& what) {
     const uint16_t r = value(node);
-    if (r == none) refuse(node.root().token, std::format("{} is a statement and produces no value", what));
+    if (r == none) return refuse(node.root().token, std::format("{} is a statement and produces no value", what));
     return r;
   }
 
@@ -188,7 +194,7 @@ struct compiler {
       if (part == none) continue;
       sum = sum == none ? part : emit(op_code::add, sum, part);
     }
-    if (sum == none) refuse(node.root().token, "a block of statements alone computes nothing");
+    if (sum == none) return refuse(node.root().token, "a block of statements alone computes nothing");
     return sum;
   }
 
@@ -199,9 +205,9 @@ struct compiler {
       if (op == "-") return emit(op_code::neg, a);
       if (op == "+") return a;
       if (op == "not") return emit(op_code::lnot, a);
-      refuse(token, std::format("unary operator '{}' has no column form", op));
+      return refuse(token, std::format("unary operator '{}' has no column form", op));
     }
-    if (node.size() != 2) refuse(token, std::format("operator '{}' got {} operands", op, node.size()));
+    if (node.size() != 2) return refuse(token, std::format("operator '{}' got {} operands", op, node.size()));
     const uint16_t a = required(node.child(0), std::format("the left operand of '{}'", op));
     const uint16_t b = required(node.child(1), std::format("the right operand of '{}'", op));
     if (op == "+") return emit(op_code::add, a, b);
@@ -217,11 +223,11 @@ struct compiler {
     if (op == "!=") return emit(op_code::ne, a, b);
     if (op == "and") return emit(op_code::land, a, b);
     if (op == "or") return emit(op_code::lor, a, b);
-    refuse(token, std::format("operator '{}' has no column form", op));
+    return refuse(token, std::format("operator '{}' has no column form", op));
   }
 
   uint16_t select_block(const tavl::node_view args, const tavl::token& token) {
-    if (args.size() < 2) refuse(token, "'select' needs at least one conditional block and an else block");
+    if (args.size() < 2) return refuse(token, "'select' needs at least one conditional block and an else block");
     std::vector<std::pair<uint16_t, uint16_t>> clauses;
     uint16_t otherwise = none;
     for (size_t i = 0; i < args.size(); ++i) {
@@ -229,13 +235,13 @@ struct compiler {
       const bool last = i + 1 == args.size();
       tavl::node_view test;
       if (!named(clause, "condition", test)) {
-        if (!last) refuse(clause.root().token, "every block of 'select' except the last one needs a 'condition'");
+        if (!last) return refuse(clause.root().token, "every block of 'select' except the last one needs a 'condition'");
         ++branch_depth;
         otherwise = block(clause);
         --branch_depth;
         continue;
       }
-      if (last) refuse(clause.root().token, "the last block of 'select' is the else branch, without a 'condition'");
+      if (last) return refuse(clause.root().token, "the last block of 'select' is the else branch, without a 'condition'");
       const uint16_t taken_if = required(test, "a 'condition' of 'select'");
       ++branch_depth;
       static constexpr std::string_view skip[] = {"condition"};
@@ -249,12 +255,12 @@ struct compiler {
   }
 
   uint16_t sequence_block(const tavl::node_view args, const tavl::token& token) {
-    if (args.size() == 0) refuse(token, "'sequence' with no blocks computes nothing");
+    if (args.size() == 0) return refuse(token, "'sequence' with no blocks computes nothing");
     std::vector<std::pair<uint16_t, uint16_t>> clauses;
     for (size_t i = 0; i < args.size(); ++i) {
       const auto clause = clause_of(args.child(i));
       tavl::node_view test;
-      if (!named(clause, "condition", test)) refuse(clause.root().token, "every block of 'sequence' needs a 'condition'");
+      if (!named(clause, "condition", test)) return refuse(clause.root().token, "every block of 'sequence' needs a 'condition'");
       const uint16_t taken_if = required(test, "a 'condition' of 'sequence'");
       ++branch_depth;
       static constexpr std::string_view skip[] = {"condition"};
@@ -272,15 +278,15 @@ struct compiler {
 
   uint16_t switch_block(const tavl::node_view args, const tavl::token& token) {
     tavl::node_view subject_node;
-    if (!named(args, "value", subject_node)) refuse(token, "'switch' needs a top-level 'value' to compare against");
+    if (!named(args, "value", subject_node)) return refuse(token, "'switch' needs a top-level 'value' to compare against");
     const uint16_t subject = required(subject_node, "the 'value' of 'switch'");
     std::vector<std::pair<uint16_t, uint16_t>> cases;
     for (size_t i = 0; i < args.size(); ++i) {
       if (pair_name(args.child(i)) == "value") continue;
       const auto clause = clause_of(args.child(i));
-      if (!is_block(clause)) refuse(clause.root().token, "a case of 'switch' is a block with its own 'value'");
+      if (!is_block(clause)) return refuse(clause.root().token, "a case of 'switch' is a block with its own 'value'");
       tavl::node_view case_node;
-      if (!named(clause, "value", case_node)) refuse(clause.root().token, "every case of 'switch' needs a 'value'");
+      if (!named(clause, "value", case_node)) return refuse(clause.root().token, "every case of 'switch' needs a 'value'");
       const uint16_t label = required(case_node, "the 'value' of a 'switch' case");
       ++branch_depth;
       static constexpr std::string_view skip[] = {"value"};
@@ -288,23 +294,23 @@ struct compiler {
       --branch_depth;
       cases.emplace_back(emit(op_code::eq, subject, label), body);
     }
-    if (cases.empty()) refuse(token, "'switch' needs at least one case block");
+    if (cases.empty()) return refuse(token, "'switch' needs at least one case block");
     uint16_t result = constant(0.0);
     for (auto it = cases.rbegin(); it != cases.rend(); ++it) result = emit(op_code::choose, it->first, it->second, result);
     return result;
   }
 
   uint16_t save_block(const tavl::node_view args, const tavl::token& token) {
-    if (args.size() == 0) refuse(token, "'ctx_save' needs at least one 'name = value' pair");
+    if (args.size() == 0) return refuse(token, "'ctx_save' needs at least one 'name = value' pair");
     if (branch_depth != 0) {
-      refuse(token, "'ctx_save' inside a branch has no column form: both branches are computed, so the write would "
+      return refuse(token, "'ctx_save' inside a branch has no column form: both branches are computed, so the write would "
                     "happen even when the branch is not taken");
     }
     for (size_t i = 0; i < args.size(); ++i) {
       const auto pair = args.child(i);
       if (pair.root().type != tavl::node_type::pair || pair.size() != 2 ||
           pair.child(0).root().type != tavl::node_type::token) {
-        refuse(pair.root().token, "'ctx_save' takes 'name = value' pairs");
+        return refuse(pair.root().token, "'ctx_save' takes 'name = value' pairs");
       }
       const auto id = std::string(text(pair.child(0).root().token));
       const uint16_t stored = required(pair.child(1), std::format("the value of '{} = ...'", id));
@@ -317,7 +323,7 @@ struct compiler {
 
   uint16_t call(const std::string_view& callee, const tavl::node_view args, const tavl::token& token) {
     if (callee == "value_or") {
-      if (args.size() != 3) refuse(token, "'value_or' has a column form with three arguments (condition, then, else)");
+      if (args.size() != 3) return refuse(token, "'value_or' has a column form with three arguments (condition, then, else)");
       const uint16_t test = required(args.child(0), "the condition of 'value_or'");
       ++branch_depth;
       const uint16_t positive = required(args.child(1), "the 'then' branch of 'value_or'");
@@ -340,14 +346,14 @@ struct compiler {
       // Аргумент-лист из одного значения приходит самим значением, а не блоком.
       const bool single = args.root().type == tavl::node_type::token || !is_block(args);
       const size_t count = single ? 1 : args.size();
-      if (count != f.args) refuse(token, std::format("'{}' takes {} arguments, got {}", callee, f.args, count));
+      if (count != f.args) return refuse(token, std::format("'{}' takes {} arguments, got {}", callee, f.args, count));
       std::array<uint16_t, 3> regs{};
       for (size_t i = 0; i < count; ++i) {
         regs[i] = required(single ? args : args.child(i), std::format("an argument of '{}'", callee));
       }
       return emit(f.code, regs[0], regs[1], regs[2]);
     }
-    refuse(token, std::format("'{}' has no column form; the vocabulary is the arithmetic of ds, value_or, select, "
+    return refuse(token, std::format("'{}' has no column form; the vocabulary is the arithmetic of ds, value_or, select, "
                               "sequence, switch and ctx_save", callee));
   }
 
@@ -359,29 +365,45 @@ struct compiler {
         switch (root.token.type) {
           case tavl::token_type::number_int:
           case tavl::token_type::number_uint:
-          case tavl::token_type::number_float: return constant(std::stod(std::string(content)));
+          case tavl::token_type::number_float: {
+            auto number = content;
+            if (number.starts_with('+')) number.remove_prefix(1);
+            double parsed = 0;
+            const bool negative = number.starts_with('-');
+            const auto unsigned_number = negative ? number.substr(1) : number;
+            if (unsigned_number.starts_with("0x") || unsigned_number.starts_with("0X")) {
+              uint64_t integer = 0;
+              const auto [end, error] = std::from_chars(unsigned_number.data() + 2, unsigned_number.data() + unsigned_number.size(), integer, 16);
+              if (error != std::errc{} || end != unsigned_number.data() + unsigned_number.size()) return refuse(root.token, "invalid hexadecimal literal");
+              return constant(negative ? -double(integer) : double(integer));
+            }
+            const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), parsed);
+            if (error != std::errc{} || end != number.data() + number.size()) return refuse(root.token, "invalid numeric literal");
+            return constant(parsed);
+          }
           case tavl::token_type::boolean: return constant(content == "true" ? 1.0 : 0.0);
           case tavl::token_type::identifier: return name(content, root.token);
           case tavl::token_type::unrecognized: {
+            if (content.starts_with("ctx:arg:")) return name(content, root.token);
             if (content.starts_with("ctx:saved:")) {
               const auto id = content.substr(10);
               for (const auto& [saved_name, reg] : saved) {
                 if (saved_name == id) return reg;
               }
-              refuse(root.token, std::format("'{}' is read before any ctx_save wrote it", content));
+              return refuse(root.token, std::format("'{}' is read before any ctx_save wrote it", content));
             }
-            refuse(root.token, std::format("scope path '{}' has no column form: a program reads its columns, its "
+            return refuse(root.token, std::format("scope path '{}' has no column form: a program reads its columns, its "
                                            "scalars and its own saved slots",
                                            content));
           }
-          default: refuse(root.token, std::format("token '{}' has no column form", content));
+          default: return refuse(root.token, std::format("token '{}' has no column form", content));
         }
       }
       case tavl::node_type::pair: {
         const auto op = root.token.exists() ? text(root.token) : std::string_view{};
         if (op.empty() || op == "=" || op == "?=") {
           if (node.size() != 2 || node.child(0).root().type != tavl::node_type::token) {
-            refuse(root.token, "a call needs a callee name and its arguments");
+            return refuse(root.token, "a call needs a callee name and its arguments");
           }
           return call(text(node.child(0).root().token), node.child(1), node.child(0).root().token);
         }
@@ -391,7 +413,7 @@ struct compiler {
       case tavl::node_type::row:
       case tavl::node_type::array:
       case tavl::node_type::tuple: return block(node);
-      default: refuse(root.token, "this node has no column form");
+      default: return refuse(root.token, "this node has no column form");
     }
   }
 };
@@ -404,22 +426,25 @@ column_program::~column_program() noexcept = default;
 const std::string& column_program::name() const noexcept { return state_->name; }
 const std::vector<uint8_t>& column_program::used_columns() const noexcept { return state_->used_columns; }
 
-std::unique_ptr<column_program> column_program::compile(const std::string_view& name, const std::string_view& source,
+size_t column_program::workspace_bytes() const noexcept {
+  return state_->regs.size() * (sizeof(double) + sizeof(const double*)) +
+    (state_->computed + state_->scalar_count) * sizeof(std::array<double, lanes>);
+}
+
+std::expected<std::unique_ptr<column_program>, std::string> column_program::try_compile(const std::string_view& name, const std::string_view& source,
                                                         const std::span<const std::string> columns,
                                                         const std::span<const std::string> scalars) {
   // Парсер настраивает сама система ds: приоритеты операторов объявлены в ней.
   ds::system system;
   system.init_basic_functions();
   system.init_math();
+  detail::add_generation_math(system);
   tavl::parser parser;
   system.configure_parser(parser);
-  std::vector<tavl::node> nodes;
-  try {
-    nodes = ds::make_script_ast(parser, source);
-  } catch (const std::exception& error) {
-    utils::error{}("originator column script '{}': could not parse: {}", name, error.what());
-  }
-  if (nodes.empty()) utils::error{}("originator column script '{}': the program is empty", name);
+  auto parsed = detail::read_script_ast(parser, source);
+  if (!parsed) return std::unexpected(std::format("originator column script '{}': could not parse: {}", name, parsed.error()));
+  const auto& nodes = *parsed;
+  if (nodes.size() <= 1) return std::unexpected(std::format("originator column script '{}': the program is empty", name));
 
   auto state = std::make_unique<implementation>();
   state->name = name;
@@ -431,11 +456,19 @@ std::unique_ptr<column_program> column_program::compile(const std::string_view& 
   c.columns = columns;
   c.scalars = scalars;
   state->result = c.required(tavl::node_view{nodes}, "the program");
+  if (!c.refusal.empty()) return std::unexpected(std::move(c.refusal));
   return std::unique_ptr<column_program>(new column_program(std::move(state)));
 }
 
+std::unique_ptr<column_program> column_program::compile(const std::string_view& name, const std::string_view& source,
+                                                       std::span<const std::string> columns, std::span<const std::string> scalars) {
+  auto compiled = try_compile(name, source, columns, scalars);
+  if (!compiled) utils::error{}("{}", compiled.error());
+  return std::move(*compiled);
+}
+
 void column_program::run(const size_t n, const std::span<const double* const> columns,
-                         const std::span<const double> scalars, double* out) const {
+                         const std::span<const double> scalars, double* out, column_workspace& workspace) const {
   const auto& s = *state_;
   if (n > lanes) utils::error{}("originator column script '{}': {} values, a pass holds {}", s.name, n, lanes);
   if (scalars.size() < s.scalar_count) {
@@ -443,7 +476,7 @@ void column_program::run(const size_t n, const std::span<const double* const> co
   }
   if (n == 1) {
     // Одна точка (лучи, проверки раскладки): регистры — числа, без столбцов и подготовки указателей.
-    thread_local std::vector<double> value;
+    auto& value = workspace.values;
     value.resize(s.regs.size());
     for (size_t r = 0; r < s.regs.size(); ++r) {
       const auto& reg = s.regs[r];
@@ -481,6 +514,7 @@ void column_program::run(const size_t n, const std::span<const double* const> co
         case op_code::ceil: d = std::ceil(a); break;
         case op_code::round: d = std::round(a); break;
         case op_code::trunc: d = std::trunc(a); break;
+        case op_code::pow: d = std::pow(a, b); break;
         case op_code::sqrt: d = std::sqrt(a); break;
         case op_code::isqrt: d = 1.0 / std::sqrt(a); break;
         case op_code::exp: d = std::exp(a); break;
@@ -508,9 +542,9 @@ void column_program::run(const size_t n, const std::span<const double* const> co
     out[0] = value[s.result];
     return;
   }
-  thread_local std::vector<std::array<double, lanes>> computed;
-  thread_local std::vector<std::array<double, lanes>> broadcast;
-  thread_local std::vector<const double*> regs;
+  auto& computed = workspace.computed;
+  auto& broadcast = workspace.broadcast;
+  auto& regs = workspace.registers;
   if (computed.size() < s.computed) computed.resize(s.computed);
   if (broadcast.size() < s.scalar_count) broadcast.resize(s.scalar_count);
   regs.assign(s.regs.size(), nullptr);
@@ -562,6 +596,7 @@ void column_program::run(const size_t n, const std::span<const double* const> co
       case op_code::ceil: for (size_t l = 0; l < n; ++l) d[l] = std::ceil(a[l]); break;
       case op_code::round: for (size_t l = 0; l < n; ++l) d[l] = std::round(a[l]); break;
       case op_code::trunc: for (size_t l = 0; l < n; ++l) d[l] = std::trunc(a[l]); break;
+      case op_code::pow: for (size_t l = 0; l < n; ++l) d[l] = std::pow(a[l], b[l]); break;
       case op_code::sqrt: for (size_t l = 0; l < n; ++l) d[l] = std::sqrt(a[l]); break;
       case op_code::isqrt: for (size_t l = 0; l < n; ++l) d[l] = 1.0 / std::sqrt(a[l]); break;
       case op_code::exp: for (size_t l = 0; l < n; ++l) d[l] = std::exp(a[l]); break;
@@ -589,6 +624,12 @@ void column_program::run(const size_t n, const std::span<const double* const> co
   }
   const double* result = regs[s.result];
   std::copy_n(result, n, out);
+}
+
+void column_program::run_once(const size_t n, const std::span<const double* const> columns,
+                         const std::span<const double> scalars, double* out) const {
+  column_workspace workspace;
+  run(n, columns, scalars, out, workspace);
 }
 
 } // namespace originator

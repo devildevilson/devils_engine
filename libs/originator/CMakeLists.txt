@@ -30,6 +30,7 @@ add_library(devils_originator
   src/originator/noise_field.cpp
   src/originator/device_form.cpp
   include/devils_engine/originator/common.h
+  include/devils_engine/originator/workspace.h
   include/devils_engine/originator/buffer.h
   include/devils_engine/originator/tools.h
   include/devils_engine/originator/motif_layout.h
@@ -40,6 +41,7 @@ add_library(devils_originator
   include/devils_engine/originator/generator_chain.h
   include/devils_engine/originator/field_surface.h
   include/devils_engine/originator/primitive_field.h
+  include/devils_engine/originator/graph_walk.h
   include/devils_engine/originator/neighbourhood.h
   include/devils_engine/originator/computation_queue.h
   include/devils_engine/originator/execution_profile.h
@@ -154,12 +156,17 @@ else()
   set(DEVILS_ORIGINATOR_LUA_LIBRARIES PkgConfig::originator_lua54)
 endif()
 
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/originator/algorithms.lua")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/originator/algorithms.lua" ORIGINATOR_ALGORITHMS_SOURCE)
+configure_file(src/originator/algorithms_source.h.in generated/algorithms_source.h @ONLY)
+
 add_library(devils_originator_lua
   src/originator/script_host.cpp
   include/devils_engine/originator/script_host.h
 )
 
 target_include_directories(devils_originator_lua
+  PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated"
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
 )
 

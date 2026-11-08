@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "generator_chain.h"
+#include "workspace.h"
 #include "tools.h"
 
 // ПОЛЕ ИЗ ПРИМИТИВОВ: «что в точке — порода или вода» как минимум форм, которые генераторы цепочки
@@ -55,12 +56,13 @@ class shape_vocabulary;
 // Точка поля со своими слотами: каждый слот считается при первом запросе и один раз на точку.
 class field_point {
 public:
-  field_point(const shape_vocabulary& vocabulary, const field_vector& position, const uint64_t seed = 0) noexcept;
+  field_point(const shape_vocabulary& vocabulary, const field_vector& position, const uint64_t seed = 0, field_frame* workspace = nullptr) noexcept;
 
   const field_vector& position() const noexcept;
   // Зерно мира поля: шумы точки — функции зерна и позиции.
   uint64_t seed() const noexcept;
   double slot(const size_t index);
+  field_frame* workspace() const noexcept { return workspace_; }
 
   static constexpr size_t max_slots = 16;
 
@@ -70,6 +72,7 @@ private:
   uint64_t seed_ = 0;
   std::array<double, max_slots> values_{};
   uint32_t ready_ = 0;
+  field_frame* workspace_ = nullptr;
 };
 
 // Значение формы и метка того, ЧТО это (у мира — вид породы для палитры).
@@ -88,6 +91,7 @@ struct field_batch {
   field_point* const* points = nullptr;
   double* values = nullptr;
   uint32_t* tags = nullptr;
+  field_frame* workspace = nullptr;
 };
 
 // Роль вида в поле. Поле считается в четыре стадии: ПРИРОДНОЕ (минимум фона и форм — формы вынимают
@@ -218,6 +222,7 @@ public:
   class region {
   public:
     shape_value value(const field_vector& p) const;
+    shape_value value(const field_vector& p, field_workspace& workspace) const;
     const field_vector& low() const noexcept;
     const field_vector& high() const noexcept;
     bool contains(const field_vector& p) const noexcept;
@@ -233,10 +238,13 @@ public:
 
   region prepare(const field_vector& low, const field_vector& high) const;
   shape_value value(const field_vector& p) const;
+  shape_value value(const field_vector& p, field_workspace& workspace) const;
 
   // Значения во многих точках сразу: точки бьются на клетки со стороной 2 * half, у клетки — своя
   // область, и формы считаются ФОРМА ЗА ФОРМОЙ над столбцом точек клетки (пакетные виды — пакетом).
   // Порядок форм в каждой точке тот же, что у поточечного значения, поэтому и ответ тот же.
+  void sample_points(std::span<const field_vector> points, std::span<double> values, std::span<uint32_t> tags,
+                     const double half, field_workspace& workspace) const;
   void sample_points(std::span<const field_vector> points, std::span<double> values, std::span<uint32_t> tags,
                      const double half) const;
 
@@ -245,6 +253,7 @@ public:
   class sampler {
   public:
     sampler(const primitive_field& field, const double half);
+    sampler(const primitive_field& field, const double half, field_workspace& workspace);
     double operator()(const field_vector& p);
     shape_value sample(const field_vector& p);
 
@@ -252,6 +261,8 @@ public:
     const primitive_field* field_;
     double half_;
     std::optional<region> region_;
+    field_workspace workspace_;
+    field_workspace* external_ = nullptr;
   };
 
   // Первое расстояние s в [from, to] с шагом step, где поле в origin + direction * s — порода
@@ -267,7 +278,7 @@ private:
     const void* rows = nullptr;
     field_box box;
   };
-  shape_value evaluate(std::span<const void* const> candidates, const field_vector& p) const;
+  shape_value evaluate(std::span<const void* const> candidates, const field_vector& p, field_frame& workspace) const;
   void add_rows(const size_t kind, shape_vocabulary::decoded decoded);
   void collect(const field_vector& low, const field_vector& high, std::vector<const void*>& out) const;
 
@@ -279,10 +290,10 @@ private:
 
 // Поле, объявленное у текущего исполняемого генератора цепочки: инструменты зовут его по имени.
 // Вне сборки экземпляра или с неизвестным именем — громкий отказ.
-const primitive_field& current_field(const std::string_view& name);
+const primitive_field& current_field(const generation_context& context, const std::string_view& name);
 // То же с владением: блок, который держит подготовленную выборку между вызовами, держит и поле — по
 // указателю тогда видно, что это то же самое поле, а не новое по тому же адресу.
-const std::shared_ptr<const primitive_field>& current_field_handle(const std::string_view& name);
+const std::shared_ptr<const primitive_field>& current_field_handle(const generation_context& context, const std::string_view& name);
 
 } // namespace originator
 } // namespace devils_engine

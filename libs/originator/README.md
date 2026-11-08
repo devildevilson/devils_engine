@@ -37,7 +37,10 @@
 **Написать правило, которое моддится без C++.** Положить программу `devils_script` в `.ds`, назвать
 её в `programs` шага, позвать `originator.run_script{ program = "biome", inputs = {...}, outputs =
 {...} }`. Правило читает поля СВОЕГО элемента по их именам из конфига и пишет одно поле; пороги
-приходят из параметров шага как `ctx:arg:имя`.
+приходят из параметров шага как `ctx:arg:имя` или `param_имя`. Vector inputs читаются как
+`name_x/y/z/w`; список `program` задаёт группу scalar/vector outputs. Read-only gather над явно
+названным соседством/other domain — отдельный `gather_script`, с собственными проверками.
+Контракты и примеры миграции — [P2 review](../../docs/review/P2_ORIGINATOR_MIGRATION.md).
 
 **Сцепить несколько проходов в одну единицу.** Объявить их через `originator.queue.*` и отдать
 `originator.queue{ ..., output = {...} }`. Получается: проверка всей цепочки до первого вызова,
@@ -1399,3 +1402,16 @@ Whitelist проверяется при создании хоста: пропа�
 `normal_step`) позволяет сохранить мелкие нормали в коробках уточнения. Снаружи
 шаг плавно переходит к `normal_step` на расстоянии этого грубого шага. Пояс коробок
 должен учитывать эту дальность. Это меняет нормали, не положение поверхности.
+
+## Lifetime вычислительных контекстов
+
+`column_program::run(..., column_workspace&)` переиспользует scratch вызывающего;
+`run_once(...)` создаёт его на один вызов. Для field queries есть `field_workspace&` overloads
+и sampler с собственным либо внешним workspace. Nested queries берут разные стабильные frames.
+
+`generation_context` содержит build path/depth, borrowed active fields, field scratch и Lua hosts.
+Его передают `chain.get(context, ...)` и вложенным native calls через `run.context()`; Lua hosts
+не привязаны к OS thread. Контекст эксклюзивен во время вызова. `context.release()` освобождает
+capacity/hosts после drain, пока pool жив; внешний контекст освобождается до удаления chain.
+Root API без context использует pool самой chain, освобождаемый `chain.release_contexts()`.
+Кэш результатов имеет отдельный lifetime. Детали: [review](../../docs/review/LIFETIME_AND_RESOURCES.md).

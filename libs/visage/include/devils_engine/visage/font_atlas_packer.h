@@ -1,6 +1,9 @@
 #ifndef DEVILS_ENGINE_VISAGE_FONT_ATLAS_PACKER_H
 #define DEVILS_ENGINE_VISAGE_FONT_ATLAS_PACKER_H
 
+#include <initializer_list>
+#include <tuple>
+#include <utility>
 #include <cstddef>
 #include <cstdint>
 #include <memory>

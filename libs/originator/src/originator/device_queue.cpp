@@ -247,6 +247,10 @@ device_check check_device_queue(const computation_queue& queue) {
                               queue.name, position, call.label, reason));
     }
 
+    if (native && call.inputs.size() < call.tool->device_min_inputs)
+      return fail(std::format("step '{}': queue element {} ('{}') has no device form for this optional-input variant; CSR inputs are required",
+                              queue.name, position, call.label));
+
     // КОСВЕННЫЙ ДИАПАЗОН на устройстве — это `dispatchIndirect`, а его здесь нет. Прежде такой вызов
     // молча получал `range_count() == 0` и не делал НИЧЕГО: диапазон со счётчиком не задан числом.
     // Проход, не сделавший ничего, по результату отличим от сделавшего только тем, что поле осталось

@@ -1,6 +1,6 @@
 # AU02 — directional coloration
 
-Минимальная miniaudio-only проверка `AUD-17`. Она использует production `sound::system`, один
+Минимальная miniaudio-only проверка `ULT-AUD-17`. Она использует production `sound::system`, один
 детерминированный mono signal и две constant-radius орбиты. OpenAL и HRTF здесь намеренно нет:
 сравниваются только одинаковые проходы с bounded coloration `on`/`off`.
 

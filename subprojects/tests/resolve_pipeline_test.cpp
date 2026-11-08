@@ -116,7 +116,7 @@ TEST_CASE("resolve journal overflow is a deterministic fault") {
   CHECK(journal.overflowed());
 
   resolve::instance_id next_instance = 10;
-  CHECK_THROWS_AS(journal.seal(next_instance), std::length_error);
+  CHECK_THROWS_AS(journal.seal(next_instance), devils_engine::utils::critical_error);
   CHECK(next_instance == 10);
 }
 
@@ -224,7 +224,7 @@ TEST_CASE("retaliation has a deterministic per-trigger budget") {
   resolve::resolution_limits limits;
   limits.max_retaliations_per_trigger = 1;
   resolve::instance_id next_instance = 200;
-  CHECK_THROWS_AS(retaliation.seal(next_instance, limits), std::length_error);
+  CHECK_THROWS_AS(retaliation.seal(next_instance, limits), devils_engine::utils::critical_error);
   CHECK(next_instance == 200);
 }
 

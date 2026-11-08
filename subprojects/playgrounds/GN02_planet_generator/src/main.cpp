@@ -1,3 +1,5 @@
+#include "devils_engine/playground/generator_resources.h"
+#include "devils_engine/playground/cli.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -33,7 +35,6 @@
 
 #include "names.h"
 #include "package.h"
-#include "planet_tools.h"
 #include "viewer.h"
 #include "visual.h"
 
@@ -109,15 +110,11 @@ fs::path resource_root() {
 // Модуль здесь один и лежит папкой, но это ничего не меняет: тот же набор в zip'е и тот же набор,
 // переопределённый модом, дают ту же точку входа с тем же id.
 struct generator_registry {
-  demiurg::module_system modules;
-  demiurg::resource_system resources;
+  playground::generator_resources source;
   originator::generator_config config;
 
-  generator_registry() : modules(resource_root().generic_string() + "/") {
-    modules.load_modules({demiurg::module_system::list_entry{"gn02/", "", ""}});
-    originator::register_generator_resources(resources);
-    resources.parse_resources(&modules);
-    config = originator::load_generator(resources, "generator/planet");
+  generator_registry() : source(resource_root(), {{"gn02/", "", ""}}) {
+    config = originator::load_generator(source.resources(), "generator/planet");
   }
 };
 
@@ -128,122 +125,44 @@ const generator_registry& generator() {
   return registry;
 }
 
-bool starts_with(const std::string_view& text, const std::string_view& prefix) {
-  return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
-}
 
-options parse_options(const int argc, const char** argv) {
-  options result;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view argument = argv[i];
-    if (argument == "--profile") {
-      result.profile = true;
-    } else if (argument == "--verify") {
-      result.verify = true;
-    } else if (argument == "--quiet") {
-      result.quiet = true;
-      result.report = false;
-    } else if (argument == "--map") {
-      result.map = true;
-    } else if (argument == "--view") {
-      result.view = true;
-    } else if (argument == "--validation") {
-      result.viewer.validation = true;
-    } else if (argument == "--uncapped") {
-      result.viewer.uncapped = true;
-    } else if (starts_with(argument, "--width=")) {
-      result.viewer.width = uint32_t(std::stoul(std::string(argument.substr(8))));
-    } else if (starts_with(argument, "--height=")) {
-      result.viewer.height = uint32_t(std::stoul(std::string(argument.substr(9))));
-    } else if (starts_with(argument, "--frames=")) {
-      // Число кадров ЗАМОРАЖИВАЕТ и вращение, и это не побочный эффект, а требование: кадр с
-      // ограниченным числом кадров снимается ради сравнения снимков, а у вращающейся планеты два
-      // прогона дают разные картинки, и любое сравнение превращается в угадывание.
-      result.viewer.frames = uint32_t(std::stoul(std::string(argument.substr(9))));
-      result.viewer.fixed_rotation = true;
-    } else if (starts_with(argument, "--distance=")) {
-      // Расстояние камеры ключом, а не только колесом: без него снимок с приближения не повторить, а
-      // именно на приближении и видно, показывает ли карта мир или свою сетку.
-      result.viewer.camera_distance = std::stof(std::string(argument.substr(11)));
-    } else if (starts_with(argument, "--smoothing=")) {
-      // `stof`, а не `atof`: у остальных ключей разбор громкий, а `atof` на мусоре молча даёт нуль —
-      // то есть «самую угловатую границу», и понять, что ключ не понят, было бы нельзя.
-      result.viewer.border_smoothing = std::stof(std::string(argument.substr(12)));
-    } else if (starts_with(argument, "--mesh=")) {
-      result.viewer.subdivisions = uint32_t(std::stoul(std::string(argument.substr(7))));
-    } else if (starts_with(argument, "--mode=")) {
-      result.viewer.mode = size_t(std::stoul(std::string(argument.substr(7))));
-    } else if (starts_with(argument, "--step=")) {
-      result.viewer.step_limit = size_t(std::stoul(std::string(argument.substr(7))));
-    } else if (starts_with(argument, "--frame-dump=")) {
-      result.viewer.dump_path = std::string(argument.substr(13));
-    } else if (starts_with(argument, "--cells=")) {
-      result.cells = size_t(std::stoull(std::string(argument.substr(8))));
-    } else if (starts_with(argument, "--plates=")) {
-      result.plates = size_t(std::stoull(std::string(argument.substr(9))));
-    } else if (starts_with(argument, "--provinces=")) {
-      result.provinces = size_t(std::stoull(std::string(argument.substr(12))));
-    } else if (starts_with(argument, "--sea-zones=")) {
-      result.sea_zones = size_t(std::stoull(std::string(argument.substr(12))));
-    } else if (starts_with(argument, "--cultures=")) {
-      result.cultures = size_t(std::stoull(std::string(argument.substr(11))));
-    } else if (starts_with(argument, "--threads=")) {
-      result.threads = size_t(std::stoull(std::string(argument.substr(10))));
-    } else if (starts_with(argument, "--seed=")) {
-      result.seed = std::stoull(std::string(argument.substr(7)));
-    } else if (starts_with(argument, "--stats=")) {
-      result.stats = std::string(argument.substr(8));
-    } else if (starts_with(argument, "--set")) {
-      // Обе формы: `--set name=value` и `--set=name=value`. Первая набирается руками чаще, вторая
-      // удобнее в скриптах, и отказывать одной из них незачем.
-      std::string_view body = argument.substr(5);
-      if (body.empty()) {
-        if (i + 1 >= argc) {
-          utils::error{}("GN02: --set needs name=value");
-        }
-        body = argv[++i];
-      } else if (body.front() == '=') {
-        body = body.substr(1);
-      }
 
-      const auto split = body.find('=');
-      if (split == std::string_view::npos) {
-        utils::error{}("GN02: --set expects name=value, got '{}'", body);
-      }
-      result.overrides.emplace_back(std::string(body.substr(0, split)),
-                                    std::stod(std::string(body.substr(split + 1))));
-    } else if (starts_with(argument, "--dump=")) {
-      result.dump = fs::path(std::string(argument.substr(7)));
-    } else if (argument == "--help" || argument == "-h") {
-      std::cout << "GN02 planet generator lab\n"
-                << "  --cells=N       planet cells (default 65536)\n"
-                << "  --plates=N      tectonic plates (24)\n"
-                << "  --provinces=N   land provinces (900)\n"
-                << "  --sea-zones=N   sea zones (90)\n"
-                << "  --cultures=N    cultures (48)\n"
-                << "  --seed=N        world seed\n"
-                << "  --threads=N     worker threads (0 = one per core)\n"
-                << "  --dump=PATH     write the planet package\n"
-                << "  --map           print the ASCII climate map\n"
-                << "  --stats=A,B     print min/max/mean of cells fields\n"
-                << "  --view          open the planet viewer\n"
-                << "  --step=N        show the world after step N (0 = all)\n"
-                << "  --mode=N        field to display (0 = climate)\n"
-                << "  --mesh=N        icosphere subdivisions (0 = pick from cell count)\n"
-                << "  --distance=R    camera distance in planet radii (default 2.6)\n"
-                << "  --uncapped      draw without the 60 FPS limit (for measuring)\n"
-                << "  --width/--height/--frames/--frame-dump/--validation - window and frame dump\n"
-                << "  --smoothing=W   border smoothing in lattice steps (0.70 angular .. 1.24 smooth)\n"
-                << "  --profile       measure where the wall clock goes and what could go to a device\n"
-                << "  --verify        run the contract checks\n"
-                << "  --set NAME=VALUE  override a value from values.tavl (repeatable)\n"
-                << "  --quiet         no report\n";
-      std::exit(0);
-    } else {
-      utils::error{}("GN02: unknown argument '{}'", argument);
-    }
-  }
-  return result;
+std::optional<int> parse_options(const int argc, const char* const* argv, options& result) {
+  CLI::App app{"GN02_planet_generator"};
+  app.option_defaults()->always_capture_default();
+  app.add_flag("--profile", result.profile, "profile");
+  app.add_flag("--verify", result.verify, "verify");
+  app.add_flag("--quiet", result.quiet, "quiet");
+  app.add_flag("--map", result.map, "map");
+  app.add_flag("--view", result.view, "view");
+  app.add_flag("--validation", result.viewer.validation, "Vulkan validation");
+  app.add_flag("--uncapped", result.viewer.uncapped, "Uncapped viewer");
+  app.add_option("--cells", result.cells, "Planet cells")->check(CLI::PositiveNumber);
+  app.add_option("--plates", result.plates, "Tectonic plates")->check(CLI::PositiveNumber);
+  app.add_option("--provinces", result.provinces, "Land provinces")->check(CLI::PositiveNumber);
+  app.add_option("--sea-zones", result.sea_zones, "Sea zones")->check(CLI::PositiveNumber);
+  app.add_option("--cultures", result.cultures, "Cultures")->check(CLI::PositiveNumber);
+  app.add_option("--threads", result.threads, "Workers (0 = hardware)");
+  app.add_option("--seed", result.seed, "World seed");
+  app.add_option("--dump", result.dump, "Planet package");
+  app.add_option("--stats", result.stats, "Field statistics");
+  app.add_option("--width", result.viewer.width, "Viewer width")->check(CLI::PositiveNumber);
+  app.add_option("--height", result.viewer.height, "Viewer height")->check(CLI::PositiveNumber);
+  app.add_option("--frames", result.viewer.frames, "Frame limit (freezes rotation)");
+  app.add_option("--distance", result.viewer.camera_distance, "Camera distance")->check(playground::finite_number);
+  app.add_option("--smoothing", result.viewer.border_smoothing, "Border smoothing")->check(playground::finite_number);
+  app.add_option("--mesh", result.viewer.subdivisions, "Icosphere subdivisions");
+  app.add_option("--mode", result.viewer.mode, "Viewer mode");
+  app.add_option("--step", result.viewer.step_limit, "Step limit");
+  app.add_option("--frame-dump", result.viewer.dump_path, "Frame output");
+  std::vector<std::string> overrides;
+  playground::add_overrides(app, overrides);
+
+  if (auto code = playground::parse_cli(app, argc, argv)) return code;
+  if (result.quiet) result.report = false;
+  if (app.count("--frames")) result.viewer.fixed_rotation = true;
+  result.overrides = playground::numeric_overrides(overrides);
+  return std::nullopt;
 }
 
 originator::size_table make_sizes(const options& opts) {
@@ -1528,8 +1447,8 @@ int run_verify(const options& opts) {
   originator::tool_registry tools;
   tools.add_standard_tools(); // включает scatter-инструменты
   tools.add_graph_tools();
+  tools.add_neighbourhood_tools();
   originator::add_all_primitives(tools);
-  gn02::add_planet_tools(tools);
 
   const auto description = load_description(opts);
   const size_t count = opts.cells;
@@ -2394,8 +2313,8 @@ int run_view(const options& opts) {
   originator::tool_registry tools;
   tools.add_standard_tools();
   tools.add_graph_tools();
+  tools.add_neighbourhood_tools();
   originator::add_all_primitives(tools);
-  gn02::add_planet_tools(tools);
 
   const size_t threads = opts.threads == 0
                            ? std::max<size_t>(std::thread::hardware_concurrency(), 1) - 1
@@ -2458,8 +2377,8 @@ int run_once(options opts) {
   originator::tool_registry tools;
   tools.add_standard_tools(); // включает scatter-инструменты
   tools.add_graph_tools();
+  tools.add_neighbourhood_tools();
   originator::add_all_primitives(tools);
-  gn02::add_planet_tools(tools);
 
   const auto description = load_description(opts);
   // Пороги географии приходят из конфига: в options они только для того, чтобы синтез названий не
@@ -2508,7 +2427,8 @@ int run_once(options opts) {
 
 int main(const int argc, const char** argv) {
   try {
-    const auto opts = parse_options(argc, argv);
+    options opts;
+    if (auto code = parse_options(argc, argv, opts)) return *code;
     if (opts.verify) {
       return run_verify(opts);
     }

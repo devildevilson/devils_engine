@@ -1,3 +1,5 @@
+#include "devils_engine/utils/log.h"
+#include "devils_engine/utils/platform.h"
 #include <algorithm>
 #include <array>
 #include <bit>

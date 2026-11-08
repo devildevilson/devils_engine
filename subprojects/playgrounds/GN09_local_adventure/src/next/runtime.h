@@ -8,7 +8,7 @@
 #include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/primitive_field.h"
-#include "streaming.h"
+#include "devils_engine/playground/chunk_streaming.h"
 namespace gn09_next {
 namespace o = devils_engine::originator;
 inline constexpr int chunk_cells = 16;

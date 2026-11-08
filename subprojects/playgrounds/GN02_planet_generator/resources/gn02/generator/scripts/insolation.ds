@@ -1,0 +1,12 @@
+// Правило температуры принадлежит миру; библиотека даёт scalar math и параметры прохода.
+{
+  ctx_save = {
+    latitude = asin(clamp(lat_sin, -1.0, 1.0))
+  }
+  ctx_save = {
+    annual = ctx:arg:pole_temperature + (ctx:arg:equator_temperature - ctx:arg:pole_temperature) * pow(max(0.0, cos(ctx:saved:latitude)), max(0.2, ctx:arg:exponent))
+    seasonal = ctx:arg:pole_temperature + (ctx:arg:equator_temperature - ctx:arg:pole_temperature) * pow(max(0.0, cos(ctx:saved:latitude - ctx:arg:declination)), max(0.2, ctx:arg:exponent))
+    inland = value_or(ocean_distance < 0.0, 1.0, clamp(ocean_distance / max(1.0, ctx:arg:ocean_reference), 0.0, 1.0))
+  }
+  ctx:saved:annual + (ctx:saved:seasonal - ctx:saved:annual) * (1.0 + ctx:arg:continental_gain * ctx:saved:inland) - ctx:arg:lapse_rate * max(0.0, height) / 1000.0
+}

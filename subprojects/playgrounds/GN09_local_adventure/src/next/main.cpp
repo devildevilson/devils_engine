@@ -1,3 +1,4 @@
+#include "devils_engine/playground/cli.h"
 #include "runtime.h"
 #include "devils_engine/originator/script_column.h"
 #include <algorithm>
@@ -27,10 +28,11 @@ void verify_profile_continuity(runtime& world) {
   }
   const std::vector<std::string> columns{"x", "y", "z", "terrain_broad", "terrain_detail"};
   const auto program = o::column_program::compile("gallery continuity", world.shape_source("passages"), columns, names);
+  o::column_workspace workspace;
   auto value = [&](double x, double y, double z) {
     double zero = 0, result = 0;
     const std::array<const double*, 5> data{&x, &y, &z, &zero, &zero};
-    program->run(1, data, scalars, &result);
+    program->run(1, data, scalars, &result, workspace);
     return result;
   };
   for (double x : {-2.0, 10.0, 22.0})
@@ -44,10 +46,11 @@ void verify_ocean_floor(runtime& world) {
   const std::vector<double> scalars{0, 0, 0, 235, 800, 210, 70, 0};
   const std::vector<std::string> columns{"x", "y", "z", "terrain_broad", "terrain_detail"};
   const auto program = o::column_program::compile("ocean floor", world.shape_source("ocean"), columns, names);
+  o::column_workspace workspace;
   auto value = [&](double x, double y) {
     double zero = 0, result = 0;
     const std::array<const double*, 5> data{&x, &y, &zero, &zero, &zero};
-    program->run(1, data, scalars, &result);
+    program->run(1, data, scalars, &result, workspace);
     return result;
   };
   double previous = -1e30;
@@ -688,45 +691,27 @@ int main(int argc, char** argv) {
     size_t workers = 11;
     int sx = 0, sz = 0, cave_layer = 0;
     std::string map, plans, cave_plan, module = "gn09_next";
-    for (int i = 1; i < argc; ++i) {
-      std::string a = argv[i];
-      if (a == "--natural")
-        natural = true;
-      else if (a == "--caves-only")
-        caves_only = true;
-      else if (a == "--verify-caves")
-        cave_check = true;
-      else if (a == "--progress")
-        progress = true;
-      else if (a == "--verify")
-        check = true;
-      else if (a.starts_with("--seeds="))
-        seeds = std::stoul(a.substr(8));
-      else if (a.starts_with("--seed="))
-        seed = std::stoull(a.substr(7));
-      else if (a.starts_with("--flight="))
-        speed = std::stod(a.substr(9));
-      else if (a.starts_with("--seconds="))
-        seconds = std::stod(a.substr(10));
-      else if (a.starts_with("--workers="))
-        workers = std::stoul(a.substr(10));
-      else if (a.starts_with("--map="))
-        map = a.substr(6);
-      else if (a.starts_with("--cave-plan="))
-        cave_plan = a.substr(12);
-      else if (a.starts_with("--cave-layer="))
-        cave_layer = std::stoi(a.substr(13));
-      else if (a.starts_with("--plans="))
-        plans = a.substr(8);
-      else if (a.starts_with("--module="))
-        module = a.substr(9);
-      else if (a.starts_with("--sector=")) {
-        auto c = a.find(',');
-        sx = std::stoi(a.substr(9, c - 9));
-        sz = std::stoi(a.substr(c + 1));
-      } else
-        throw std::runtime_error("unknown option: " + a);
-    }
+    CLI::App app{"GN09 NEXT"};
+    app.option_defaults()->always_capture_default();
+    app.add_flag("--natural", natural);
+    app.add_flag("--caves-only", caves_only);
+    app.add_flag("--verify-caves", cave_check);
+    app.add_flag("--progress", progress);
+    app.add_flag("--verify", check);
+    app.add_option("--seed", seed, "World seed");
+    app.add_option("--seeds", seeds, "Verification seeds")->check(CLI::PositiveNumber);
+    app.add_option("--flight", speed, "Flight speed")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+    app.add_option("--seconds", seconds, "Flight duration")->check(devils_engine::playground::finite_number)->check(CLI::PositiveNumber);
+    app.add_option("--workers", workers, "Workers")->check(CLI::PositiveNumber);
+    app.add_option("--map", map, "Map SVG");
+    app.add_option("--plans", plans, "Outpost plans SVG");
+    app.add_option("--cave-plan", cave_plan, "Cave plan SVG");
+    app.add_option("--cave-layer", cave_layer, "Cave layer");
+    app.add_option("--module", module, "Generator module");
+    std::array<int, 2> sector{sx, sz};
+    devils_engine::playground::add_tuple(app, "--sector", sector, ',');
+    if (auto code = devils_engine::playground::parse_cli(app, argc, argv)) return *code;
+    sx = sector[0]; sz = sector[1];
     require(workers > 0 && seconds > 0 && seeds > 0 && std::isfinite(speed) && speed >= 0, "invalid worker count, seed count or flight parameters");
     runtime world(module, natural, caves_only);
     std::jthread monitor;

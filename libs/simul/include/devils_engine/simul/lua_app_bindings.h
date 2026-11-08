@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_LUA_APP_BINDINGS_H
 #define DEVILS_ENGINE_SIMUL_LUA_APP_BINDINGS_H
 
+#include "devils_engine/utils/log.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstddef>

@@ -33,13 +33,22 @@
 ## Память и задачи
 
 Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
-[указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
-хронологию экспериментов — в отдельном audit/history.
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
+История разработки не является обязательной памятью проекта.
 
 ## Технический аудит 2026-11-07
 
-Восемь потоков — общий ориентир main/systems/pool/native backends. hardware_concurrency minus
-reserved пока не обеспечивает этот предел на машине с большим числом CPU. Host должен владеть
+Восемь аппаратных CPU-потоков — минимум машины, не cap процесса. Main/systems/pool/native
+backends учитываются раздельно; hardware_concurrency minus reserved — не общий thread budget. Host владеет
 thread и RAM/job admission budgets, не добавляя scheduler внутрь originator.
 Открытые TECH-03/04 и измерения — в TECHNICAL_AUDIT.md.
+
+## Владельцы конфигурации
+
+Bundled config/engine, config/project, config/debug читаются отдельно через resource adapters;
+apply_to переносит только разрешённые секции в composed runtime view. AppConfigResource реализует
+apply_to; configuration_layers.h проверяет root sections и atomic publication. Не добавлять
+предметные project sections в generic engine schema. Пользовательские logging/metrics отделены
+от player settings и мигрируют один раз в debug.tavl. Карта — [CONFIGURATION.md](CONFIGURATION.md).
+Audio mixing выбирается engine simulation.sound_mixing = owner|device до init, сохраняется при
+recreate device; default owner, callback читает output ring. Автоматического fallback нет.

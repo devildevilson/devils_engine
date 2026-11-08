@@ -1,3 +1,5 @@
+#include "devils_engine/utils/log.h"
+#include "devils_engine/utils/platform.h"
 #include "viewer.h"
 
 #include <algorithm>
@@ -416,7 +418,7 @@ void dump_scene(painter::graphics_base& base, const std::string& path) {
 }
 
 glm::vec4 border_palette(const uint32_t index) {
-  constexpr glm::vec4 colours[] = {{0.035f, 0.045f, 0.055f, 1.0f}, {0.96f, 0.76f, 0.20f, 1.0f},
+  static const glm::vec4 colours[] = {{0.035f, 0.045f, 0.055f, 1.0f}, {0.96f, 0.76f, 0.20f, 1.0f},
                                     {0.88f, 0.91f, 0.96f, 1.0f}, {0.55f, 0.16f, 0.13f, 1.0f}};
   return colours[index % std::size(colours)];
 }

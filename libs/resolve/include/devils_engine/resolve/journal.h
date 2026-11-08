@@ -1,11 +1,12 @@
 #ifndef DEVILS_ENGINE_RESOLVE_JOURNAL_H
 #define DEVILS_ENGINE_RESOLVE_JOURNAL_H
 
+#include "devils_engine/utils/error.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <span>
-#include <stdexcept>
 #include <vector>
 
 #include "work.h"
@@ -43,7 +44,7 @@ public:
 
   void begin_record(const size_t capacity) {
     if (phase_ == journal_phase::recording) {
-      throw std::logic_error("resolve::journal begin_record during an active record phase");
+      utils::error{}("resolve journal: begin_record({}) during recording, capacity {}, recorded {}", capacity, capacity_, recorded_count());
     }
     if (storage_.size() < capacity) storage_.resize(capacity);
     capacity_ = capacity;
@@ -68,10 +69,10 @@ public:
 
   void seal_ordered() {
     if (phase_ != journal_phase::recording) {
-      throw std::logic_error("resolve::journal seal outside a record phase");
+      utils::error{}("resolve journal: seal requires recording phase, current phase {}", static_cast<unsigned>(phase_));
     }
     if (overflowed()) {
-      throw std::length_error("resolve::journal deterministic capacity exceeded");
+      utils::error{}("resolve journal: deterministic capacity {} exceeded by {} attempted records", capacity_, record_count_.load(std::memory_order_acquire));
     }
 
     const size_t count = record_count_.load(std::memory_order_acquire);
@@ -79,10 +80,10 @@ public:
     std::sort(prepared.begin(), prepared.end(), semantic_less{});
     for (size_t i = 0; i < prepared.size(); ++i) {
       if (!valid_unassigned_provenance(prepared[i].header)) {
-        throw std::invalid_argument("resolve::journal invalid unassigned provenance");
+        utils::error{}("resolve journal: record {} has invalid unassigned provenance", i);
       }
       if (i != 0 && semantic_equivalent(prepared[i - 1], prepared[i])) {
-        throw std::invalid_argument("resolve::journal duplicate semantic provenance");
+        utils::error{}("resolve journal: records {} and {} have duplicate semantic provenance", i - 1, i);
       }
     }
     sealed_.swap(prepared);
@@ -91,11 +92,11 @@ public:
 
   void assign_ids(instance_id& next_instance) {
     if (phase_ != journal_phase::sealed) {
-      throw std::logic_error("resolve::journal assign_ids before seal_ordered");
+      utils::error{}("resolve journal: assign_ids requires sealed phase, current phase {}", static_cast<unsigned>(phase_));
     }
     const instance_id available = std::numeric_limits<instance_id>::max() - next_instance;
     if (next_instance == invalid_instance || sealed_.size() > available) {
-      throw std::overflow_error("resolve::journal instance id space exhausted");
+      utils::error{}("resolve journal: cannot assign {} ids starting at {}, available {}", sealed_.size(), next_instance, available);
     }
     for (auto& value : sealed_)
       value.header.id = next_instance++;

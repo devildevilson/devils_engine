@@ -12,9 +12,9 @@ set_target_properties(audio_coloration_lab PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/playgrounds/AU02_directional_coloration/bin")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME audio_coloration_lab_hum_dry_run
+  devils_add_test(NAME audio_coloration_lab_hum_dry_run
     COMMAND audio_coloration_lab --dry-run --signal hum)
-  add_test(NAME audio_coloration_lab_noise_dry_run
+  devils_add_test(NAME audio_coloration_lab_noise_dry_run
     COMMAND audio_coloration_lab --dry-run --signal noise)
   set_tests_properties(
     audio_coloration_lab_hum_dry_run

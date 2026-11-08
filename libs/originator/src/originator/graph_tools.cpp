@@ -1,3 +1,4 @@
+#include "neighbourhood_device.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -526,64 +527,11 @@ void tool_graph_vote(const tool_call& call, const size_t begin, const size_t end
 // ноль, а нумерация после отбрасывания остаётся ПЛОТНОЙ: дырка в номерах сломала бы group_by, для
 // которого номер это индекс корзины.
 void tool_connected_components(const tool_call& call, const size_t begin, const size_t end) {
-  const auto offsets = call.input(0).read();
-  const auto arcs = call.input(1).read();
-  const auto mask = call.input(2).read();
-  auto target = call.output(0).write();
+  if (begin != 0) utils::error{}("originator step '{}': connected_components walks the whole graph", call.step_name);
+  const csr_neighbourhood around{call.input(0).read(), call.input(1).read(), {}, end};
+  components_whole(around, call.input(2).read(), {}, call.output(0).write(), end,
+    size_t(std::max<int64_t>(0, call.params->integer("min_size", 0))), 0);
 
-  if (begin != 0) {
-    utils::error{}("originator step '{}': connected_components walks the WHOLE graph, so its range must start "
-                   "at 0, got [{}, {})", call.step_name, begin, end);
-  }
-
-  const size_t count = end > begin ? end - begin : 0;
-  const auto minimum = size_t(std::max<int64_t>(call.params->integer("min_size", 0), 0));
-
-  std::vector<uint32_t> raw(count, 0);
-  std::vector<size_t> sizes;
-  std::vector<uint32_t> stack;
-
-  for (size_t start = 0; start < count; ++start) {
-    if (raw[start] != 0 || mask.get(start) == 0.0) {
-      continue;
-    }
-
-    const auto label = uint32_t(sizes.size() + 1);
-    sizes.push_back(0);
-    stack.clear();
-    stack.push_back(uint32_t(start));
-    raw[start] = label;
-
-    while (!stack.empty()) {
-      const auto cell = stack.back();
-      stack.pop_back();
-      sizes.back() += 1;
-
-      const auto first = size_t(offsets.get(cell));
-      const auto last = size_t(offsets.get(size_t(cell) + 1));
-      for (size_t k = first; k < last; ++k) {
-        const auto other = uint32_t(arcs.get(k));
-        if (other >= count || raw[other] != 0 || mask.get(other) == 0.0) {
-          continue;
-        }
-        raw[other] = label;
-        stack.push_back(other);
-      }
-    }
-  }
-
-  // Плотная перенумерация: номер сохраняется только у кусков не меньше порога.
-  std::vector<uint32_t> renumbered(sizes.size() + 1, 0);
-  uint32_t kept = 0;
-  for (size_t i = 0; i < sizes.size(); ++i) {
-    if (sizes[i] >= minimum) {
-      renumbered[i + 1] = ++kept;
-    }
-  }
-
-  for (size_t i = 0; i < count; ++i) {
-    target.set(i, double(renumbered[raw[i]]));
-  }
 }
 
 // label_adjacency: CSR по МЕТКАМ, собранный из CSR по элементам.
@@ -720,15 +668,7 @@ void tool_registry::add_graph_tools() {
     // Занятость волны при этом НЕРАВНОМЕРНА, в отличие от окна: у решётки Фибоначчи степень доходит
     // до 24 при средних шести, и соседние инвокации ждут самую длинную. Это названная цена, а не
     // недосмотр: замерить её стоит на настоящем CSR, а не предполагать.
-    .device_body = "  uint first = uint(in_0_at(index));\n"
-                   "  uint last = uint(in_0_at(index + 1u));\n"
-                   "  float sum = args.self_weight * in_2_at(index);\n"
-                   "  float weight = args.self_weight;\n"
-                   "  for (uint k = first; k < last; ++k) {\n"
-                   "    sum += args.neighbour_weight * in_2_at(uint(in_1_at(k)));\n"
-                   "    weight += args.neighbour_weight;\n"
-                   "  }\n"
-                   "  out_0_set(index, weight > 0.0 ? sum / weight : in_2_at(index));\n",
+    .device_body = detail::csr_device_body("blur",2,0,1),
     .device_params = {{"self_weight", 1.0}, {"neighbour_weight", 1.0}},
     // Смещения и дуги — целые поля (`ui1`/`us1`), а тело написано против `float`: у CSR миллиона
     // клеток смещения доходят до миллионов, то есть остаются точными во float32 (предел 2^24), но
@@ -736,30 +676,16 @@ void tool_registry::add_graph_tools() {
     .device_integer_ready = true});
   add(tool_description{.name = "graph_flood", .shape = aperture::sequential, .input_count = 5, .output_count = 2,
                        .body = tool_graph_flood,
-                       // Очередь с приоритетом плюс отметка занятости на клетку. Очередь ограничена
-                       // числом дуг: каждая клетка попадает в неё столько раз, сколько у неё соседей,
-                       // и это ВЕРХНЯЯ оценка — обычно много меньше, но занижать нельзя.
                        .footprint = [](const tool_call& call) {
-                         const size_t count = call.range_count();
-                         const size_t arcs = call.input(1).valid() ? call.input(1).count() : count * 8;
-                         return count * sizeof(uint32_t) * 2 + arcs * (sizeof(uint32_t) * 2 + sizeof(double));
+                         const csr_neighbourhood around{call.input(0).read(), call.input(1).read(), {}, call.range_count()};
+                         return flood_footprint(around, call.range_count());
                        }});
   add(tool_description{
     .name = "graph_frontier", .shape = aperture::gather, .input_count = 3, .output_count = 1,
     .body = tool_graph_frontier, .footprint = no_temporary_memory,
     // Досрочный выход из цикла на устройстве обходится дешевле, чем кажется: волна всё равно ждёт
     // самого долгого соседа, но лишних чтений памяти не делает.
-    .device_body = "  float own = in_2_at(index);\n"
-                   "  float frontier = 0.0;\n"
-                   "  if (own != args.ignore) {\n"
-                   "    uint first = uint(in_0_at(index));\n"
-                   "    uint last = uint(in_0_at(index + 1u));\n"
-                   "    for (uint k = first; k < last; ++k) {\n"
-                   "      float other = in_2_at(uint(in_1_at(k)));\n"
-                   "      if (other != own && other != args.ignore) { frontier = 1.0; break; }\n"
-                   "    }\n"
-                   "  }\n"
-                   "  out_0_set(index, frontier);\n",
+    .device_body = detail::csr_device_body("frontier",2,0,1),
     .device_params = {{"ignore", -1.0}},
     .device_integer_ready = true});
   add(tool_description{.name = "poisson_seeds", .shape = aperture::sequential, .input_count = 3, .output_count = 1,
@@ -777,27 +703,7 @@ void tool_registry::add_graph_tools() {
     // Пустая клетка перенимает метку сильнейшего соседа. ТАЙ-БРЕЙК ПО МЕНЬШЕЙ МЕТКЕ обязателен и
     // здесь: при равных весах результат не имеет права зависеть от того, в каком порядке лежат дуги,
     // а на устройстве порядок обхода тот же, но полагаться на это нельзя — правило одно на оба пути.
-    .device_body = "  float own = in_2_at(index);\n"
-                   "  if (own != 0.0 || in_4_at(index) == 0.0) {\n"
-                   "    out_0_set(index, own);\n"
-                   "  } else {\n"
-                   "    float best_label = 0.0;\n"
-                   "    float best_weight = args.threshold;\n"
-                   "    uint first = uint(in_0_at(index));\n"
-                   "    uint last = uint(in_0_at(index + 1u));\n"
-                   "    for (uint k = first; k < last; ++k) {\n"
-                   "      uint other = uint(in_1_at(k));\n"
-                   "      float other_label = in_2_at(other);\n"
-                   "      if (other_label == 0.0) continue;\n"
-                   "      float weight = in_3_at(other);\n"
-                   "      if (weight > best_weight ||\n"
-                   "          (weight == best_weight && best_label != 0.0 && other_label < best_label)) {\n"
-                   "        best_weight = weight;\n"
-                   "        best_label = other_label;\n"
-                   "      }\n"
-                   "    }\n"
-                   "    out_0_set(index, best_label);\n"
-                   "  }\n",
+    .device_body = detail::csr_device_body("vote",2,0,1,3,4),
     .device_params = {{"threshold", 0.0}},
     .device_integer_ready = true});
   add(tool_description{
@@ -805,19 +711,7 @@ void tool_registry::add_graph_tools() {
     .body = tool_graph_slope, .footprint = no_temporary_memory,
     // Средний модуль разности со ВСЕМИ соседями. Дуга, ведущая за пределы поля значений,
     // пропускается и в среднее не входит — иначе делитель врал бы на краю.
-    .device_body = "  float own = in_2_at(index);\n"
-                   "  uint first = uint(in_0_at(index));\n"
-                   "  uint last = uint(in_0_at(index + 1u));\n"
-                   "  uint count = in_2_length();\n"
-                   "  float total = 0.0;\n"
-                   "  uint taken = 0u;\n"
-                   "  for (uint k = first; k < last; ++k) {\n"
-                   "    uint other = uint(in_1_at(k));\n"
-                   "    if (other >= count) continue;\n"
-                   "    total += abs(in_2_at(other) - own);\n"
-                   "    taken += 1u;\n"
-                   "  }\n"
-                   "  out_0_set(index, taken == 0u ? 0.0 : total / float(taken));\n",
+    .device_body = detail::csr_device_body("slope",2,0,1),
     .device_params = {},
     .device_integer_ready = true});
   add(tool_description{
@@ -840,7 +734,7 @@ void tool_registry::add_graph_tools() {
                        // клеток: глубже одного прохода по подграфу он не растёт.
                        .footprint = [](const tool_call& call) {
                          const size_t count = call.range_count();
-                         return count * sizeof(uint32_t) * 2 + count * sizeof(size_t);
+                         return (count + 1) * 64;
                        }});
   add(tool_description{.name = "label_adjacency", .shape = aperture::scatter, .input_count = 3, .output_count = 2,
                        .body = tool_label_adjacency,

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "devils_engine/originator/skeleton.h"
+#include "devils_engine/originator/graph_walk.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/utils/core.h"
 
@@ -47,58 +48,37 @@ bool passable_node(const skeleton_graph& graph, const uint32_t node) {
 adjacency build_adjacency(const skeleton_graph& graph) {
   const size_t n = graph.nodes.size();
   adjacency out;
-  out.offsets.assign(n + 1, 0);
-  for (const auto& edge : graph.edges) {
-    if (edge[0] >= n || edge[1] >= n) {
-      utils::error{}("originator skeleton: edge {}-{} names a node beyond the {} nodes", edge[0], edge[1], n);
-    }
-    if (!passable_node(graph, edge[0]) || !passable_node(graph, edge[1])) continue;
-    ++out.offsets[edge[0] + 1];
-    ++out.offsets[edge[1] + 1];
-  }
-  for (size_t i = 0; i < n; ++i) out.offsets[i + 1] += out.offsets[i];
-  out.targets.resize(out.offsets[n]);
-  out.lengths.resize(out.offsets[n]);
-  std::vector<uint32_t> fill(out.offsets.begin(), out.offsets.end() - 1);
-  for (const auto& edge : graph.edges) {
-    if (!passable_node(graph, edge[0]) || !passable_node(graph, edge[1])) continue;
-    const double length = distance_between(graph.nodes[edge[0]], graph.nodes[edge[1]]);
-    out.targets[fill[edge[0]]] = edge[1];
-    out.lengths[fill[edge[0]]++] = length;
-    out.targets[fill[edge[1]]] = edge[0];
-    out.lengths[fill[edge[1]]++] = length;
-  }
+  out.offsets.resize(n + 1);
+  edge_workspace scratch;
+  build_edge_adjacency(n, graph.edges.size(), [&](size_t e) { return graph.edges[e]; },
+    [&](size_t, size_t a, size_t b) { return distance_between(graph.nodes[a], graph.nodes[b]); },
+    [&](size_t node) { return passable_node(graph, uint32_t(node)); },
+    [&](size_t node, size_t offset) { out.offsets[node] = uint32_t(offset); },
+    [&](size_t arcs) { out.targets.resize(arcs); out.lengths.resize(arcs); },
+    [&](size_t index, size_t node, double length) { out.targets[index] = uint32_t(node); out.lengths[index] = length; },
+    scratch, "skeleton");
   return out;
 }
 
 // Дейкстра от нескольких источников. Кратчайшее расстояние единственно, поэтому результат не
 // зависит от порядка, в котором очередь разбирает равные ключи.
-std::vector<double> dijkstra(const skeleton_graph& graph, const adjacency& adj, std::span<const uint32_t> sources) {
+std::vector<double> dijkstra(const skeleton_graph& graph, const adjacency& adj,
+                             std::span<const uint32_t> sources, walk_workspace& workspace) {
   const size_t n = graph.nodes.size();
   std::vector<double> distance(n, -1.0);
-  using entry = std::pair<double, uint32_t>;
-  std::priority_queue<entry, std::vector<entry>, std::greater<entry>> open;
-  for (const uint32_t source : sources) {
-    if (source >= n) {
-      utils::error{}("originator skeleton: source {} is beyond the {} nodes", source, n);
-    }
-    if (!passable_node(graph, source)) continue;
-    distance[source] = 0.0;
-    open.push({0.0, source});
+  std::vector<walk_seed> seeds;
+  for (const auto node : sources) {
+    if (node >= n) utils::error{}("originator skeleton: source {} is beyond the {} nodes", node, n);
+    seeds.push_back({node, 1});
   }
-  while (!open.empty()) {
-    const auto [d, node] = open.top();
-    open.pop();
-    if (d > distance[node]) continue;
-    for (uint32_t k = adj.offsets[node]; k < adj.offsets[node + 1]; ++k) {
-      const uint32_t next = adj.targets[k];
-      const double candidate = d + adj.lengths[k];
-      if (distance[next] < 0.0 || candidate < distance[next]) {
-        distance[next] = candidate;
-        open.push({candidate, next});
-      }
-    }
-  }
+  std::sort(seeds.begin(), seeds.end(), [](const auto a, const auto b) { return a.node < b.node; });
+  seeds.erase(std::unique(seeds.begin(), seeds.end(), [](const auto a, const auto b) { return a.node == b.node; }), seeds.end());
+  walk_distances(n, adj.targets.size(), seeds,
+    [&](const size_t node, auto visit) {
+      for (size_t k = adj.offsets[node]; k < adj.offsets[node + 1]; ++k) visit(adj.targets[k], adj.lengths[k]);
+    }, [&](const size_t node) { return passable_node(graph, uint32_t(node)); },
+    [&](const size_t node, const uint32_t, const double d, const uint32_t) { distance[node] = d; },
+    0, workspace, "skeleton");
   return distance;
 }
 
@@ -179,21 +159,37 @@ size_t skeleton_footprint(const tool_call& call) {
   // Узлы, рёбра, соседство в обе стороны, расстояния и очередь: всё линейно по их числу.
   const size_t nodes = call.input(0).count();
   const size_t edges = call.input(1).count();
-  return nodes * (sizeof(std::array<double, 3>) + sizeof(double) * 2 + sizeof(uint32_t) * 2 + 16) +
-         edges * (sizeof(std::array<uint32_t, 2>) + 2 * (sizeof(uint32_t) + sizeof(double)) + 16);
+  // Tour держит таблицу расстояний между всеми отмеченными узлами в худшем случае.
+  const auto topology = nodes * (sizeof(std::array<double, 3>) + sizeof(double) * 2 + sizeof(uint32_t) * 4) +
+    edges * (sizeof(std::array<uint32_t, 2>) + 2 * (sizeof(uint32_t) + sizeof(double)));
+  const auto pairs = call.tool_name == "skeleton_tour" ?
+    walk_size_multiply(walk_size_multiply(nodes + 1, nodes + 1, "skeleton tour"), sizeof(double), "skeleton tour") : 0;
+  return walk_size_add(walk_size_add(topology, pairs, "skeleton"), walk_footprint(nodes, 2 * edges), "skeleton");
 }
 
 } // namespace
 
-std::vector<double> skeleton_distance(const skeleton_graph& graph, std::span<const uint32_t> sources) {
+std::vector<double> skeleton_distance(const skeleton_graph& graph, std::span<const uint32_t> sources,
+                                      walk_workspace& workspace) {
   if (!graph.passable.empty() && graph.passable.size() != graph.nodes.size()) {
     utils::error{}("originator skeleton: passability lists {} nodes, the graph has {}", graph.passable.size(),
                    graph.nodes.size());
   }
-  return dijkstra(graph, build_adjacency(graph), sources);
+  return dijkstra(graph, build_adjacency(graph), sources, workspace);
+}
+
+std::vector<double> skeleton_distance(const skeleton_graph& graph, std::span<const uint32_t> sources) {
+  walk_workspace workspace;
+  return skeleton_distance(graph, sources, workspace);
 }
 
 double skeleton_tour(const skeleton_graph& graph, const uint32_t start, std::span<const uint32_t> stops) {
+  if (!graph.passable.empty() && graph.passable.size() != graph.nodes.size())
+    utils::error{}("originator skeleton tour: passability size does not match nodes");
+  if (start >= graph.nodes.size()) utils::error{}("originator skeleton tour: start {} is outside nodes", start);
+  for (const auto stop : stops)
+    if (stop >= graph.nodes.size()) utils::error{}("originator skeleton tour: stop {} is outside nodes", stop);
+  walk_workspace workspace;
   const adjacency adj = build_adjacency(graph);
   // Пути только между остановками и стартом: остановок единицы, и обход от каждой дешевле, чем все
   // пары узлов скелета.
@@ -205,7 +201,7 @@ double skeleton_tour(const skeleton_graph& graph, const uint32_t start, std::spa
   std::vector<double> d(k * k, 0.0);
   for (size_t i = 0; i < k; ++i) {
     const std::array<uint32_t, 1> from{points[i]};
-    const auto row = dijkstra(graph, adj, from);
+    const auto row = dijkstra(graph, adj, from, workspace);
     for (size_t j = 0; j < k; ++j) {
       if (row[points[j]] < 0.0) return -1.0;
       d[i * k + j] = row[points[j]];

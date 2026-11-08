@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include <utility>
 
 #include <devils_engine/catalogue/logging.h>

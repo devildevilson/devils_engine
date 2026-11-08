@@ -29,6 +29,5 @@ Config-driven entity construction. `prefab_registry.h` — template registry/bui
 ## Память и задачи
 
 Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
-[указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
-хронологию экспериментов — в отдельном audit/history.
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
+История разработки не является обязательной памятью проекта.

@@ -1,0 +1,37 @@
+// Вклад одного plume. Общая редукция max по ограниченному списку даёт итоговое поле.
+{
+  ctx_save = { n = sqrt(position_x*position_x + position_y*position_y + position_z*position_z) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+  ctx_save = { px = position_x*ctx:saved:inverse, py = position_y*ctx:saved:inverse, pz = position_z*ctx:saved:inverse }
+  ctx_save = { n = sqrt(plate_axis_x*plate_axis_x + plate_axis_y*plate_axis_y + plate_axis_z*plate_axis_z) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+  ctx_save = { ax = plate_axis_x*ctx:saved:inverse, ay = plate_axis_y*ctx:saved:inverse, az = plate_axis_z*ctx:saved:inverse }
+  ctx_save = { n = sqrt(other_position_x*other_position_x + other_position_y*other_position_y + other_position_z*other_position_z) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+  ctx_save = { sx = other_position_x*ctx:saved:inverse, sy = other_position_y*ctx:saved:inverse, sz = other_position_z*ctx:saved:inverse }
+  ctx_save = {
+    off = abs(acos(clamp(ctx:saved:px*ctx:saved:ax + ctx:saved:py*ctx:saved:ay + ctx:saved:pz*ctx:saved:az,-1.0,1.0)) - acos(clamp(ctx:saved:sx*ctx:saved:ax + ctx:saved:sy*ctx:saved:ay + ctx:saved:sz*ctx:saved:az,-1.0,1.0)))
+    direct = acos(clamp(ctx:saved:px*ctx:saved:sx + ctx:saved:py*ctx:saved:sy + ctx:saved:pz*ctx:saved:sz,-1.0,1.0))
+    turn = ctx:saved:px*ctx:saved:ax + ctx:saved:py*ctx:saved:ay + ctx:saved:pz*ctx:saved:az
+  }
+  ctx_save = {
+    head = param_swell_share*other_strength*exp(-1.0*(ctx:saved:direct*ctx:saved:direct)/(param_swell_width*param_swell_width))
+    px = ctx:saved:px-ctx:saved:ax*ctx:saved:turn, py = ctx:saved:py-ctx:saved:ay*ctx:saved:turn, pz = ctx:saved:pz-ctx:saved:az*ctx:saved:turn
+  }
+  ctx_save = { n = sqrt(ctx:saved:px*ctx:saved:px + ctx:saved:py*ctx:saved:py + ctx:saved:pz*ctx:saved:pz) }
+  ctx_save = { active = value_or(plate_rate > 1e-6 and ctx:saved:n >= 1e-6,1.0,0.0) }
+    ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0), turn = ctx:saved:sx*ctx:saved:ax + ctx:saved:sy*ctx:saved:ay + ctx:saved:sz*ctx:saved:az }
+    ctx_save = {
+      px = ctx:saved:px*ctx:saved:inverse, py = ctx:saved:py*ctx:saved:inverse, pz = ctx:saved:pz*ctx:saved:inverse
+      sx = ctx:saved:sx-ctx:saved:ax*ctx:saved:turn, sy = ctx:saved:sy-ctx:saved:ay*ctx:saved:turn, sz = ctx:saved:sz-ctx:saved:az*ctx:saved:turn
+    }
+    ctx_save = { n = sqrt(ctx:saved:sx*ctx:saved:sx + ctx:saved:sy*ctx:saved:sy + ctx:saved:sz*ctx:saved:sz) }
+    ctx_save = { active = ctx:saved:active*value_or(ctx:saved:n >= 1e-6,1.0,0.0) }
+      ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+      ctx_save = { sx = ctx:saved:sx*ctx:saved:inverse, sy = ctx:saved:sy*ctx:saved:inverse, sz = ctx:saved:sz*ctx:saved:inverse }
+      ctx_save = { turn = atan((ctx:saved:sy*ctx:saved:pz-ctx:saved:sz*ctx:saved:py)*ctx:saved:ax + (ctx:saved:sz*ctx:saved:px-ctx:saved:sx*ctx:saved:pz)*ctx:saved:ay + (ctx:saved:sx*ctx:saved:py-ctx:saved:sy*ctx:saved:px)*ctx:saved:az,clamp(ctx:saved:sx*ctx:saved:px + ctx:saved:sy*ctx:saved:py + ctx:saved:sz*ctx:saved:pz,-1.0,1.0)) }
+      ctx_save = { direct = value_or(plate_rate > 1e-6,ctx:saved:turn/plate_rate,0.0) }
+  value_or(other_strength <= 0.0 or param_life <= 0.0 or param_track_width <= 0.0,0.0,
+    value_or(ctx:saved:active < 0.5 or ctx:saved:turn <= 0.0 or ctx:saved:direct > param_life,ctx:saved:head,
+      max(ctx:saved:head,other_strength*(1.0-ctx:saved:direct/param_life)*(1.0-ctx:saved:direct/param_life)*exp(-1.0*(ctx:saved:off*ctx:saved:off)/(param_track_width*param_track_width)))))
+}

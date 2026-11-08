@@ -495,6 +495,108 @@ TEST_CASE("native tool critical error cannot be hidden by a Lua step pcall") {
     error("critical error was swallowed")
   end)", "critical_boundary_test");
   originator::parameters params;
-  originator::step_context context{.name = "critical", .params = &params};
+  originator::step_context context{};
+  context.name = "critical";
+  context.params = &params;
   CHECK_THROWS_AS(host.invoker()(context), utils::critical_error);
+}
+
+TEST_CASE("originator control algorithms preserve keys ties frames and bounded FIFO state") {
+  originator::tool_registry tools;
+  originator::script_host host(tools,nullptr);
+  originator::pipeline p(make_description("queued"),make_sizes(),1);
+  run_body(host,R"lua(
+    return function(step)
+      local A=originator.algorithms
+      local large=0x6000000000000001
+      local sites={{x=1,z=0,key=large+1},{x=-1,z=0,key=large},{x=4,z=0,key=0}}
+      local a,b,d1,d2=A.nearest_pair(sites,{x=0,z=0},{axes={'x','z'},keys={'key'}})
+      assert(a.key==large and b.key==large+1 and d1==1 and d2==1)
+      local around=A.adjacency({large,large+1,9},2,function(i)
+        return large,i==0 and large+1 or 9
+      end)
+      local visited={}
+      local state,count=A.propagate{
+        adjacency=around,max_visits=3,
+        initial=function(seed) seed(large,0) end,
+        transition=function(current,next,depth,old)
+          visited[#visited+1]=next
+          if old==nil then return depth+1 end
+        end,
+      }
+      assert(state[9]==1 and state[large+1]==1 and count==3)
+      assert(visited[1]==large+1 and visited[2]==9)
+      local q0={x=0,y=0,z=0};local q1={x=1,y=2,z=3};local q2={x=2,y=4,z=0}
+      local order=A.nearest_order(3,function(i) return ({q0,q1,q2})[i+1] end)
+      assert(order[1]==0 and order[2]==1 and order[3]==2)
+      for _,scheme in ipairs({'weights','polynomial'}) do
+        local start=A.catmull_rom(q0,q1,q2,q0,0,scheme)
+        local finish=A.catmull_rom(q0,q1,q2,q0,1,scheme)
+        assert(start.x==q1.x and finish.x==q2.x)
+      end
+      local right,up,tangent,length=A.frame({x=0,y=5,z=0})
+      assert(right.x==1 and up.z==1 and tangent.y==1 and length==5)
+      local rows=step.writes.cells
+      -- Writer — самостоятельный контракт bind/write; реальные поля проверяют GN09 smokes.
+      assert(A.tree_distance({{span=0},{span=3,parent=1},{span=4,parent=1}},2,3)==7)
+    end
+  )lua",p);
+}
+
+TEST_CASE("originator control algorithms reject unbounded policies and invalid geometry") {
+  originator::tool_registry tools;
+  const auto fails=[&](std::string_view source) {
+    originator::script_host host(tools,nullptr);
+    originator::pipeline p(make_description("queued"),make_sizes(),1);
+    host.load_body("queued",source,"invalid algorithm");
+    CHECK_THROWS(p.run(host.invoker()));
+  };
+  fails("return function() originator.algorithms.propagate{adjacency={[0]={0}},max_visits=2,initial=function(seed) seed(0,0) end,transition=function() return 0 end} end");
+  fails("return function() originator.algorithms.frame{x=0,y=0,z=0} end");
+  fails("return function() originator.algorithms.tree_distance({{parent=1}},1,1) end");
+  fails("return function() originator.algorithms.adjacency(1,1,function() return 0,2 end) end");
+}
+
+TEST_CASE("originator Lua program groups and gathers declare complete writes and dependencies") {
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+  originator::script_host host(tools,nullptr);
+  host.load_program("pair","height + result_component * 3");
+  host.load_program("neighbour","other_smoothed + result_component");
+  originator::pipeline p(make_description("queued"),make_sizes(),1);
+  run_body(host,R"lua(
+    return function(step)
+      local c=step.writes.cells
+      local h,s,m,b=c:field('height'),c:field('smoothed'),c:field('moisture'),c:field('biome')
+      originator.queue{
+        originator.queue.fill{outputs={h},params={value=2}},
+        originator.queue.run_script{program={'pair','pair'},inputs={h},outputs={s,m}},
+        originator.queue.gather_script{program='neighbour',other_inputs={s},other_count=3,
+          outputs={b},reduce='max'},
+        output={s,m,b},
+      }
+      assert(s:get(0)==2 and m:get(0)==5 and b:get(0)==2)
+    end
+  )lua",p);
+}
+
+TEST_CASE("originator Lua gather refuses neighbour write alias before the queued prefix runs") {
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+  originator::script_host host(tools,nullptr);
+  host.load_program("neighbour","other_height");
+  originator::pipeline p(make_description("queued"),make_sizes(),1);
+  p.find_buffer("cells")->field(0).set(0,7);
+  host.load_body("queued",R"lua(
+    return function(step)
+      local height=step.writes.cells:field('height')
+      originator.queue{
+        originator.queue.fill{outputs={height},params={value=99}},
+        originator.queue.gather_script{program='neighbour',other_inputs={height},outputs={height},reduce='max'},
+        output={height},
+      }
+    end
+  )lua","invalid gather alias");
+  CHECK_THROWS(p.run(host.invoker()));
+  CHECK(p.find_buffer("cells")->field(0).get(0)==7);
 }

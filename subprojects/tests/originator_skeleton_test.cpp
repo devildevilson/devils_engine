@@ -112,3 +112,19 @@ TEST_CASE("originator skeleton tools read counts from parameters, not capacities
   edges.field(1).set(4, 7);
   CHECK_THROWS(originator::dispatch(*distance, inputs, outputs, params, 1, 0, 8, "skeleton", nullptr));
 }
+
+TEST_CASE("originator BFS preserves adapter ties and owns reusable predecessor storage") {
+  const std::vector<std::vector<uint32_t>> edges{{2,1},{3},{3},{}, {}};
+  originator::breadth_workspace workspace;
+  const auto each = [&](uint32_t node, const auto& visit) { for (auto next : edges[node]) visit(next); };
+  CHECK(originator::breadth_path(5,0,3,each,workspace,"BFS test"));
+  CHECK(originator::reconstruct_path(workspace,0,3,"BFS test") == std::vector<uint32_t>{0,2,3});
+  CHECK_FALSE(originator::breadth_path(5,0,4,each,workspace,"BFS test"));
+  CHECK(originator::reconstruct_path(workspace,0,4,"BFS test").empty());
+  CHECK(originator::breadth_path(5,2,2,each,workspace,"BFS test"));
+  CHECK(originator::reconstruct_path(workspace,2,2,"BFS test") == std::vector<uint32_t>{2});
+  CHECK_THROWS(originator::breadth_path(1,0,1,each,workspace,"BFS test invalid"));
+  CHECK_THROWS(originator::breadth_path(2,0,1,each,workspace,"BFS invalid arc"));
+  workspace.release();
+  CHECK(workspace.retained_bytes() == 0);
+}

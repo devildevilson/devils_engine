@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -78,7 +79,8 @@ struct gns_dispatcher::impl {
   std::vector<gns_transport*> transports;
 };
 
-thread_local gns_dispatcher* gns_dispatcher::active_ = nullptr;
+namespace { std::recursive_mutex callback_pump_lock; }
+gns_dispatcher* gns_dispatcher::active_ = nullptr;
 
 gns_dispatcher::gns_dispatcher(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
                                const size_t capacity)
@@ -92,13 +94,18 @@ gns_dispatcher::~gns_dispatcher() {
 }
 
 void gns_dispatcher::pump() {
+  std::lock_guard lock(callback_pump_lock);
   if (active_) devils_engine::utils::error{}("network GNS callback pump must not be recursive");
+  struct scope {
+    gns_dispatcher*& pointer;
+    ~scope() { pointer = nullptr; }
+  } reset{active_};
   active_ = this;
   impl_->sockets.RunCallbacks();
-  active_ = nullptr;
 }
 
 void gns_dispatcher::on_connection(SteamNetConnectionStatusChangedCallback_t* event) {
+  std::lock_guard lock(callback_pump_lock);
   // A stale native callback carries no pointer to a destroyed owner. Raw
   // RunCallbacks outside pump violates the dispatch contract, but must not UAF.
   if (!active_) return;

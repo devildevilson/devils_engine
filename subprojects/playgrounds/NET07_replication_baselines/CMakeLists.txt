@@ -12,7 +12,7 @@ set_target_properties(NET07_replication_baselines PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/playgrounds/NET07_replication_baselines/bin")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME NET07_replication_baselines_verify
+  devils_add_test(NAME NET07_replication_baselines_verify
     COMMAND NET07_replication_baselines --verify)
   set_tests_properties(NET07_replication_baselines_verify PROPERTIES LABELS devils_engine)
 endif()

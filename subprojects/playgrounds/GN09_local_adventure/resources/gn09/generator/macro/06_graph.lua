@@ -86,19 +86,16 @@ return function(step)
     end
   end
 
+  local adjacency=originator.algorithms.adjacency(#list,#links,function(i)
+    return links[i+1][1],links[i+1][2]
+  end)
   -- Узел зала в угловом секторе, лёгший на хорду соседей, сдвигается поперёк неё на 6 м.
   local sectors = columns * (max_z - min_z)
   for i = 0, sectors - 1 do
     local n = list[i + 1]
     if n.kind == 0 and n.rank == 2 then
-      local around, found = {}, 0
-      for _, link in ipairs(links) do
-        if found < 2 and (link[1] == i or link[2] == i) then
-          found = found + 1
-          around[found] = link[1] == i and link[2] or link[1]
-        end
-      end
-      if found == 2 then
+      local around=adjacency[i]
+      if #around>=2 then
         local a, b = list[around[1] + 1], list[around[2] + 1]
         local abx, aby, abz = b.x - a.x, b.y - a.y, b.z - a.z
         local apx, apy, apz = n.x - a.x, n.y - a.y, n.z - a.z

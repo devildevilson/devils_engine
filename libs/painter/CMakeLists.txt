@@ -23,6 +23,7 @@ else()
 endif()
 
 set(SRC_LIST
+  src/painter/memory_statistics.cpp
   src/painter/auxiliary.cpp
   src/painter/glsl_source_file.cpp
   src/painter/gpu_timing.cpp
@@ -63,6 +64,7 @@ add_custom_command(
 )
 
 set(HDR_LIST
+  include/devils_engine/painter/memory_statistics.h
   include/devils_engine/painter/atlas_layout.h
   include/devils_engine/painter/auxiliary.h
   include/devils_engine/painter/glsl_source_file.h

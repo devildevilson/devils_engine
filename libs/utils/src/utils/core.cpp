@@ -14,12 +14,24 @@
 #include <cpuinfo.h>
 
 #include "core.h"
+#include "log.h"
+#include "numeric.h"
+#include "trace.h"
+#include "unicode.h"
+#include "platform.h"
+#include "crc32c.h"
 #include "utf.hpp"
 
 namespace fs = std::filesystem;
 
 namespace devils_engine {
 namespace utils {
+[[noreturn]] void raise_critical_error(const std::source_location location, const std::string& message) {
+  const auto full_message = std::format("{}:{}: {}: {}", make_sane_file_name(location.file_name()), location.line(), location.function_name(), message);
+  spdlog::error("{}", full_message);
+  throw critical_error(full_message);
+}
+
 tracer::tracer(const std::source_location loc) noexcept : location(loc) {
   spdlog::log(spdlog::level::trace, "in  {}:{} `{}`", make_sane_file_name(location.file_name()), location.line(), location.function_name());
 }

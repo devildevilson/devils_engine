@@ -97,8 +97,8 @@ return function(step)
   -- 4. Расселение. Один тик — это миграция плюс рост; порядок именно такой, потому что пришедшие
   -- люди должны успеть упереться в ёмкость нового места, а не наоборот.
   for _ = 1, math.floor(p.population_ticks) do
-    originator.graph_blur{
-      inputs = { offsets, arcs, population },
+    originator.blur{
+      inputs = { population, offsets, arcs },
       outputs = { population_next },
       params = { self_weight = p.migration_self_weight },
     }
@@ -200,12 +200,12 @@ return function(step)
     ticks = 2
   end
   for tick = 1, math.floor(ticks / 2) do
-    originator.graph_vote{
-      inputs = { offsets, arcs, culture, population, culture_mask },
+    originator.vote{
+      inputs = { culture, population, culture_mask, offsets, arcs },
       outputs = { culture_next },
     }
-    originator.graph_vote{
-      inputs = { offsets, arcs, culture_next, population, culture_mask },
+    originator.vote{
+      inputs = { culture_next, population, culture_mask, offsets, arcs },
       outputs = { culture },
     }
 
@@ -216,8 +216,8 @@ return function(step)
       outputs = { step.writes.culture_offsets:field("start"), step.writes.culture_order:field("cell") },
       key_support = "global",
     }
-    originator.graph_frontier{
-      inputs = { offsets, arcs, culture },
+    originator.frontier{
+      inputs = { culture, offsets, arcs },
       outputs = { frontier },
       params = { ignore = 0 },
     }

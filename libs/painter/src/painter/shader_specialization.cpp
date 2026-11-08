@@ -1,3 +1,4 @@
+#include "devils_engine/utils/numeric.h"
 #include <algorithm>
 #include <charconv>
 

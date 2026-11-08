@@ -1,3 +1,5 @@
+#include "devils_engine/playground/generator_resources.h"
+#include "devils_engine/playground/cli.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -65,15 +67,11 @@ fs::path resource_root() {
 // Генератор приезжает через demiurg: хост знает одно имя, `generator/texture`, а что этот генератор
 // разложен на документ значений, документ буферов и папку скриптов — знает сама точка входа.
 struct generator_registry {
-  demiurg::module_system modules;
-  demiurg::resource_system resources;
+  playground::generator_resources source;
   originator::generator_config config;
 
-  generator_registry() : modules(resource_root().generic_string() + "/") {
-    modules.load_modules({demiurg::module_system::list_entry{"gn04/", "", ""}});
-    originator::register_generator_resources(resources);
-    resources.parse_resources(&modules);
-    config = originator::load_generator(resources, "generator/texture");
+  generator_registry() : source(resource_root(), {{"gn04/", "", ""}}) {
+    config = originator::load_generator(source.resources(), "generator/texture");
   }
 };
 
@@ -82,42 +80,20 @@ const generator_registry& generator() {
   return registry;
 }
 
-bool starts_with(const std::string_view& text, const std::string_view& prefix) {
-  return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
-}
 
-options parse_options(const int argc, const char** argv) {
-  options result;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view argument = argv[i];
-    if (argument == "--verify") {
-      result.verify = true;
-    } else if (starts_with(argument, "--size=")) {
-      result.size = std::stoul(std::string(argument.substr(7)));
-    } else if (starts_with(argument, "--sites=")) {
-      result.sites = std::stoul(std::string(argument.substr(8)));
-    } else if (starts_with(argument, "--seed=")) {
-      result.seed = std::stoull(std::string(argument.substr(7)));
-    } else if (starts_with(argument, "--shader-cache=")) {
-      result.shader_cache = std::string(argument.substr(15));
-    } else if (starts_with(argument, "--dump=")) {
-      result.dump = std::string(argument.substr(7));
-    } else if (argument == "--help" || argument == "-h") {
-      std::cout << "GN04 texture generation lab\n"
-                << "  --size=N    сторона текстуры (по умолчанию 1024)\n"
-                << "  --sites=N   число областей (по умолчанию 64)\n"
-                << "  --seed=N    зерно пайплайна\n"
-                << "  --verify    прогнать контрактные проверки\n"
-                << "  --dump=PATH сохранить видимую текстуру в PPM (для ГЛАЗА, не для конвейера)\n";
-      std::exit(0);
-    } else {
-      utils::error{}("GN04: unknown argument '{}'", argument);
-    }
-  }
-  if (result.sites == 0) {
-    utils::error{}("GN04: a texture of zero regions has nothing to show");
-  }
-  return result;
+
+std::optional<int> parse_options(const int argc, const char* const* argv, options& result) {
+  CLI::App app{"GN04_texture_generation"};
+  app.option_defaults()->always_capture_default();
+  app.add_flag("--verify", result.verify, "Verify contracts");
+  app.add_option("--size", result.size, "Raster side")->check(CLI::PositiveNumber);
+  app.add_option("--sites", result.sites, "Region count")->check(CLI::PositiveNumber);
+  app.add_option("--seed", result.seed, "World seed");
+  app.add_option("--shader-cache", result.shader_cache, "SPIR-V cache");
+  app.add_option("--dump", result.dump, "Output PPM");
+
+  if (auto code = playground::parse_cli(app, argc, argv)) return code;
+  return std::nullopt;
 }
 
 originator::size_table make_sizes(const options& opts) {
@@ -467,7 +443,8 @@ int run_verify(const options& opts) {
 
 int main(const int argc, const char** argv) {
   try {
-    const auto opts = parse_options(argc, argv);
+    options opts;
+    if (auto code = parse_options(argc, argv, opts)) return *code;
 
     // Устройства может не быть вовсе, и это ЗАКОННЫЙ ответ, а не провал: очередь обязана иметь путь
     // на CPU, а площадка про устройство — сказать, что проверять нечего, и выйти успешно.

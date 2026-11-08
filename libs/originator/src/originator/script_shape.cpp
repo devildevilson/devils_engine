@@ -229,13 +229,14 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
     const bool reach_is_number = number_of(s.reach, fixed_reach);
     shape_vocabulary::decoded out;
     out.boxes.reserve(count);
+    column_workspace reach_workspace;
     for (size_t i = 0; i < count; ++i) {
       const auto a = point_of(s.box_a, i);
       const auto b = s.box_b.empty() ? a : point_of(s.box_b, i);
       double reach = fixed_reach;
       if (!reach_is_number) {
         const std::span<const double> scalars(table->data.data() + i * table->stride, table->stride);
-        state->reach_program->run(1, std::span<const double* const>{}, scalars, &reach);
+        state->reach_program->run(1, std::span<const double* const>{}, scalars, &reach, reach_workspace);
       }
       if (!std::isfinite(reach) || reach < 0.0) {
         utils::error{}("originator shape '{}': row {} has invalid reach {}", s.name, i, reach);
@@ -260,7 +261,9 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
   // Метка: поле строки (номер скаляра в таблице) или число.
   auto batch = [state](const void* rows, const size_t row, field_batch& points) {
     const auto& table = *static_cast<const script_rows*>(rows);
-    thread_local std::vector<std::array<double, column_program::lanes>> slots;
+    field_frame local;
+    auto& workspace = points.workspace ? *points.workspace : local;
+    auto& slots = workspace.slots;
     if (slots.size() < state->slot_of_column.size()) slots.resize(state->slot_of_column.size());
     const auto run = [&](const column_program& program, const std::span<const double> scalars,
                          const field_batch& input, double* output) {
@@ -272,11 +275,11 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
         columns[3 + j] = slots[j].data();
       }
       program.run(input.count, std::span<const double* const>(columns.data(), 3 + state->slot_of_column.size()),
-                  scalars, output);
+                  scalars, output, workspace.column);
     };
     const std::span<const double> scalars(table.data.data() + row * table.stride, table.stride);
     run(*state->program, scalars, points, points.values);
-    thread_local std::vector<double> combined;
+    auto& combined = workspace.combined;
     std::array<double, column_program::lanes> child_values{};
     std::array<double, column_program::lanes> x{}, y{}, z{};
     std::array<field_point*, column_program::lanes> lanes{};

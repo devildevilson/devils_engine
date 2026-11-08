@@ -586,3 +586,12 @@
   layout = aos
   size = single
 }
+
+// Рабочие данные климатического прохода: выбор соседа не меняется между переносами влаги.
+// Не входят в package; lifetime — текущий pipeline, а не OS thread.
+{
+  name = transport
+  format = [ upwind = ui1, upwind_moisture = v1, upwind_height = v1 ]
+  layout = soa
+  size = cell_count
+}

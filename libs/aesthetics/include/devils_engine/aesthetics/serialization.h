@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_AESTHETICS_SERIALIZATION_H
 #define DEVILS_ENGINE_AESTHETICS_SERIALIZATION_H
 
+#include "devils_engine/utils/type_traits.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>

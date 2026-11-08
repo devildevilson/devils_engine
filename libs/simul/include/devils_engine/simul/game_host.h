@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_GAME_HOST_H
 #define DEVILS_ENGINE_SIMUL_GAME_HOST_H
 
+#include "devils_engine/utils/log.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstddef>

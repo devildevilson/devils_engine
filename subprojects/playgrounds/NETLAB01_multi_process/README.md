@@ -1,6 +1,6 @@
 # NET-LAB-01 — the same session as several real processes
 
-The fixture that NET-06/07/08C ran inside one process, executed by **separate
+The fixture that ULT-NET-06/07/08C ran inside one process, executed by **separate
 operating-system processes over real UDP**: one authority, three followers and one
 intruder, with the engine's frozen handshake (SESSION-02), the reconnect credential
 (SESSION-03), the reconnect policy (SESSION-04) and the hot intent class (HOT-01) all on
@@ -392,7 +392,7 @@ silently returns the wrong element. In the stand the consequence looked like som
 entirely: `assess_recovery` saw no checkpoint, answered `no_checkpoint`, and every reconnect
 was told recovery was impossible. `bounded_history::find_entry` had the same shape and was
 merely lucky. Both now binary-search the index space, which needs no iterator machinery.
-NET-04's own unit test caught it — one assertion of 168 under GCC 14, green under GCC 16.
+ULT-NET-04's own unit test caught it — one assertion of 168 under GCC 14, green under GCC 16.
 
 **The state root is identical across all three axes** — Debug/Release, AVX/baseline ISA, and
 GCC 16/GCC 14 all give `8518737655127057956` at tick 70 and `13531786226404380819` at tick 42

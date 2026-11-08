@@ -1,3 +1,4 @@
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -41,6 +42,68 @@ originator::field_ref readable(const originator::buffer& b, const std::string_vi
   return originator::field_ref{&b, nullptr, b.find_field(name)};
 }
 } // namespace
+
+TEST_CASE("generation formulas read vector components without materializing fields") {
+  const std::vector<field_pair> fields{{"position", "v3"}, {"out", "d1"}};
+  for (const auto storage : {originator::storage_kind::aos, originator::storage_kind::soa}) {
+    originator::buffer cells("vector", originator::make_buffer_layout(storage, fields, "vector"), 32);
+    for (size_t i = 0; i < cells.count(); ++i) {
+      cells.field(0).set(i, i + 1, 0);
+      cells.field(0).set(i, -double(i), 1);
+      cells.field(0).set(i, double(i) * 0.25, 2);
+    }
+    const std::vector<std::string> names{"position"};
+    const std::array<originator::field_type, 1> types{cells.field(0).type()};
+    const auto program = originator::script_program::compile("vector", "pow(position_x, 2) + position_y - position_z",
+      names, originator::script_program::result_kind::number, types);
+    originator::dispatch_script(*program, std::vector{readable(cells, "position")}, std::vector{writable(cells, "out")},
+      {}, 1, 0, cells.count(), "vector", nullptr);
+    for (size_t i = 0; i < cells.count(); ++i)
+      CHECK(cells.field(1).get(i) == (i + 1) * (i + 1) - double(i) * 1.25);
+    const std::vector<std::string> ambiguous{"position", "position_y"};
+    const std::array<originator::field_type, 2> bad_types{types[0], cells.field(1).type()};
+    CHECK_THROWS(originator::script_program::compile("ambiguous", "position_y", ambiguous,
+      originator::script_program::result_kind::number, bad_types));
+  }
+}
+
+TEST_CASE("scripted gather reduces a separate domain with explicit parameters and stable ties") {
+  using namespace originator;
+  const std::vector<field_pair> fields{{"amount", "d1"}, {"out", "d1"}};
+  buffer own("own", make_buffer_layout(storage_kind::soa, fields, "own"), 8192);
+  buffer other("other", make_buffer_layout(storage_kind::aos, fields, "other"), 3);
+  for (size_t i = 0; i < own.count(); ++i) own.field(0).set(i, double(i));
+  other.field(0).set(0, 2); other.field(0).set(1, 5); other.field(0).set(2, 5);
+  const std::vector<std::string> names{"amount", "other_amount"}, parameter_names{"gain"};
+  const std::array<field_type, 2> types{own.field(0).type(), other.field(0).type()};
+  const auto program = script_program::compile("gather", "other_amount*param_gain + amount", names,
+    script_program::result_kind::number, types, parameter_names);
+  const std::vector<field_ref> inputs{{&own, nullptr, 0}, {&other, nullptr, 0}};
+  const std::vector<field_ref> outputs{{&own, &own, 1}};
+  parameters params; params.set_number("gain", 2);
+  std::array<script_reduction, 1> reduction{};
+  script_gather_call call;
+  call.program = program.get(); call.inputs = inputs; call.own_inputs = 1;
+  call.outputs = outputs; call.params = &params; call.other_count = 3;
+  call.reductions = reduction; call.end = own.count(); call.step = "gather";
+  dispatch_gather_program(call, nullptr);
+  for (size_t i = 0; i < own.count(); ++i) CHECK(own.field(1).get(i) == double(i) + 10);
+  thread::atomic_pool pool(8);
+  dispatch_gather_program(call, &pool);
+  for (size_t i = 0; i < own.count(); ++i) CHECK(own.field(1).get(i) == double(i) + 10);
+  reduction[0].operation = script_reduction::kind::argmax;
+  dispatch_gather_program(call, nullptr);
+  for (size_t i = 0; i < own.count(); ++i) CHECK(own.field(1).get(i) == 1); // равный score сохраняет первого
+  call.other_count = 0;
+  dispatch_gather_program(call, nullptr);
+  for (size_t i = 0; i < own.count(); ++i) CHECK(own.field(1).get(i) == 0);
+  call.other_count = 4;
+  CHECK_THROWS(check_gather_program(call));
+  call.other_count = 3;
+  parameters missing;
+  call.params = &missing;
+  CHECK_THROWS(check_gather_program(call));
+}
 
 TEST_CASE("originator script reads buffer fields by their declared names") {
   auto cells = make_cells();
@@ -286,4 +349,17 @@ TEST_CASE("originator script cannot carry a saved value from one element to the 
   CHECK_THROWS_AS(
     originator::dispatch_script(*program, inputs, outputs, params, 1, saving, saving + 1, "test", nullptr),
     std::exception);
+}
+
+TEST_CASE("originator VM lists belong to an element and cannot accumulate across a chunk") {
+  auto cells=make_cells();
+  for(size_t i=0;i<8;++i) cells.field(cells.find_field("height")).set(i,1);
+  const auto program=originator::script_program::compile("lists",
+    "{ ctx:list:xs = { add_to = height }, ctx:list:xs = { sum = this } }",
+    std::vector<std::string>{"height"},originator::script_program::result_kind::number);
+  CHECK_FALSE(originator::script_footprint(*program,1).has_value());
+  const std::vector inputs{readable(cells,"height")};
+  const std::vector outputs{writable(cells,"scripted")};
+  originator::dispatch_script(*program,inputs,outputs,{},1,0,8,"lists",nullptr);
+  for(size_t i=0;i<8;++i) CHECK(cells.field(cells.find_field("scripted")).get(i)==1);
 }

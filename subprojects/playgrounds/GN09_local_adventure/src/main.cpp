@@ -1,3 +1,5 @@
+#include <exception>
+#include "devils_engine/playground/cli.h"
 #include <cstdio>
 #include <map>
 #include "adventure.h"
@@ -56,95 +58,40 @@ struct options {
   uint32_t lead = 0;
 };
 
-bool number(const std::string_view text, uint64_t& out) {
-  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), out);
-  return error == std::errc() && end == text.data() + text.size();
-}
 
-bool sector_number(const std::string_view text, int& out) {
-  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), out);
-  return error == std::errc() && end == text.data() + text.size() &&
-         out >= -100000 && out <= 100000;
-}
 
-bool real_number(const std::string_view text, double& out) {
-  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), out);
-  return error == std::errc() && end == text.data() + text.size() &&
-         std::isfinite(out) && out >= 0.5 && out <= 3.0;
-}
 
-bool parse(const int argc, char** argv, options& out) {
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    if (arg == "--verify") { out.verify = true; continue; }
-    if (arg == "--bench") { out.bench = true; continue; }
-    if (arg == "--station-stats") { out.station_stats = true; continue; }
-    if (arg.starts_with("--mods=")) { gn09::set_world_mods(arg.substr(7)); continue; }
 
-    if (arg == "--help") {
-      std::cout << "GN09_local_adventure [--seed=N] [--radius=R] [--verify] [--bench] [--seeds=N] [--svg=PATH] "
-                   "[--sector=X,Z] [--site=N --site-svg=PATH --structure-svg=PATH] "
-                   "[--graph-html=PATH [--graph-sectors=N]] [--mods=FOLDER,...]\n";
-      return false;
-    }
-    const auto value = [&](const std::string_view prefix) {
-      return arg.starts_with(prefix) ? arg.substr(prefix.size()) : std::string_view{};
-    };
-    uint64_t parsed = 0;
-    if (arg.starts_with("--sector=")) {
-      const std::string_view pair = arg.substr(9);
-      const size_t comma = pair.find(',');
-      if (comma != std::string_view::npos &&
-          sector_number(pair.substr(0, comma), out.sector_x) &&
-          sector_number(pair.substr(comma + 1), out.sector_z)) continue;
-    }
-    if (arg.starts_with("--seed=") && number(value("--seed="), parsed)) { out.seed = parsed; continue; }
-    if (arg.starts_with("--radius=") && real_number(value("--radius="), out.radius)) continue;
-    if (arg.starts_with("--seeds=") && number(value("--seeds="), parsed) && parsed > 0 &&
-        parsed <= 10000) { out.seeds = uint32_t(parsed); continue; }
-    if (arg.starts_with("--svg=") && !value("--svg=").empty()) {
-      out.svg = value("--svg=");
-      continue;
-    }
-    if (arg.starts_with("--site-svg=") && !value("--site-svg=").empty()) {
-      out.site_svg = value("--site-svg=");
-      continue;
-    }
-    if (arg.starts_with("--graph-html=") && !value("--graph-html=").empty()) {
-      out.graph_html = value("--graph-html=");
-      continue;
-    }
-    if (arg.starts_with("--graph-sectors=") && number(value("--graph-sectors="), out.graph_sectors) &&
-        out.graph_sectors >= 1 && out.graph_sectors <= 16) continue;
-    if (arg.starts_with("--station-svg=") && !value("--station-svg=").empty()) {
-      out.station_svg = value("--station-svg=");
-      continue;
-    }
-    if (arg.starts_with("--structure-svg=") && !value("--structure-svg=").empty()) {
-      out.structure_svg = value("--structure-svg=");
-      continue;
-    }
-    if (arg.starts_with("--flight=")) { out.flight = std::stod(std::string(value("--flight="))); continue; }
-    if (arg.starts_with("--flight-seconds=")) {
-      out.flight_seconds = std::stod(std::string(value("--flight-seconds=")));
-      continue;
-    }
-    if (arg.starts_with("--lead=") && number(value("--lead="), parsed) && parsed <= 32) {
-      out.lead = uint32_t(parsed);
-      continue;
-    }
-    if (arg.starts_with("--workers=") && number(value("--workers="), parsed) && parsed >= 1 && parsed <= 64) {
-      out.workers = uint32_t(parsed);
-      continue;
-    }
-    if (arg.starts_with("--site=") && number(value("--site="), parsed) && parsed <= UINT32_MAX) {
-      out.site_id = uint32_t(parsed);
-      continue;
-    }
-    std::cerr << "unknown or invalid option: " << arg << '\n';
-    return false;
-  }
-  return true;
+
+
+std::optional<int> parse(const int argc, char** argv, options& out) {
+  CLI::App app{"GN09 local adventure"};
+  app.option_defaults()->always_capture_default();
+  app.add_flag("--verify", out.verify, "verify");
+  app.add_flag("--bench", out.bench, "bench");
+  app.add_flag("--station-stats", out.station_stats, "station-stats");
+  app.add_option("--seed", out.seed, "World seed");
+  app.add_option("--radius", out.radius, "Clearance radius")->check(devils_engine::playground::finite_number)->check(CLI::Range(0.5, 3.0));
+  app.add_option("--seeds", out.seeds, "Verify seeds")->check(CLI::Range(1, 10000));
+  app.add_option("--svg", out.svg, "Window SVG");
+  app.add_option("--site-svg", out.site_svg, "Site SVG");
+  app.add_option("--station-svg", out.station_svg, "Station SVG");
+  app.add_option("--structure-svg", out.structure_svg, "Structure SVG");
+  app.add_option("--graph-html", out.graph_html, "Graph HTML");
+  app.add_option("--graph-sectors", out.graph_sectors, "Graph window")->check(CLI::Range(1, 16));
+  app.add_option("--site", out.site_id, "Site index");
+  app.add_option("--flight", out.flight, "Flight speed")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+  app.add_option("--flight-seconds", out.flight_seconds, "Flight duration")->check(devils_engine::playground::finite_number)->check(CLI::PositiveNumber);
+  app.add_option("--lead", out.lead, "Prefetch lead")->check(CLI::Range(0, 32));
+  app.add_option("--workers", out.workers, "Workers")->check(CLI::Range(1, 64));
+  std::string mods;
+  app.add_option("--mods", mods, "Ordered mod folders");
+  std::array<int, 2> sector{out.sector_x, out.sector_z};
+  devils_engine::playground::add_tuple(app, "--sector", sector, ',', [](const auto& v) { return v[0] >= -100000 && v[0] <= 100000 && v[1] >= -100000 && v[1] <= 100000; });
+  if (auto code = devils_engine::playground::parse_cli(app, argc, argv)) return code;
+  out.sector_x = sector[0]; out.sector_z = sector[1];
+  if (app.count("--mods")) gn09::set_world_mods(mods);
+  return std::nullopt;
 }
 
 void report(const gn09::adventure& world, const gn09::verification& result) {
@@ -773,9 +720,9 @@ int station_stats(const options& opt) {
   return refused ? 1 : 0;
 }
 
-int main(const int argc, char** argv) {
+int main(const int argc, char** argv) try {
   options opt;
-  if (!parse(argc, argv, opt)) return 2;
+  if (auto code = parse(argc, argv, opt)) return *code;
   if (opt.flight > 0.0) return flight_bench(opt);
   if (opt.bench) return bench(opt);
   if (opt.station_stats) return station_stats(opt);
@@ -1572,4 +1519,7 @@ int main(const int argc, char** argv) {
     std::cout << "structure SVG: " << opt.structure_svg << '\n';
   }
   return 0;
+} catch (const std::exception& error) {
+  std::cerr << "GN09: " << error.what() << '\n';
+  return 1;
 }

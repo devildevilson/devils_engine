@@ -1,3 +1,7 @@
+#include <array>
+#include <atomic>
+#include <mutex>
+#include "devils_engine/thread/atomic_pool.h"
 #include <map>
 #include <memory>
 #include <string>
@@ -331,4 +335,94 @@ end
   values.set_number("gain", 4.0);
   auto changed = make_chain(chain_text, body, tile_buffers, modules, values);
   CHECK(test->chain->fingerprint("tile") != changed->chain->fingerprint("tile"));
+}
+
+TEST_CASE("generation contexts release Lua hosts while the worker pool stays alive") {
+  auto test = make_chain();
+  std::mutex grid_lock;
+  test->chain->set_native("grid", [&](originator::generator_run& run) {
+    std::lock_guard lock(grid_lock);
+    auto& cells = run.output("cells");
+    cells.field(0).set_integer(0, int64_t(run.key().words[0]), 0);
+    cells.field(0).set_integer(0, int64_t(run.key().words[1]), 1);
+    cells.field(1).set(0, height(int64_t(run.key().words[0]), int64_t(run.key().words[1])));
+    run.output("meta").field(0).set(0, 0);
+  });
+  std::weak_ptr<int> last_host_data;
+  std::mutex host_lock;
+  test->chain->set_invoker_source(originator::make_chain_invokers(*test->chain, [&](originator::tool_registry& tools) {
+    std::lock_guard lock(host_lock);
+    auto pin = std::make_shared<int>(42);
+    last_host_data = pin;
+    originator::tool_description tool;
+    tool.name = "lifetime_probe";
+    tool.shape = originator::aperture::sequential;
+    tool.body = [pin](const originator::tool_call&, size_t, size_t) {};
+    tools.add(std::move(tool));
+  }));
+  std::array<originator::generation_context, 8> contexts;
+  thread::atomic_pool pool(8);
+  std::atomic<size_t> good = 0;
+  for (size_t i = 0; i < contexts.size(); ++i) {
+    pool.submit([&, i] {
+      const auto result = test->chain->get(contexts[i], "tile", i, key2(0, 0));
+      if (result->field("sum", "value").get(0) == height(0, 0)) ++good;
+    });
+  }
+  pool.compute();
+  pool.wait();
+  CHECK(good == 8);
+  CHECK(test->chain->context_count() == 0);
+  REQUIRE_FALSE(last_host_data.expired());
+  for (auto& context : contexts) {
+    CHECK_FALSE(context.hosts.empty());
+    context.release();
+    CHECK(context.hosts.empty());
+    CHECK(context.field_scratch.retained_bytes() == 0);
+  }
+  CHECK(last_host_data.expired());
+  test->chain->get("tile", 99, key2(0, 0));
+  CHECK(test->chain->context_count() == 1);
+  test->chain->release_contexts();
+  CHECK(test->chain->context_count() == 0);
+  CHECK(last_host_data.expired());
+  test->chain->get("tile", 100, key2(0, 0));
+  REQUIRE_FALSE(last_host_data.expired());
+  test.reset(); // pool and its worker threads are still alive.
+  CHECK(last_host_data.expired());
+}
+
+TEST_CASE("native nested builds forward context and restore state after failure") {
+  auto test = make_chain();
+  bool cycle = false;
+  test->chain->set_native("grid", [&](originator::generator_run& run) {
+    auto& context = run.context();
+    const auto* parent_fields = context.fields;
+    const auto parent_node = context.current_node;
+    const auto parent_depth = context.step_depth;
+    const auto parent_stack = context.building.size();
+    double value = 1;
+    if (cycle || run.key().words[0] != 0) {
+      auto child = run.key();
+      if (!cycle) --child.words[0];
+      value += test->chain->get(context, "grid", run.world_seed(), child)->field("cells", "height").get(0);
+    }
+    CHECK(context.fields == parent_fields);
+    CHECK(context.current_node == parent_node);
+    CHECK(context.step_depth == parent_depth);
+    CHECK(context.building.size() == parent_stack);
+    run.output("cells").field(1).set(0, value);
+    run.output("meta").field(0).set(0, 0);
+  });
+  originator::generation_context context;
+  CHECK(test->chain->get(context, "grid", 0, key2(3, 0))->field("cells", "height").get(0) == 4);
+  cycle = true;
+  CHECK_THROWS(test->chain->get(context, "grid", 1, key2(3, 0)));
+  CHECK(context.building.empty());
+  CHECK(context.fields == nullptr);
+  CHECK(context.current_node == nullptr);
+  CHECK(context.step_depth == 0);
+  context.release();
+  cycle = false;
+  CHECK(test->chain->get(context, "grid", 1, key2(3, 0))->field("cells", "height").get(0) == 4);
 }

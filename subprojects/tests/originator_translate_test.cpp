@@ -10,9 +10,22 @@
 #include "devils_engine/originator/script_program.h"
 #include "devils_engine/originator/script_translate.h"
 #include "devils_engine/painter/compute_context.h"
+#include "devils_engine/painter/shader_crafter.h"
+#include <shaderc/shaderc.h>
 #include "devils_engine/utils/shared.h"
 
 using namespace devils_engine;
+
+TEST_CASE("translation preserves component access and pow without extra bindings") {
+  const std::vector<originator::translated_field> inputs{{"position", originator::field_base::v, 3}};
+  auto translated = originator::try_translate_to_glsl("vector", "pow(position_y, 2) + position_z", inputs,
+    {"out", originator::field_base::v}, originator::script_program::result_kind::number);
+  REQUIRE(translated.has_value());
+  CHECK(translated->form.body().find("in_0_at(index, 1u)") != std::string::npos);
+  CHECK(translated->form.body().find("in_0_at(index, 2u)") != std::string::npos);
+  CHECK(translated->form.body().find("pow(") != std::string::npos);
+  CHECK(translated->source.find("in_0_at") != std::string::npos);
+}
 
 // ТРАНСЛЯТОР `ds` -> GLSL и сверка ДВУХ ПУТЕЙ.
 //
@@ -883,4 +896,44 @@ TEST_CASE("originator declares its own push-constant budget instead of asking th
                                                        originator::device_param{"p", 0.0, "p"});
   CHECK_THROWS_AS(originator::build_device_shader(shape, too_many, "  out_0_set(index, 0.0);\n", 64),
                   std::runtime_error);
+}
+
+TEST_CASE("device translation refusal is data and preserves multiline source semantics") {
+  const auto inputs = classify_inputs();
+  const originator::translated_field output{"biome", originator::field_base::ui};
+  const auto kind = originator::script_program::result_kind::number;
+  for (const auto source : {"{ add_to = { mylist, height } }", "{ value_or = { } }", "{ unknown_field }", "{ height + }"}) {
+    auto result = originator::try_translate_to_glsl("refusal", source, inputs, output, kind);
+    REQUIRE_FALSE(result.has_value());
+    CHECK_FALSE(result.error().empty());
+    CHECK(result.error().find("refusal") != std::string::npos);
+  }
+  const auto multiline = originator::try_translate_to_glsl("multiline", "ctx_save = { v = height }\nctx:saved:v + 2\n", inputs, output, kind);
+  const auto block = originator::translate_to_glsl("block", "{ ctx_save = { v = height }, ctx:saved:v + 2 }", inputs, output, kind);
+  REQUIRE(multiline.has_value());
+  CHECK(multiline->form.body() == block.form.body());
+}
+
+TEST_CASE("translated component groups compile as vector and scalar-output shaders without a GPU") {
+  painter::shader_compiler compiler;
+  for (bool separate : {false,true}) {
+    const std::vector<originator::translated_field> inputs{{"position",originator::field_base::v,3}};
+    std::vector<originator::translated_form> forms;
+    for (uint32_t component=0;component<3;++component) {
+      auto form=originator::try_translate_to_glsl("group","position_x + param_shift + result_component",inputs,
+        {"out",originator::field_base::v,separate?1u:3u},originator::script_program::result_kind::number,
+        64,separate?0:component,component);
+      REQUIRE(form.has_value());forms.push_back(std::move(form->form));
+    }
+    const auto combined=originator::combine_component_forms(forms,separate);
+    REQUIRE(combined.declared());CHECK(combined.params().size()==1);
+    std::vector<originator::device_binding> bindings{{.base=originator::field_base::v,.components=3}};
+    if (separate) for(int i=0;i<3;++i) bindings.push_back({.base=originator::field_base::v,.writable=true});
+    else bindings.push_back({.base=originator::field_base::v,.components=3,.writable=true});
+    const auto source=originator::build_device_shader(bindings,combined.params(),combined.body(),64);
+    painter::shader_crafter crafter(nullptr);
+    crafter.set_shader_type(shaderc_compute_shader);crafter.set_shader_entry_point("main");
+    const auto spirv=crafter.compile(compiler,"component group",source);
+    INFO(crafter.err_msg());REQUIRE_FALSE(spirv.empty());
+  }
 }

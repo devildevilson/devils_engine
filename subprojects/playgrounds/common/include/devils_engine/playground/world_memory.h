@@ -9,7 +9,7 @@
 
 #include "devils_engine/originator/pipeline.h"
 
-#include "streaming.h"
+#include "devils_engine/playground/chunk_streaming.h"
 
 // ПАМЯТЬ МИРА: то, чем мир отличается от выводимого.
 //

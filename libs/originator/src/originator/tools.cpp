@@ -1,3 +1,5 @@
+#include "devils_engine/originator/generator_chain.h"
+#include <optional>
 #include "devils_engine/originator/tools.h"
 
 #include <algorithm>
@@ -150,6 +152,11 @@ std::string_view parameters::string(const std::string_view& name, const std::str
   return entry != nullptr && entry->is_string ? std::string_view(entry->text) : fallback;
 }
 
+generation_context& tool_call::context() const {
+  if (!generation) utils::error{}("originator step '{}', tool '{}': no generation context", step_name, tool_name);
+  return *generation;
+}
+
 size_t tool_call::range_count() const noexcept {
   return range_end > range_begin ? range_end - range_begin : 0;
 }
@@ -292,7 +299,7 @@ prepared_call::prepared_call(const tool_description& tool,
                              const size_t range_begin,
                              const size_t range_end,
                              const std::string_view& step_name,
-                             thread::atomic_pool* pool)
+                             thread::atomic_pool* pool, generation_context* generation)
   : tool_(&tool) {
   call_.inputs = inputs;
   call_.outputs = outputs;
@@ -302,6 +309,7 @@ prepared_call::prepared_call(const tool_description& tool,
   call_.range_end = range_end;
   call_.step_name = step_name;
   call_.tool_name = tool.name;
+  call_.generation = generation;
   // Пул отдаётся только тем апертурам, которые движок не разбивает сам: тело pointwise, gather или
   // reduce уже исполняется внутри чанка и параллелить себя не должно.
   call_.pool = is_parallel(tool.shape) ? nullptr : pool;
@@ -318,7 +326,13 @@ void prepared_call::run(const size_t begin, const size_t end) const {
   if (end <= begin) {
     return;
   }
-  tool_->body(call_, begin, end);
+  tool_call local = call_;
+  std::optional<generation_context> task;
+  if (is_parallel(tool_->shape) && local.generation) {
+    task.emplace(local.generation->fork_task());
+    local.generation = &*task;
+  }
+  tool_->body(local, begin, end);
 }
 
 dispatch_check check_dispatch(const tool_description& tool,
@@ -475,7 +489,7 @@ void dispatch(const tool_description& tool,
               const size_t range_begin,
               const size_t range_end,
               const std::string_view& step_name,
-              thread::atomic_pool* pool) {
+              thread::atomic_pool* pool, generation_context* generation) {
   if (tool.shape == aperture::reduce) {
     utils::error{}("originator step '{}': tool '{}' is a reduction, use dispatch_reduce", step_name, tool.name);
   }
@@ -490,7 +504,7 @@ void dispatch(const tool_description& tool,
     return;
   }
 
-  const prepared_call prepared(tool, inputs, outputs, params, seed, range_begin, range_end, step_name, pool);
+  const prepared_call prepared(tool, inputs, outputs, params, seed, range_begin, range_end, step_name, pool, generation);
 
   if (!check.parallel || pool == nullptr || pool->size() == 0) {
     prepared.run(range_begin, range_end);
@@ -514,7 +528,7 @@ double dispatch_reduce(const tool_description& tool,
                        const size_t range_begin,
                        const size_t range_end,
                        const std::string_view& step_name,
-                       thread::atomic_pool* pool) {
+                       thread::atomic_pool* pool, generation_context* generation) {
   if (tool.shape != aperture::reduce) {
     utils::error{}("originator step '{}': tool '{}' is not a reduction", step_name, tool.name);
   }
@@ -534,6 +548,7 @@ double dispatch_reduce(const tool_description& tool,
   call.range_end = range_end;
   call.step_name = step_name;
   call.tool_name = tool.name;
+  call.generation = generation;
 
   const size_t count = call.range_count();
   if (count == 0) {
@@ -547,10 +562,13 @@ double dispatch_reduce(const tool_description& tool,
   std::vector<double> partials(chunk_count, tool.initial);
 
   const auto run_chunks = [&tool, &call, &partials, range_begin, range_end](const size_t first, const size_t last) {
+    tool_call local = call;
+    std::optional<generation_context> task;
+    if (local.generation) { task.emplace(local.generation->fork_task()); local.generation = &*task; }
     for (size_t i = first; i < last; ++i) {
       const size_t start = range_begin + i * reduce_chunk_size;
       const size_t stop = std::min(start + reduce_chunk_size, range_end);
-      partials[i] = tool.partial(call, start, stop);
+      partials[i] = tool.partial(local, start, stop);
     }
   };
 

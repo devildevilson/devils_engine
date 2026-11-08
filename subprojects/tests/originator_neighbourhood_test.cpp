@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include "devils_engine/originator/neighbourhood.h"
+#include "devils_engine/originator/graph_walk.h"
 #include "devils_engine/originator/skeleton.h"
 #include "devils_engine/originator/tools.h"
 
@@ -195,4 +196,83 @@ TEST_CASE("neighbourhood refusals") {
   params.set_string("stencil", "hex");
   CHECK_THROWS(originator::dispatch(*registry.find("blur"), std::vector{r(grid, "value")}, std::vector{w(grid, "out")},
                                     params, 1, 0, side * side, "test", nullptr));
+}
+
+TEST_CASE("walk labels are sparse data, capacity and predecessor have deterministic semantics") {
+  using namespace originator;
+  walk_workspace scratch;
+  const std::array<walk_seed, 2> sources{{{0, UINT32_MAX}, {3, 1000000000}}};
+  std::array<uint32_t, 4> labels{}, parent{};
+  std::array<double, 4> distance{};
+  const auto each = [](const size_t node, auto visit) {
+    if (node) visit(node - 1, 1.0);
+    if (node < 3) visit(node + 1, 1.0);
+  };
+  walk_distances(4, 6, sources, each, [](size_t) { return true; },
+    [&](size_t node, uint32_t label, double d, uint32_t previous) {
+      labels[node] = label; distance[node] = d; parent[node] = previous;
+    }, 2, scratch, "test");
+  CHECK(labels == std::array<uint32_t, 4>{UINT32_MAX, UINT32_MAX, 1000000000, 1000000000});
+  CHECK(parent == std::array<uint32_t, 4>{0, 0, 3, 3});
+  CHECK(distance == std::array<double, 4>{0, 1, 1, 0});
+  CHECK(scratch.retained_bytes() < walk_footprint(4, 6));
+  CHECK(scratch.labels.size() == 2);
+  scratch.release();
+  CHECK(scratch.retained_bytes() == 0);
+  CHECK_THROWS(walk_distances(4, 6, sources,
+    [](size_t node, auto visit) { visit((node + 1) % 4, -1.0); },
+    [](size_t) { return true; }, [](size_t, uint32_t, double, uint32_t) {}, 0, scratch, "bad cost"));
+}
+
+TEST_CASE("stencil flood footprint includes dimension radius and sparse label state") {
+  using namespace originator;
+  stencil_neighbourhood stencil;
+  stencil.extent = {5, 5, 5};
+  stencil.form = stencil_neighbourhood::shape::box;
+  stencil.radius = 2;
+  CHECK(neighbourhood_arc_bound(neighbourhood{stencil}, 125) == 125 * 124);
+  CHECK(flood_footprint(neighbourhood{stencil}, 125) >= walk_footprint(125, 125 * 124));
+  stencil.form = stencil_neighbourhood::shape::cross;
+  CHECK(neighbourhood_arc_bound(neighbourhood{stencil}, 125) == 125 * 12);
+}
+
+TEST_CASE("components shares the traversal and preserves existing labels in place") {
+  auto registry = tools();
+  auto grid = raster("components");
+  for (size_t i = 0; i < grid.count(); ++i) {
+    grid.field(0).set(i, 1);
+    grid.field(1).set(i, 0);
+  }
+  grid.field(1).set(0, 7);
+  originator::stencil_neighbourhood stencil;
+  stencil.extent = grid.extent();
+  const auto added = originator::components_whole(originator::neighbourhood{stencil}, grid.field(0),
+    grid.field(1), grid.field(1), grid.count(), 1, 7);
+  CHECK(added == 1);
+  CHECK(grid.field(1).get(0) == 7);
+  for (size_t i = 1; i < grid.count(); ++i) CHECK(grid.field(1).get(i) == 8);
+  originator::parameters params;
+  originator::dispatch(*registry.find("components"), std::vector{r(grid, "value")},
+    std::vector{w(grid, "out")}, params, 1, 0, grid.count(), "components", nullptr);
+  for (size_t i = 0; i < grid.count(); ++i) CHECK(grid.field(2).get(i) == 1);
+  params.set_number("min_size", grid.count() + 1);
+  originator::dispatch(*registry.find("components"), std::vector{r(grid, "value")},
+    std::vector{w(grid, "out")}, params, 1, 0, grid.count(), "components", nullptr);
+  for (size_t i = 0; i < grid.count(); ++i) CHECK(grid.field(2).get(i) == 0);
+}
+
+TEST_CASE("CSR rows cover the execution range while neighbour values may include spare capacity") {
+  auto registry=tools();
+  const std::vector<field_pair> fields{{"value","v1"},{"out","v1"}};
+  originator::buffer values("values",originator::make_buffer_layout(originator::storage_kind::soa,fields,"values"),5);
+  const std::vector<field_pair> topology{{"offset","ui1"},{"arc","ui1"}};
+  originator::buffer csr("csr",originator::make_buffer_layout(originator::storage_kind::soa,topology,"csr"),5);
+  const std::array<double,5> offsets{0,1,2,3,3};
+  for(size_t i=0;i<5;++i) { values.field(0).set(i,i*2);values.field(1).set(i,99);csr.field(0).set(i,offsets[i]); }
+  for(size_t i=0;i<3;++i) csr.field(1).set(i,i+1);
+  originator::dispatch(*registry.find("blur"),std::vector{r(values,"value"),r(csr,"offset"),r(csr,"arc")},
+    std::vector{w(values,"out")},{},1,0,4,"partial CSR",nullptr);
+  CHECK(values.field(1).get(0)==1);CHECK(values.field(1).get(3)==6);CHECK(values.field(1).get(4)==99);
+  CHECK_THROWS(originator::dispatch(*registry.find("blur"),std::vector{r(values,"value"),r(csr,"offset"),r(csr,"arc")},
+    std::vector{w(values,"out")},{},1,0,5,"missing CSR row",nullptr));
 }

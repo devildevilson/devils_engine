@@ -3,6 +3,7 @@
 
 // Owns the ordered set of resource modules and their override lookup context.
 
+#include <string_view>
 #include <cstddef>
 #include <cstdint>
 #include <memory>

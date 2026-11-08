@@ -258,7 +258,7 @@ size_t field_surface_footprint(const tool_call& call) {
   const long double tets = std::min<long double>(6 * cells * cells * cells * refinement * refinement * refinement, call.params->integer("tetrahedron_capacity", 8388608));
   const long double vertices = std::min({call.output(0).count(), call.output(1).count(), call.output(2).count()}) + 1;
   const long double sample = std::max(points, vertices * 7);
-  const auto& field = current_field(call.params->string("field"));
+  const auto& field = current_field(call.context(), call.params->string("field"));
   const long double bytes = points * 256 + tets * 48 + vertices * 512 + (cells + 2) * (cells + 2) * (cells + 2) * 128 + sample * (sizeof(field_point) * 4 + 256) + field.shape_count() * 32 + call.input(0).count() * sizeof(field_box) + 16384;
   return size_t(std::min(bytes, static_cast<long double>(std::numeric_limits<size_t>::max())));
 }
@@ -297,7 +297,7 @@ void tool_field_surface(const tool_call& call, size_t, size_t) {
   o.vertex_capacity = std::min({call.output(0).count(), call.output(1).count(), call.output(2).count()});
   std::vector<field_surface_vertex> result;
   try {
-    result = make_field_surface(current_field(call.params->string("field")), o, boxes);
+    result = make_field_surface(current_field(call.context(), call.params->string("field")), o, boxes);
   } catch (const std::exception& error) {
     utils::error{}("originator step '{}': field_surface writing '{}.{}': {}", call.step_name,
                    call.output(0).buffer_name(), call.output(0).field_name(), error.what());

@@ -13,6 +13,9 @@ simulation = {
   // Catch-up budget per main frame. Excess fixed steps remain as debt.
   max_steps_per_frame = 8
   sound_fps = 60
+  // owner: decode + mix in the sound-system thread; device: mix in the native callback.
+  sound_mixing = owner
+  sound_output_buffer_ms = 50
   render_fps = 60
   assets_fps = 60
   sound_enabled = true
@@ -28,55 +31,6 @@ render = {
   config_folder = "render_config"
   shader_folder = "shaders"
   cache_folder = "cache"
-}
-
-time = {
-  // Игровых секунд за real_seconds реальных. Например, 60/1 = игровая минута за секунду.
-  game_seconds = 1
-  real_seconds = 1
-
-  // source = game_time: календарь идёт по gameplay timeline.
-  // source = turn: календарь идёт только при advance_turns(), с шагом *_per_turn.
-  // Выбор является настройкой проекта и требует рестарта.
-  calendar = {
-    source = game_time
-    hours_per_day = 24
-    days_in_month = [ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 ]
-    start_absolute_day = 0
-    start_year = 0
-    start_month = 1
-    start_day = 1
-    start_hour = 0
-    start_minute = 0
-    start_second = 0
-    seconds_per_turn = 0
-    days_per_turn = 1
-    months_per_turn = 0
-    years_per_turn = 0
-  }
-}
-
-metrics = {
-  enabled = true
-  log_interval_ms = 1000
-}
-
-logging = {
-  console = true
-  file = ""
-  // Startup/restart option. Enables VK_LAYER_KHRONOS_validation and VK_EXT_debug_utils.
-  vulkan_debug = false
-  // глубина на домен: off / info / flow / trace (по умолчанию off). Меняется и в рантайме
-  // через app.set_log_level(domain, depth). Базовый always-on слой (подсистемы/окно/устройства)
-  // идёт всегда, независимо от этих уровней.
-  main = "off"
-  assets = "off"
-  sound = "off"
-  render = "off"
-  ui = "off"
-  gameplay = "off"
-  resource = "off"
-  demiurg = "off"
 }
 
 sound = {

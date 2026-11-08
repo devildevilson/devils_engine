@@ -36,16 +36,8 @@ function B.read_sites(instances)
 end
 
 function B.nearest(sites,x,z)
-  local first,second,d1,d2=nil,nil,math.huge,math.huge
-  local function before(d,s,old_d,old)
-    return d<old_d or (d==old_d and (not old or s.key_x<old.key_x or (s.key_x==old.key_x and s.key_z<old.key_z)))
-  end
-  for _,s in ipairs(sites) do
-    local d=(x-s.x)^2+(z-s.z)^2
-    if before(d,s,d1,first) then second,d2=first,d1;first,d1=s,d
-    elseif before(d,s,d2,second) then second,d2=s,d end
-  end
-  assert(second,'Voronoi query needs at least two sites')
+  local first,second,d1,d2=originator.algorithms.nearest_pair(sites,{x=x,z=z},
+    {axes={'x','z'},keys={'key_x','key_z'}})
   local gap=math.sqrt(d2)-math.sqrt(d1)
   local blend=0.5*math.max(0,1-gap/constants.biome_transition)
   return first,second,blend,math.sqrt(d1)

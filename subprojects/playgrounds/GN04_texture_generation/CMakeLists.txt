@@ -29,7 +29,9 @@ set_target_properties(GN04_texture_generation PROPERTIES
 if (DEVILS_ENGINE_BUILD_TESTS)
   # Проверка ОХРАНЯЕМАЯ изнутри: без устройства она печатает это и выходит успешно, потому что
   # «устройства нет» — законный ответ, а не провал сборки.
-  add_test(NAME GN04_texture_generation_verify
+  devils_add_test(NAME GN04_texture_generation_verify
     COMMAND GN04_texture_generation --verify --size=512 --sites=64)
   set_tests_properties(GN04_texture_generation_verify PROPERTIES LABELS devils_engine)
 endif()
+
+target_link_libraries(GN04_texture_generation PRIVATE devils_engine::playground_cli devils_engine::playground_generator)

@@ -1,4 +1,5 @@
-#include "planet_tools.h"
+// Test-only mathematical oracle from the pre-migration GN02 kernels. Production has no dependency on this file.
+#include "devils_engine/originator/tools.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +7,8 @@
 
 #include "devils_engine/utils/core.h"
 
-namespace devils_engine::gn02 {
+namespace reference_gn02 {
+using namespace devils_engine;
 
 namespace {
 
@@ -57,11 +59,6 @@ vec3 axis_vector(const int64_t axis) noexcept {
   }
 }
 
-// Синус широты: проекция направления на ось вращения.
-//
-// Существует потому, что широта нужна ВСЕМУ дальше — ветрам, инсоляции, сезонам, — а достать
-// компоненту вектора правило на devils_script не может: его скоуп это скалярные поля элемента.
-// Значит компонента должна стать полем, и стоит она один pointwise-проход.
 void tool_axis_component(const tool_call& call, const size_t begin, const size_t end) {
   const auto source = call.input(0).read();
   auto target = call.output(0).write();
@@ -83,12 +80,6 @@ void tool_axis_component(const tool_call& call, const size_t begin, const size_t
   }
 }
 
-// Скорость поверхности плиты: v = ω × r.
-//
-// Плита на сфере не «едет в сторону» — она ПОВОРАЧИВАЕТСЯ вокруг своего полюса Эйлера, и это не
-// придирка к терминологии: у линейного сдвига на замкнутой поверхности нет смысла, а у поворота
-// есть, причём одна и та же плита у своего полюса почти стоит, а на экваторе от него движется
-// быстро. Отсюда сами собой берутся и разные типы границ вдоль одного стыка.
 void tool_plate_velocity(const tool_call& call, const size_t begin, const size_t end) {
   const auto positions = call.input(0).read();
   const auto axes = call.input(1).read();
@@ -102,23 +93,6 @@ void tool_plate_velocity(const tool_call& call, const size_t begin, const size_t
   }
 }
 
-// Горячие точки: цепь островов, оставленная плитой над мантийным плюмом.
-//
-// Это единственный способ получить океанические острова НЕ количеством, а механизмом. Плюм стоит в
-// мантии неподвижно, плита едет над ним, и каждый кусок коры, прошедший над плюмом, унёс с собой
-// вулкан. Отсюда сами собой берутся все узнаваемые черты архипелага: цепь, а не россыпь; острова
-// вдоль направления движения плиты; самый молодой и высокий на одном конце, потухшие и осевшие на
-// другом; длина цепи тем больше, чем быстрее плита.
-//
-// Геометрия считается в системе полюса Эйлера плиты, потому что там движение — это просто поворот:
-//   theta  угол между точкой и полюсом (широта на малом круге). Клетка и плюм обязаны лежать на
-//          ОДНОМ малом круге, иначе кора над плюмом не проходила: разница theta — промах мимо следа;
-//   phi    угол поворота от плюма к клетке вокруг полюса. Он же ВОЗРАСТ: плита едет в сторону
-//          растущего phi, значит клетка при phi > 0 прошла над плюмом phi / rate назад, а при
-//          phi < 0 ещё только подъезжает — там острова нет и быть не может.
-//
-// Длина следа выводится из скорости плиты и времени жизни плюма (`life`), а не задаётся отдельно:
-// быстрая плита растягивает ту же цепь длиннее и делает острова реже.
 void tool_hotspot_tracks(const tool_call& call, const size_t begin, const size_t end) {
   const auto positions = call.input(0).read();
   const auto axes = call.input(1).read();
@@ -146,8 +120,6 @@ void tool_hotspot_tracks(const tool_call& call, const size_t begin, const size_t
     const vec3 axis = normalized(read_vec3(axes, i));
     const double rate = rates.get(i);
 
-    // Составляющая точки поперёк полюса: в ней и лежит поворот. У самого полюса она вырождается, и
-    // это не край случая, а физика — материал у полюса Эйлера не движется вовсе.
     const vec3 point_ring = point - axis * dot(point, axis);
     const double point_ring_length = length(point_ring);
 
@@ -159,14 +131,10 @@ void tool_hotspot_tracks(const tool_call& call, const size_t begin, const size_t
       }
       const vec3 source = normalized(read_vec3(plume_positions, plume));
 
-      // Промах мимо следа: разница углов от полюса. Считается через дуги, а не через разность
-      // косинусов, иначе у полюса разрешение теряется целиком.
       const double off_track =
         std::abs(std::acos(std::clamp(dot(point, axis), -1.0, 1.0)) -
                  std::acos(std::clamp(dot(source, axis), -1.0, 1.0)));
 
-      // Сам плюм: широкое поднятие вокруг него самого, независимое от следа. Так у цепи появляется
-      // «голова» — активная область, а не одна точка.
       const double direct = std::acos(std::clamp(dot(point, source), -1.0, 1.0));
       const double head = swell_share * strength * std::exp(-(direct * direct) / (swell_width * swell_width));
       best = std::max(best, head);
@@ -186,10 +154,6 @@ void tool_hotspot_tracks(const tool_call& call, const size_t begin, const size_t
         continue; // кора ещё не дошла до плюма: следа впереди не бывает
       }
 
-      // Возраст: сколько прошло с того момента, как эта кора была над плюмом. Затухание КВАДРАТИЧНОЕ,
-      // потому что старый вулкан теряет высоту двумя способами сразу — остывающая литосфера под ним
-      // проседает, а море срезает вершину. Отсюда и вид настоящей цепи: один-два острова, дальше
-      // атоллы, дальше подводные горы.
       const double age = turn / rate;
       if (age > life) {
         continue;
@@ -203,16 +167,6 @@ void tool_hotspot_tracks(const tool_call& call, const size_t begin, const size_t
   }
 }
 
-// Взаимодействие плит на границе: сближение, сдвиг и сторона, которая уходит вниз.
-//
-// Тип границы здесь не объявляется списком, а СЧИТАЕТСЯ из скоростей: относительная скорость двух
-// плит разлагается на составляющую вдоль стыка (сдвиг) и поперёк (сближение или расхождение).
-// Поэтому один и тот же стык может быть сходящимся в одном месте и трансформным в другом — так же,
-// как на настоящей планете.
-//
-// Кто уходит под кого, решает плотность коры: океаническая тонет под континентальной. При равной
-// коре тонет плита с большим номером — тай-брейк произволен, но он ОБЯЗАН быть, иначе результат
-// зависел бы от порядка обхода соседей.
 void tool_plate_interaction(const tool_call& call, const size_t begin, const size_t end) {
   const auto offsets = call.input(0).read();
   const auto arcs = call.input(1).read();
@@ -246,8 +200,6 @@ void tool_plate_interaction(const tool_call& call, const size_t begin, const siz
         continue;
       }
 
-      // Направление на соседа берётся КАСАТЕЛЬНЫМ: радиальная составляющая хорды к движению плит
-      // отношения не имеет, а на грубой решётке она заметна.
       const vec3 chord = read_vec3(positions, other) - own_position;
       const vec3 direction = normalized(chord - own_normal * dot(chord, own_normal));
       if (length(direction) < 0.5) {
@@ -275,13 +227,6 @@ void tool_plate_interaction(const tool_call& call, const size_t begin, const siz
   }
 }
 
-// Поле приземного ветра: зональные пояса.
-//
-// Число поясов зависит от вращения, и это единственная честная связь ветров с ним: быстрое вращение
-// разрезает одну ячейку Хэдли на несколько, а медленное сводит циркуляцию к одной ячейке на
-// полушарие. Поэтому bands — параметр конфига, а не константа кода, и rotation отдельно смещает
-// баланс между зональной и меридиональной составляющей: чем сильнее Кориолис, тем более
-// «широтным» становится ветер.
 void tool_wind_field(const tool_call& call, const size_t begin, const size_t end) {
   const auto positions = call.input(0).read();
   const auto latitudes = call.input(1).read();
@@ -301,17 +246,11 @@ void tool_wind_field(const tool_call& call, const size_t begin, const size_t end
     const double hemisphere = latitude >= 0.0 ? 1.0 : -1.0;
 
     const auto band = std::min(size_t(std::abs(latitude) / band_width), bands - 1);
-    // Пояса чередуются: у поверхности пассаты дуют к экватору и на запад, западные ветры — к полюсу
-    // и на восток, полярные восточные снова к экватору.
     const double zonal_sign = band % 2 == 0 ? -1.0 : 1.0;
     const double meridional_sign = band % 2 == 0 ? -1.0 : 1.0;
 
     vec3 east = normalized(cross(axis, point));
     if (length(east) < 0.5) {
-      // На самом полюсе восток не определён. Ветер там всё равно почти вертикальный, поэтому
-      // берётся любое устойчивое касательное направление, а не оставляется ноль. Опорный вектор
-      // выбирается НЕ параллельным оси: с осью X ссылка на X дала бы нулевое произведение и ветер
-      // ровно ноль в полярной клетке.
       const vec3 reference = std::abs(axis.x) < 0.9 ? vec3{1.0, 0.0, 0.0} : vec3{0.0, 0.0, 1.0};
       east = normalized(cross(axis, reference));
     }
@@ -322,15 +261,6 @@ void tool_wind_field(const tool_call& call, const size_t begin, const size_t end
   }
 }
 
-// Один шаг переноса влаги по графу.
-//
-// Почему шаг, а не готовое поле осадков: перенос влаги — это состояние, которое движется, и его
-// нельзя посчитать «на месте». Здесь один проход тянет влагу из НАВЕТРЕННОГО соседа, добавляет
-// испарение с воды, отнимает осадки и накапливает их. Тело шага вызывает инструмент нужное число
-// раз, перекидывая поля туда-обратно, — и каждый вызов остаётся параллельным gather'ом.
-//
-// Осадки копятся в СВОЁМ элементе выходного поля, поэтому накопление не делает проход
-// последовательным: клетка читает и пишет только себя, и порядок обхода ни на что не влияет.
 void tool_moisture_step(const tool_call& call, const size_t begin, const size_t end) {
   const auto offsets = call.input(0).read();
   const auto arcs = call.input(1).read();
@@ -352,10 +282,6 @@ void tool_moisture_step(const tool_call& call, const size_t begin, const size_t 
   const double capacity_gain = call.params->number("capacity_gain", 0.03);
   const double convective = call.params->number("convective", 0.06);
   const double convective_reference = std::max(1.0, call.params->number("convective_reference", 26.0));
-  // Показатель у конвективного слагаемого больше единицы намеренно. Линейная зависимость от
-  // температуры даёт слишком ровный по широте дождь, и экватор в первом прогоне вышел суше
-  // средних широт — то есть наоборот. Тёплый воздух не просто держит больше влаги: он ещё и
-  // неустойчив, поэтому в тропиках дождь идёт непропорционально чаще.
   const double convective_exponent = std::max(0.1, call.params->number("convective_exponent", 2.0));
   const double orographic = call.params->number("orographic", 0.00055);
   const double ocean_rain = call.params->number("ocean_rain", 0.03);
@@ -365,8 +291,6 @@ void tool_moisture_step(const tool_call& call, const size_t begin, const size_t 
     const vec3 wind = read_vec3(winds, i);
     const vec3 wind_direction = normalized(wind);
 
-    // Наветренный сосед — тот, направление на которого наиболее ПРОТИВОПОЛОЖНО ветру. На графе это
-    // единственный смысл, который можно придать слову «откуда пришёл воздух».
     const auto first = size_t(offsets.get(i));
     const auto last = size_t(offsets.get(i + 1));
     size_t upwind = i;
@@ -387,8 +311,6 @@ void tool_moisture_step(const tool_call& call, const size_t begin, const size_t 
 
     double carried = moisture.get(upwind) * transport;
     const bool water = land.get(i) == 0.0;
-    // Испарение зависит от ёмкости, то есть от температуры: холодное море почти не питает воздух, и
-    // именно поэтому полярные пустыни существуют при океане под боком.
     carried += (water ? evaporation : land_evaporation) * capacity;
     carried = std::min(carried, capacity);
 
@@ -406,13 +328,6 @@ void tool_moisture_step(const tool_call& call, const size_t begin, const size_t 
   }
 }
 
-// Инсоляция и температура сезона.
-//
-// Считаются СРАЗУ две величины: температура при нулевом наклонении (годовое положение) и при
-// заданном сезоне. Разница между ними — сезонная амплитуда, и именно её усиливает
-// континентальность: вода греется и остывает медленно, поэтому берег живёт почти без сезонов, а
-// центр материка — с двумя разными климатами в одном месте. Без этой пары градиент «лето-зима»
-// получился бы одинаковым на всей широте, что неверно грубо.
 void tool_insolation(const tool_call& call, const size_t begin, const size_t end) {
   const auto latitudes = call.input(0).read();
   const auto height = call.input(1).read();
@@ -438,8 +353,6 @@ void tool_insolation(const tool_call& call, const size_t begin, const size_t end
     const double annual = temperature_at(latitude, 0.0);
     const double seasonal = temperature_at(latitude, tilt * season);
 
-    // Недостигнутое расстояние (метка -1 у graph_flood) означает «океана рядом нет вовсе», то есть
-    // максимальную континентальность, а не нулевую.
     const double distance = ocean_distance.get(i);
     const double inland = distance < 0.0 ? 1.0 : std::clamp(distance / ocean_reference, 0.0, 1.0);
     const double amplitude = 1.0 + continental_gain * inland;
@@ -468,4 +381,4 @@ void add_planet_tools(tool_registry& registry) {
                                 .input_count = 3, .output_count = 1, .body = tool_insolation});
 }
 
-} // namespace devils_engine::gn02
+} // namespace reference_gn02

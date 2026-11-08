@@ -35,74 +35,76 @@ set_target_properties(GN06_dungeon_layout PROPERTIES
 if (DEVILS_ENGINE_BUILD_TESTS)
   # Два генератора — две проверки: у норы и у здания разные обещания, и зелёный прогон одного ничего
   # не говорит про другого.
-  add_test(NAME GN06_cave_verify
+  devils_add_test(NAME GN06_cave_verify
     COMMAND GN06_dungeon_layout --mode=cave --verify --size=64)
   set_tests_properties(GN06_cave_verify PROPERTIES LABELS devils_engine)
 
-  add_test(NAME GN06_building_verify
+  devils_add_test(NAME GN06_building_verify
     COMMAND GN06_dungeon_layout --mode=building --verify --size=64)
   set_tests_properties(GN06_building_verify PROPERTIES LABELS devils_engine)
 
   # ТРЕТЬЯ ПРОВЕРКА — УЧАСТОК НЕ ПО РАЗМЕРУ КАРТИНКИ. Сторона участка выбрана нарочно не круглой и
   # заведомо не равной ни одному разумному растру: пока план жил в клетках, такой прогон был
   # невозможен вовсе, и зелёный он ровно потому, что картинку теперь никто не читает.
-  add_test(NAME GN06_building_plot_verify
+  devils_add_test(NAME GN06_building_plot_verify
     COMMAND GN06_dungeon_layout --mode=building --verify --size=157)
   set_tests_properties(GN06_building_plot_verify PROPERTIES LABELS devils_engine)
 
-  add_test(NAME GN06_motifs_verify
+  devils_add_test(NAME GN06_motifs_verify
     COMMAND GN06_dungeon_layout --mode=motifs --verify --scale=medium --surface=cut)
   set_tests_properties(GN06_motifs_verify PROPERTIES LABELS devils_engine)
 
-  add_test(NAME GN06_motifs_small_verify
+  devils_add_test(NAME GN06_motifs_small_verify
     COMMAND GN06_dungeon_layout --mode=motifs --verify --scale=small --entry-y=20)
   set_tests_properties(GN06_motifs_small_verify PROPERTIES LABELS devils_engine)
 
-  add_test(NAME GN06_motifs_large_verify
+  devils_add_test(NAME GN06_motifs_large_verify
     COMMAND GN06_dungeon_layout --mode=motifs --verify --size=301 --surface=cut)
   set_tests_properties(GN06_motifs_large_verify PROPERTIES LABELS devils_engine)
 
   foreach(SCALE small medium large)
-    add_test(NAME GN06_site_${SCALE}_verify
+    devils_add_test(NAME GN06_site_${SCALE}_verify
       COMMAND GN06_dungeon_layout --mode=site --verify --scale=${SCALE})
     set_tests_properties(GN06_site_${SCALE}_verify PROPERTIES LABELS devils_engine)
   endforeach()
 
-  add_test(NAME GN06_site_perception_visible
+  devils_add_test(NAME GN06_site_perception_visible
     COMMAND GN06_dungeon_layout --mode=site --scale=medium --seed=2)
   set_tests_properties(GN06_site_perception_visible PROPERTIES
     LABELS devils_engine PASS_REGULAR_EXPRESSION "perception_candidates=[1-9][0-9]* perceptions=[1-9]")
 
-  add_test(NAME GN06_site_perception_hidden
+  devils_add_test(NAME GN06_site_perception_hidden
     COMMAND GN06_dungeon_layout --mode=site --scale=medium --seed=50)
   set_tests_properties(GN06_site_perception_hidden PROPERTIES
     LABELS devils_engine PASS_REGULAR_EXPRESSION "perception_candidates=[1-9][0-9]* perceptions=0")
 
-  add_test(NAME GN06_site_surface_exposure
+  devils_add_test(NAME GN06_site_surface_exposure
     COMMAND GN06_dungeon_layout --mode=site --scale=small --seed=0 --surface=cut)
   set_tests_properties(GN06_site_surface_exposure PROPERTIES
     LABELS devils_engine PASS_REGULAR_EXPRESSION "exposures=[1-9][0-9]*")
 
-  add_test(NAME GN06_site_reserved_entry_verify
+  devils_add_test(NAME GN06_site_reserved_entry_verify
     COMMAND GN06_dungeon_layout --mode=site --scale=small --seed=0 --entry-y=20 --surface=cut --verify)
   set_tests_properties(GN06_site_reserved_entry_verify PROPERTIES LABELS devils_engine)
 
-  add_test(NAME GN06_site_path_ending_trim
+  devils_add_test(NAME GN06_site_path_ending_trim
     COMMAND GN06_dungeon_layout --mode=site --scale=large --seed=0)
   set_tests_properties(GN06_site_path_ending_trim PROPERTIES LABELS devils_engine
     PASS_REGULAR_EXPRESSION "end policy=vary outcome=trim removed=[1-9]")
 
-  add_test(NAME GN06_site_path_ending_accent
+  devils_add_test(NAME GN06_site_path_ending_accent
     COMMAND GN06_dungeon_layout --mode=site --scale=large --seed=1)
   set_tests_properties(GN06_site_path_ending_accent PROPERTIES LABELS devils_engine
     PASS_REGULAR_EXPRESSION "end policy=vary outcome=accent removed=[0-9]+ accent=service_alcove")
 
   # Прямоугольный внешний участок не является профилем содержания и не растягивает блоки.
-  add_test(NAME GN06_site_rectangular_bounds_verify
+  devils_add_test(NAME GN06_site_rectangular_bounds_verify
     COMMAND GN06_dungeon_layout --mode=site --scale=small --bounds=280,180 --seed=0 --verify)
   set_tests_properties(GN06_site_rectangular_bounds_verify PROPERTIES LABELS devils_engine)
 
-  add_test(NAME GN06_site_impossible_bounds_refuse
+  devils_add_test(NAME GN06_site_impossible_bounds_refuse
     COMMAND GN06_dungeon_layout --mode=site --scale=large --bounds=32,32 --seed=0)
   set_tests_properties(GN06_site_impossible_bounds_refuse PROPERTIES LABELS devils_engine WILL_FAIL TRUE)
 endif()
+
+target_link_libraries(GN06_dungeon_layout PRIVATE devils_engine::playground_cli devils_engine::playground_generator)

@@ -15,13 +15,11 @@ return function(step)
     params = { count = cells:count(), radius = 1.0, axis = step.params.axis },
   }
 
-  -- Синус широты. Он нужен ветрам, инсоляции и правилу суши, а достать компоненту вектора правило
-  -- на devils_script не может: его скоуп — скалярные поля элемента. Значит компонента становится
-  -- полем, и стоит она один pointwise-проход.
-  originator.axis_component{
-    inputs = { position },
-    outputs = { cells:field("lat_sin") },
-    params = { axis = step.params.axis },
+  -- Синус широты — обычная формула над component aliases исходного position.
+  originator.run_script{
+    program = step.programs.axis,
+    inputs = { position }, outputs = { cells:field("lat_sin") },
+    params = {axis = math.max(0, math.min(2, math.floor(step.params.axis)))},
   }
 
   -- Поле единиц. Выглядит служебным, но это единственный способ сказать «стоимость шага равна

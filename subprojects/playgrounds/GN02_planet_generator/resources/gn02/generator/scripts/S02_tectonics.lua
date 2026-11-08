@@ -181,8 +181,8 @@ return function(step)
 
   -- 4. Плиты растут заливкой: «кто ближе по стоимости», а не «кто ближе по прямой». Метка 0 значит
   -- «нет плиты», поэтому недостигнутая клетка обязана остаться нулём и упасть на проверке.
-  originator.graph_flood{
-    inputs = { offsets, arcs, plate_seed, cells:field("flood_cost"), one },
+  originator.flood{
+    inputs = { plate_seed, cells:field("flood_cost"), one, offsets, arcs },
     outputs = { plate, cells:field("scratch_distance") },
     params = { unreached = 0 },
   }
@@ -221,8 +221,8 @@ return function(step)
     outputs = { cells:field("group_seed") },
     params = { target_count = p.continent_group_count, limit = p.continent_group_count },
   }
-  originator.graph_flood{
-    inputs = { offsets, arcs, cells:field("group_seed"), one, one },
+  originator.flood{
+    inputs = { cells:field("group_seed"), one, one, offsets, arcs },
     outputs = { cells:field("scratch_label"), crust_work },
     params = { unreached = 999 },
   }
@@ -236,8 +236,8 @@ return function(step)
     outputs = { cells:field("continent_seed") },
     params = { min_distance = p.continent_spacing, limit = p.continent_count },
   }
-  originator.graph_flood{
-    inputs = { offsets, arcs, cells:field("continent_seed"), one, one },
+  originator.flood{
+    inputs = { cells:field("continent_seed"), one, one, offsets, arcs },
     outputs = { cells:field("scratch_label"), continent_distance },
     params = { unreached = 999 },
   }
@@ -279,14 +279,13 @@ return function(step)
   -- 5b. Следы горячих точек. Считаются после материковой массы, потому что нужны и свойства плиты
   -- (полюс, скорость), и сама масса. Результат в метрах и войдёт в рельеф отдельным слагаемым:
   -- остров горячей точки стоит на ОКЕАНИЧЕСКОЙ коре и материком не является.
-  originator.hotspot_tracks{
-    inputs = {
-      position, cells:field("plate_axis"), cells:field("plate_rate"),
-      hotspot_position, hotspot_strength,
-    },
+  originator.gather_script{
+    program = step.programs.hotspot,
+    inputs = {position, cells:field("plate_axis"), cells:field("plate_rate")},
+    other_inputs = {hotspot_position, hotspot_strength}, other_count = plumes,
+    reduce = "max",
     outputs = { cells:field("hotspot") },
     params = {
-      count = plumes,
       life = p.hotspot_life,
       track_width = p.hotspot_track_width,
       swell_width = p.hotspot_swell_width,
@@ -325,13 +324,18 @@ return function(step)
   -- 6. Скорость поверхности и разложение относительной скорости на стыке. Тип границы не
   -- объявляется списком, а считается: сближение, расхождение и сдвиг — это три проекции одного
   -- вектора, поэтому один стык может быть сходящимся в одном месте и трансформным в другом.
-  originator.plate_velocity{
+  originator.run_script{
+    program = {step.programs.velocity, step.programs.velocity, step.programs.velocity},
     inputs = { position, cells:field("plate_axis"), cells:field("plate_rate") },
     outputs = { cells:field("velocity") },
   }
 
-  originator.plate_interaction{
-    inputs = { offsets, arcs, plate, cells:field("velocity"), position, cells:field("crust") },
+  originator.gather_script{
+    program = step.programs.interaction,
+    inputs = {plate, cells:field("velocity"), position, cells:field("crust")},
+    other_inputs = {plate, cells:field("velocity"), position, cells:field("crust")},
+    neighbours = {offsets, arcs}, reduce = {"max_abs", "max", "max_abs"},
+    score_components = {0, 1, 0}, valid_component = 3,
     outputs = { cells:field("convergence"), cells:field("shear"), cells:field("subduction") },
   }
 
@@ -374,10 +378,10 @@ return function(step)
     inputs = { boundary_seed, cells:field("convergent_seed") },
     outputs = { boundary_seed },
   }
-  originator.graph_flood{
+  originator.flood{
     -- unreached большое, а не -1: «границы такого типа нет» должно ГАСНУТЬ в экспоненте спада, а
     -- отрицательное расстояние там выросло бы.
-    inputs = { offsets, arcs, boundary_seed, one, one },
+    inputs = { boundary_seed, one, one, offsets, arcs },
     outputs = { scratch_label, cells:field("convergent_distance") },
     params = { unreached = 999 },
   }
@@ -897,8 +901,8 @@ return function(step)
     inputs = { boundary_seed, cells:field("divergent_seed") },
     outputs = { boundary_seed },
   }
-  originator.graph_flood{
-    inputs = { offsets, arcs, boundary_seed, one, one },
+  originator.flood{
+    inputs = { boundary_seed, one, one, offsets, arcs },
     outputs = { scratch_label, cells:field("divergent_distance") },
     params = { unreached = 999 },
   }

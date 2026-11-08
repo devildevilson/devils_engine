@@ -12,7 +12,7 @@ set_target_properties(NET06_in_memory_transport PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/playgrounds/NET06_in_memory_transport/bin")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME NET06_in_memory_transport_verify
+  devils_add_test(NAME NET06_in_memory_transport_verify
     COMMAND NET06_in_memory_transport --verify)
   set_tests_properties(NET06_in_memory_transport_verify PROPERTIES LABELS devils_engine)
 endif()

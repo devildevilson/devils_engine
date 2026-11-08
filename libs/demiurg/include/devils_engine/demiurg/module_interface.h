@@ -1,6 +1,7 @@
 #ifndef DEVILS_ENGINE_DEMIURG_MODULE_INTERFACE_H
 #define DEVILS_ENGINE_DEMIURG_MODULE_INTERFACE_H
 
+#include <string_view>
 #include <cstddef>
 #include <cstdint>
 #include <string>

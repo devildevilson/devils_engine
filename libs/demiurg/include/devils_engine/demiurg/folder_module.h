@@ -1,6 +1,7 @@
 #ifndef DEVILS_ENGINE_DEMIURG_FOLDER_MODULE_H
 #define DEVILS_ENGINE_DEMIURG_FOLDER_MODULE_H
 
+#include <string_view>
 #include <cstddef>
 #include <cstdint>
 #include <string>

@@ -296,4 +296,11 @@ boundary на localhost; in-memory тесты — детерминированн
 композиция и live runtime принадлежат проекту. Она не означает появления общего NetworkManager.
 Очередь мета-работ — [TASKS.md](../../TASKS.md), общий аудит —
 [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические записи в прежнем корневом AGENTS
-перенесены без потерь в [архив](../../docs/history/README.md).
+удалены по решению автора; актуальные контракты сохранены выше.
+
+## Callback context
+
+`gns_dispatcher::pump()` сериализован общим recursive mutex; scoped static active dispatcher
+сбрасывается RAII, recursive pump запрещён. Pinned GNS снимает свой lock перед callbacks,
+поэтому простой static без внешнего lock небезопасен. Сохранять owner-thread/один dispatcher
+на native interface; не вызывать native RunCallbacks в обход adapter. TLS здесь нет.

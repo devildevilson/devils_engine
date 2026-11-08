@@ -355,7 +355,7 @@ bool run_group(const computation_queue& queue, const std::span<const queue_call>
   prepared.reserve(group.size());
   for (const auto& call : group) {
     prepared.emplace_back(*call.tool, call.inputs, call.outputs, call.params, call.seed, begin, end, queue.name,
-                          nullptr);
+                          nullptr, call.generation);
   }
 
   const size_t tile = std::max(fusion_tile_bytes / group_element_bytes(group), minimum_fusion_tile);
@@ -414,7 +414,7 @@ queue_report run_queue(const computation_queue& queue, thread::atomic_pool* pool
 
       if (call.tool != nullptr) {
         dispatch(*call.tool, call.inputs, call.outputs, call.params, call.seed, range.begin, range.end, queue.name,
-                 pool);
+                 pool, call.generation);
       } else if (call.indirect()) {
         // Чужое тело получает уже разрешённый диапазон: счётчик читает очередь, а не тело, — иначе
         // у каждого слоя появился бы свой способ его прочитать.

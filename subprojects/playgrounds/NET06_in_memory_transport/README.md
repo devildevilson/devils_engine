@@ -47,7 +47,7 @@ state, что uninterrupted authority. State-frame sequence acceptance отде�
 
 - ACK/packet/MTU моделирование и попытка повторить внутренности GNS;
 - wire serialization и fragmentation;
-- baseline/delta replication — это NET-07;
+- baseline/delta replication — это ULT-NET-07;
 - networking worker остаётся отдельной задачей поверх завершённого GNS adapter;
 - handshake, authority, authentication и reconnect recovery policy.
 

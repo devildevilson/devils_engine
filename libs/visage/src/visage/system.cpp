@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "devils_engine/bindings/critical_error.h"
 #include <algorithm>
 #include <bit>

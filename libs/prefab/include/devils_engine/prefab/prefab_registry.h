@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_PREFAB_PREFAB_REGISTRY_H
 #define DEVILS_ENGINE_PREFAB_PREFAB_REGISTRY_H
 
+#include "devils_engine/utils/log.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <functional>

@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "modules_listing.h"
 
 #include <algorithm>

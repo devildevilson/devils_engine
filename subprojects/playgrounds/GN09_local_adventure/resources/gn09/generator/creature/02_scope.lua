@@ -34,39 +34,33 @@ return function(step)
   for i = 0, node_count - 1 do
     route[i] = { key = n_key:get(i), x = n_centre:get(i, 0), y = n_centre:get(i, 1), z = n_centre:get(i, 2),
                  kind = math.tointeger(n_kind:get(i)) }
-    around[i] = {}
     depth[i] = -1
   end
-  for i = 0, edge_count - 1 do
-    local a, b = math.tointeger(e_a:get(i)), math.tointeger(e_b:get(i))
-    around[a][#around[a] + 1] = b
-    around[b][#around[b] + 1] = a
-  end
+  around=originator.algorithms.adjacency(node_count,edge_count,function(i)
+    return math.tointeger(e_a:get(i)),math.tointeger(e_b:get(i))
+  end)
   local function in_any_hall(n)
     for _, h in ipairs(near) do if W.inside_hall(h, n.x, n.y, n.z) then return true end end
     return false
   end
-  local queue, head = {}, 1
-  for i = 0, node_count - 1 do
-    if not W.is_base(route[i].kind) and in_any_hall(route[i]) then depth[i] = 0; queue[#queue + 1] = i end
-  end
   local edges = {}
-  while head <= #queue do
-    local current = queue[head]
-    head = head + 1
-    for _, nxt in ipairs(around[current]) do
+  originator.algorithms.propagate{
+    adjacency=around,state=depth,max_visits=node_count*5,
+    initial=function(seed)
+      for i=0,node_count-1 do
+        if not W.is_base(route[i].kind) and in_any_hall(route[i]) then seed(i,0) end
+      end
+    end,
+    transition=function(current,nxt,current_depth,old_depth)
       if not W.is_base(route[nxt].kind) then
-        local next_depth = in_any_hall(route[nxt]) and 0 or depth[current] + 1
-        if next_depth <= 4 then
-          edges[#edges + 1] = { route[current], route[nxt] }
-          if depth[nxt] < 0 or next_depth < depth[nxt] then
-            depth[nxt] = next_depth
-            queue[#queue + 1] = nxt
-          end
+        local next_depth=in_any_hall(route[nxt]) and 0 or current_depth+1
+        if next_depth<=4 then
+          edges[#edges+1]={route[current],route[nxt]}
+          if old_depth<0 or next_depth<old_depth then return next_depth end
         end
       end
-    end
-  end
+    end,
+  }
 
   local places = step.writes.places
   local p_sector, p_node = places:field("sector"), places:field("node")

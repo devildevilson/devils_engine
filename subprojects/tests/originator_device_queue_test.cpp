@@ -10,6 +10,9 @@
 #include <doctest/doctest.h>
 
 #include "devils_engine/originator/device_queue.h"
+#include "devils_engine/painter/shader_crafter.h"
+#include "devils_engine/painter/shader_compiler.h"
+#include <shaderc/shaderc.h>
 
 using namespace devils_engine;
 
@@ -1559,4 +1562,58 @@ TEST_CASE("originator measures whether a float32 neighbour search keeps the same
   CHECK(small.first == 0);
   CHECK(large.first == 0);
   CHECK(large.second >= small.second);
+}
+
+TEST_CASE("generic CSR neighbourhood keeps graph adapter device eligibility and compiles without a GPU") {
+  originator::tool_registry tools;
+  tools.add_graph_tools();tools.add_neighbourhood_tools();
+  const std::vector<field_pair> fields{{"value","v1"},{"weight","v1"},{"mask","ub1"},{"result","v1"}};
+  originator::buffer cells("cells",originator::make_buffer_layout(originator::storage_kind::soa,fields,"cells"),4);
+  const std::vector<field_pair> topology{{"offset","ui1"},{"arc","ui1"},{"weight","v1"}};
+  originator::buffer csr("csr",originator::make_buffer_layout(originator::storage_kind::soa,topology,"csr"),8);
+  for(size_t i=0;i<5;++i) csr.field(0).set(i,i<4?i*2:8);
+  for(size_t i=0;i<8;++i) { csr.field(1).set(i,i%4);csr.field(2).set(i,0.5); }
+  painter::shader_compiler compiler;
+  for(const auto& name : {"blur","frontier","slope","vote"}) {
+    const bool vote=std::string_view(name)=="vote";
+    const std::vector<originator::field_ref> values=vote?
+      std::vector{readable(cells,"value"),readable(cells,"weight"),readable(cells,"mask")}:
+      std::vector{readable(cells,"value")};
+    auto generic=values;
+    generic.push_back(readable(csr,"offset"));generic.push_back(readable(csr,"arc"));
+    auto old=std::vector{readable(csr,"offset"),readable(csr,"arc")};
+    old.insert(old.end(),values.begin(),values.end());
+    const auto verify=[&](std::string_view operation,const auto& inputs) {
+      const auto* tool=tools.find(operation);REQUIRE(tool);
+      originator::computation_queue queue;
+      queue.name="CSR form";
+      originator::queue_call call;
+      call.label=operation;call.tool=tool;call.shape=tool->shape;call.inputs=inputs;
+      call.outputs={writable(cells,"result")};call.range_end=4;
+      queue.calls.push_back(call);queue.output=call.outputs;
+      const auto check=originator::check_device_queue(queue);
+      INFO(check.message);REQUIRE(check.allowed);
+      std::vector<originator::device_binding> bindings;
+      for(const auto& field:inputs) bindings.push_back({.base=originator::device_storage_base(field.type().base),.converting=true});
+      bindings.push_back({.base=originator::field_base::v,.writable=true});
+      const auto source=originator::build_device_shader(bindings,tool->device_params,tool->device_body,64);
+      painter::shader_crafter crafter(nullptr);
+      crafter.set_shader_type(shaderc_compute_shader);crafter.set_shader_entry_point("main");
+      const auto spirv=crafter.compile(compiler,std::string(operation),source);
+      INFO(operation << ": " << crafter.err_msg());
+      REQUIRE_FALSE(spirv.empty());
+    };
+    verify(name,generic);verify("graph_"+std::string(name),old);
+    if(std::string_view(name)=="blur") {
+      generic.push_back(readable(csr,"weight"));verify(name,generic);
+    }
+    originator::computation_queue stencil;
+    stencil.name="stencil refusal";
+    originator::queue_call call;
+    call.label=name;call.tool=tools.find(name);call.shape=call.tool->shape;
+    call.inputs=values;call.outputs={writable(cells,"result")};call.range_end=4;
+    stencil.calls.push_back(call);stencil.output=call.outputs;
+    const auto check=originator::check_device_queue(stencil);
+    CHECK_FALSE(check.allowed);CHECK(check.message.find("CSR")!=std::string::npos);
+  }
 }

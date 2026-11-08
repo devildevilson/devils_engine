@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -26,7 +27,10 @@
 namespace devils_engine {
 namespace sound {
 
-struct system::miniaudio_data_converter : public ma_data_converter {};
+struct system::miniaudio_data_converter : public ma_data_converter {
+  bool initialized = false;
+  ~miniaudio_data_converter() { if (initialized) ma_data_converter_uninit(this, nullptr); }
+};
 
 static_assert(static_cast<uint32_t>(format::u8) == ma_format_u8);
 static_assert(static_cast<uint32_t>(format::s16) == ma_format_s16);
@@ -178,14 +182,6 @@ struct devils_engine_sound_data_source {
     frames_written_total.store(0, std::memory_order_release);
     underrun_count.store(0, std::memory_order_release);
     current_cursor_pos = 0;
-  }
-
-  bool is_standart_mono() const noexcept {
-    return sample_rate == 48000 && channels == 1 && format == format::f32;
-  }
-
-  bool is_standart_stereo() const noexcept {
-    return sample_rate == 48000 && channels == 2 && format == format::f32;
   }
 
   size_t buffer_size() const noexcept {
@@ -427,13 +423,9 @@ static ma_result standart_source_init(devils_engine_sound_data_source* pMyDataSo
   return MA_SUCCESS;
 }
 
-static ma_result standart_mono_source_init(devils_engine_sound_data_source* pMyDataSource, const double buffer_seconds) {
-  return standart_source_init(pMyDataSource, 48000, 1, format::f32, buffer_seconds);
-}
 
-static ma_result standart_stereo_source_init(devils_engine_sound_data_source* pMyDataSource, const double buffer_seconds) {
-  return standart_source_init(pMyDataSource, 48000, 2, format::f32, buffer_seconds);
-}
+
+
 
 // Ленивое выделение PCM-кольца голоса. ВАЖНО: buffer — vector<float>, а seconds_to_bytes даёт
 // БАЙТЫ, поэтому число элементов = байты / sizeof(float) (раньше resize звался числом БАЙТ →
@@ -536,7 +528,11 @@ static void directional_coloration_node_set(
 }
 
 struct system::sound_instance {
-  ma_sound sound;
+  ma_sound sound{};
+  enum class pool_kind { dynamic, mono, stereo };
+  pool_kind pool = pool_kind::dynamic;
+  bool sound_initialized = false;
+  bool data_source_initialized = false;
   devils_engine_sound_data_source data_source;
   directional_coloration_node coloration;
   bool coloration_initialized = false;
@@ -568,19 +564,78 @@ static ma_result attach_directional_coloration(
 }
 
 static void uninit_sound_instance(system::sound_instance* instance) noexcept {
-  ma_sound_stop(&instance->sound);
-  ma_sound_uninit(&instance->sound);
+  if (instance->sound_initialized) {
+    ma_sound_stop(&instance->sound);
+    ma_sound_uninit(&instance->sound);
+    instance->sound_initialized = false;
+  }
   if (instance->coloration_initialized) {
     ma_node_uninit(&instance->coloration.base, nullptr);
     instance->coloration_initialized = false;
   }
-  data_source_uninit(&instance->data_source);
+  if (instance->data_source_initialized) {
+    data_source_uninit(&instance->data_source);
+    instance->data_source_initialized = false;
+  }
 }
 
-static void playback_data_callback(ma_device* pDevice, void* pOutput, const void*, ma_uint32 frameCount) {
-  const auto ret = ma_engine_read_pcm_frames(reinterpret_cast<ma_engine*>(pDevice->pUserData), pOutput, frameCount, nullptr);
-  if (ret != MA_SUCCESS) {
-    utils::error{}("'ma_engine_read_pcm_frames' error");
+mixing_mode parse_mixing_mode(std::string_view name) {
+  if (name == "owner") return mixing_mode::owner;
+  if (name == "device") return mixing_mode::device;
+  utils::error{}("sound: unknown mixing mode '{}'; expected owner or device", name);
+  return mixing_mode::owner;
+}
+
+struct system::playback_stream {
+  ma_pcm_rb ring{};
+  bool initialized = false;
+  ~playback_stream() { if (initialized) ma_pcm_rb_uninit(&ring); }
+};
+
+void system::playback_callback(ma_device* device, void* output, const void*, uint32_t frames) {
+  static_cast<system*>(device->pUserData)->read_output(output, frames);
+}
+
+void system::read_output(void* output, uint32_t frames) {
+  if (mixing_ == mixing_mode::device) {
+    const auto result = ma_engine_read_pcm_frames(m_engine.get(), output, frames, nullptr);
+    if (result != MA_SUCCESS) utils::error{}("sound: device mix failed: {}", int(result));
+    return;
+  }
+  auto* target = static_cast<float*>(output);
+  uint32_t copied = 0;
+  while (copied < frames) {
+    uint32_t count = frames - copied;
+    void* source = nullptr;
+    const auto result = ma_pcm_rb_acquire_read(&output_->ring, &count, &source);
+    if (result != MA_SUCCESS) utils::error{}("sound: output ring read failed: {}", int(result));
+    if (count == 0) break;
+    std::memcpy(target + size_t(copied) * playback_channels, source, size_t(count) * playback_channels * sizeof(float));
+    if (ma_pcm_rb_commit_read(&output_->ring, count) != MA_SUCCESS) utils::error{}("sound: output ring read commit failed");
+    copied += count;
+  }
+  // Callback never waits for the owner: a late update produces silence, not graph work here.
+  std::fill(target + size_t(copied) * playback_channels, target + size_t(frames) * playback_channels, 0.0f);
+}
+
+uint32_t system::queued_output_frames() const noexcept {
+  return output_ ? ma_pcm_rb_available_read(&output_->ring) : 0;
+}
+
+void system::mix_output() {
+  // Single producer on the assigned sound owner, single consumer in the device callback.
+  // Fix a finite fill budget even if the callback keeps consuming while we generate.
+  uint32_t remaining = ma_pcm_rb_available_write(&output_->ring);
+  while (remaining != 0) {
+    uint32_t count = remaining;
+    void* target = nullptr;
+    const auto result = ma_pcm_rb_acquire_write(&output_->ring, &count, &target);
+    if (result != MA_SUCCESS) utils::error{}("sound: output ring write failed: {}", int(result));
+    if (count == 0) break;
+    const auto mix = ma_engine_read_pcm_frames(m_engine.get(), target, count, nullptr);
+    if (mix != MA_SUCCESS) utils::error{}("sound: owner mix failed: {}", int(mix));
+    if (ma_pcm_rb_commit_write(&output_->ring, count) != MA_SUCCESS) utils::error{}("sound: output ring write commit failed");
+    remaining -= count;
   }
 }
 
@@ -632,34 +687,38 @@ uint32_t system::playback_channel_count() const noexcept {
   return playback_channels;
 }
 
-system::system(const std::string_view device_name, const double stream_buffer_seconds, const size_t decode_frames_per_update) : cur_time(0),
-                                                                                                                                  playback_channels(0),
-                                                                                                                                  playback_sample_rate(0),
-                                                                                                                                  stream_buffer_seconds(std::max(stream_buffer_seconds, 0.05)),
-                                                                                                                                  decode_frames_per_update(decode_frames_per_update) {
+system::system(const std::string_view device_name, const double stream_buffer_seconds, const size_t decode_frames_per_update)
+  : system(system_config{std::string(device_name), stream_buffer_seconds, decode_frames_per_update}) {}
+
+system::system(const system_config& config) : offline_(config.offline), cur_time(0), playback_channels(0), playback_sample_rate(0),
+  stream_buffer_seconds(std::max(config.stream_buffer_seconds, 0.05)), decode_frames_per_update(config.decode_frames_per_update) {
+  mixing_ = config.mixing;
   source_volume.fill(1.0f);
-  ma_result result = MA_SUCCESS;
-
-  {
-    auto cfg = ma_engine_config_init();
-    //cfg.pDevice = m_device.get();
-    cfg.listenerCount = 1;
-    cfg.noAutoStart = MA_TRUE; // ОЧЕНЬ ВАЖНО НЕ ДАВАТЬ ДВИЖКУ САМОСТОЯТЕЛЬНО ЗАПУСКАТЬСЯ!!!!!
-
-    m_engine.reset(new ma_engine);
-    result = ma_engine_init(&cfg, m_engine.get());
-    if (result != MA_SUCCESS) {
-      utils::error{}("Could not initialize engine");
-    }
+  try {
+    initialize(config);
+  } catch (...) {
+    shutdown();
+    throw;
   }
+}
 
-  // возможно потом придется зафорсить количество каналов
-  {
+void system::initialize(const system_config& config) {
+  if (config.sample_rate == 0 || config.channels == 0 || config.channels > MA_MAX_CHANNELS) utils::error{}("sound: invalid offline format {} Hz / {} channels", config.sample_rate, config.channels);
+  if (config.mixing != mixing_mode::owner && config.mixing != mixing_mode::device) utils::error{}("sound: invalid mixing mode");
+  if (config.mixing == mixing_mode::owner && (!std::isfinite(config.output_buffer_seconds) || config.output_buffer_seconds < .001 || config.output_buffer_seconds > 1.0)) utils::error{}("sound: output buffer {} seconds is outside [0.001, 1]", config.output_buffer_seconds);
+  ma_result result = MA_SUCCESS;
+  const std::string_view device_name = config.device_name;
+  // Allocate callback data before device creation, but do not start callbacks until
+  // engine and voices have been fully initialized.
+  m_engine = std::make_unique<ma_engine>();
+  // The system owns exactly one selected device. Offline rendering opens none.
+  if (!offline_) {
     m_context.reset(new ma_context);
     result = ma_context_init(nullptr, 0, nullptr, m_context.get());
     if (result != MA_SUCCESS) {
-      utils::error{}("Could not initialize sound context");
+      utils::error{}("Could not initialize sound context: {}", int(result));
     }
+    context_initialized_ = true;
 
     const ma_device_id* device_id = nullptr;
     std::string_view default_device_name;
@@ -694,20 +753,48 @@ system::system(const std::string_view device_name, const double stream_buffer_se
     cfg.playback.format = ma_format_f32;
     cfg.playback.channels = 0;
     cfg.sampleRate = 0;
-    cfg.dataCallback = &playback_data_callback;
-    cfg.pUserData = m_engine.get();
+    cfg.dataCallback = &system::playback_callback;
+    cfg.pUserData = this;
 
     m_device.reset(new ma_device);
     result = ma_device_init(m_context.get(), &cfg, m_device.get());
     if (result != MA_SUCCESS) {
-      utils::error{}("Could not initialize device");
+      utils::error{}("Could not initialize device: {}", int(result));
     }
+    device_initialized_ = true;
 
     utils::info("Using sound device '{}'", std::string_view(m_device->playback.name));
 
     playback_channels = m_device->playback.channels;
     playback_sample_rate = m_device->sampleRate;
   }
+
+  if (offline_) {
+    playback_channels = config.channels;
+    playback_sample_rate = config.sample_rate;
+  }
+  // This engine never uses native file decoding/jobs: resource generations and
+  // decoders are owned by sound::system. No unused manager thread is created.
+  m_resource_manager = std::make_unique<ma_resource_manager>();
+  auto manager_config = ma_resource_manager_config_init();
+  manager_config.jobThreadCount = 0;
+  manager_config.flags = MA_RESOURCE_MANAGER_FLAG_NO_THREADING;
+  result = ma_resource_manager_init(&manager_config, m_resource_manager.get());
+  if (result != MA_SUCCESS) utils::error{}("sound: could not initialize synchronous resource manager: {}", int(result));
+  resource_manager_initialized_ = true;
+  auto engine_config = ma_engine_config_init();
+  engine_config.pDevice = m_device.get();
+  engine_config.pContext = m_context.get();
+  engine_config.pResourceManager = m_resource_manager.get();
+  engine_config.noDevice = MA_TRUE;
+  engine_config.noAutoStart = MA_TRUE;
+  engine_config.listenerCount = 1;
+  engine_config.channels = playback_channels;
+  engine_config.sampleRate = playback_sample_rate;
+  result = ma_engine_init(&engine_config, m_engine.get());
+  if (result != MA_SUCCESS) utils::error{}("sound: could not initialize engine at {} Hz / {} channels: {}", playback_sample_rate, playback_channels, int(result));
+  engine_initialized_ = true;
+  if (ma_engine_get_sample_rate(m_engine.get()) != playback_sample_rate || ma_engine_get_channels(m_engine.get()) != playback_channels) utils::error{}("sound: engine/device format mismatch");
 
   {
     for (size_t i = 0; i < default_mono_sounds_count; ++i) {
@@ -717,16 +804,19 @@ system::system(const std::string_view device_name, const double stream_buffer_se
       auto s = &m_instances_mono.back()->sound;
       auto ds = &m_instances_mono.back()->data_source;
 
-      result = standart_mono_source_init(ds, this->stream_buffer_seconds);
+      m_instances_mono.back()->pool = sound_instance::pool_kind::mono;
+      result = standart_source_init(ds, playback_sample_rate, 1, format::f32, this->stream_buffer_seconds);
       if (result != MA_SUCCESS) {
         utils::error{}("Could not initialize data source");
       }
 
+      m_instances_mono.back()->data_source_initialized = true;
       // нужно заранее продумать звуковые группы
       result = ma_sound_init_from_data_source(m_engine.get(), ds, 0, nullptr, s);
       if (result != MA_SUCCESS) {
         utils::error{}("Could not initialize sound");
       }
+      m_instances_mono.back()->sound_initialized = true;
       result = attach_directional_coloration(m_engine.get(), m_instances_mono.back().get());
       if (result != MA_SUCCESS) {
         utils::error{}("Could not attach directional coloration node");
@@ -750,16 +840,20 @@ system::system(const std::string_view device_name, const double stream_buffer_se
       auto s = &m_instances_stereo.back()->sound;
       auto ds = &m_instances_stereo.back()->data_source;
 
-      result = standart_stereo_source_init(ds, this->stream_buffer_seconds);
+      m_instances_stereo.back()->pool = sound_instance::pool_kind::stereo;
+      result = standart_source_init(ds, playback_sample_rate, 2, format::f32, this->stream_buffer_seconds);
       if (result != MA_SUCCESS) {
         utils::error{}("Could not initialize data source");
       }
 
+      m_instances_stereo.back()->data_source_initialized = true;
       // нужно заранее продумать звуковые группы
       result = ma_sound_init_from_data_source(m_engine.get(), ds, MA_SOUND_FLAG_NO_SPATIALIZATION, nullptr, s);
       if (result != MA_SUCCESS) {
         utils::error{}("Could not initialize sound");
       }
+
+      m_instances_stereo.back()->sound_initialized = true;
 
       ma_sound_set_attenuation_model(s, ma_attenuation_model_linear);
       ma_sound_set_rolloff(s, 1.0f);
@@ -779,14 +873,24 @@ system::system(const std::string_view device_name, const double stream_buffer_se
   cache1.resize(cache_size, 0);
   cache2.resize(cache_size, 0);
 
-  result = ma_device_start(m_device.get());
-  if (result != MA_SUCCESS) {
-    utils::error{}("Could not start device");
+  if (mixing_ == mixing_mode::owner) {
+    output_ = std::make_unique<playback_stream>();
+    const auto capacity = uint32_t(std::ceil(playback_sample_rate * config.output_buffer_seconds));
+    result = ma_pcm_rb_init(ma_format_f32, playback_channels, capacity, nullptr, nullptr, &output_->ring);
+    if (result != MA_SUCCESS) utils::error{}("sound: could not initialize {}-frame output ring: {}", capacity, int(result));
+    output_->initialized = true;
+  }
+  if (device_initialized_) {
+    result = ma_device_start(m_device.get());
+    if (result != MA_SUCCESS) utils::error{}("Could not start sound device: {}", int(result));
   }
 }
 
-system::~system() noexcept {
-  ma_device_stop(m_device.get());
+system::~system() noexcept { shutdown(); }
+
+void system::shutdown() noexcept {
+  if (device_initialized_) ma_device_stop(m_device.get());
+  output_.reset();
 
   for (auto& ptr : m_instances) {
     uninit_sound_instance(ptr.get());
@@ -800,9 +904,34 @@ system::~system() noexcept {
     uninit_sound_instance(ptr.get());
   }
 
-  ma_device_uninit(m_device.get());
-  ma_context_uninit(m_context.get());
-  ma_engine_uninit(m_engine.get());
+  m_tasks.clear();
+  m_instances.clear();
+  m_instances_mono.clear();
+  m_instances_stereo.clear();
+  if (engine_initialized_) { ma_engine_uninit(m_engine.get()); engine_initialized_ = false; }
+  if (resource_manager_initialized_) { ma_resource_manager_uninit(m_resource_manager.get()); resource_manager_initialized_ = false; }
+  if (device_initialized_) { ma_device_uninit(m_device.get()); device_initialized_ = false; }
+  if (context_initialized_) { ma_context_uninit(m_context.get()); context_initialized_ = false; }
+}
+
+uint32_t system::resource_manager_worker_count() const noexcept {
+  return resource_manager_initialized_ ? m_resource_manager->config.jobThreadCount : 0;
+}
+uint32_t system::native_device_count() const noexcept {
+  const auto* engine_device = engine_initialized_ ? ma_engine_get_device(m_engine.get()) : nullptr;
+  return uint32_t(device_initialized_) + uint32_t(engine_device != nullptr && engine_device != m_device.get());
+}
+
+void system::render(std::span<float> interleaved) {
+  if (!offline_) utils::error{}("sound: explicit render is only available in offline mode");
+  if (interleaved.size() % playback_channels != 0) utils::error{}("sound: {} samples are not whole {}-channel frames", interleaved.size(), playback_channels);
+  size_t begin = 0;
+  const size_t total = interleaved.size() / playback_channels;
+  while (begin < total) {
+    const auto count = uint32_t(std::min<size_t>(total - begin, UINT32_MAX));
+    read_output(interleaved.data() + begin * playback_channels, count);
+    begin += count;
+  }
 }
 
 bool system::setup_sound(const struct task& task) {
@@ -818,7 +947,7 @@ bool system::setup_sound(const struct task& task) {
   }
   // inst, task, timestamp, active_time, lifetime_budget, frames_decoded, stream_begin, stream_frames,
   // source_frames, phase, started, decoder, converter
-  m_tasks.push_back({nullptr, task, cur_time, 0, 0, 0, 0, 0, 0, task_phase::waiting_voice, false, nullptr, nullptr});
+  m_tasks.push_back({nullptr, task, cur_time, 0, 0, 0, 0, 0, 0, 0, task_phase::waiting_voice, false, nullptr, nullptr});
   return true;
 }
 
@@ -839,9 +968,9 @@ bool system::remove_sound(const size_t task_id) {
     }
     ma_sound_stop(&inst->sound);
     inst->data_source.reset_stream();
-    if (inst->data_source.is_standart_mono()) {
+    if (inst->pool == sound_instance::pool_kind::mono) {
       m_instances_mono_stack.push_back(inst);
-    } else if (inst->data_source.is_standart_stereo()) {
+    } else if (inst->pool == sound_instance::pool_kind::stereo) {
       m_instances_stereo_stack.push_back(inst);
     } else {
       uninit_sound_instance(inst);
@@ -990,6 +1119,7 @@ bool system::set_sound(const size_t task_id, const double place) {
   shared_inst->data_source.reset_stream();
   cur_task.frames_decoded = 0;
   cur_task.stream_begin_frame = 0;
+  cur_task.output_frames_written = 0;
   cur_task.stream_frames_count = 0;
   cur_task.source_frames_count = 0;
   // назад в waiting_voice: голос ОСТАВЛЯЕМ (acquire_voice idempotent), init_decode пересоздаст
@@ -1202,6 +1332,7 @@ void system::init_decode(sound_task& t) {
   if (res != MA_SUCCESS) {
     utils::error{}("Could not initialize data converter for sound task '{}'", t.task.res.id);
   }
+  t.converter->initialized = true;
 }
 
 // Терминал: единая точка очистки для ЛЮБОГО завершения (dropped/доиграл/дедлайн). Голос
@@ -1216,9 +1347,9 @@ void system::release_task(sound_task& t) {
     if (!shared) {
       ma_sound_stop(&inst->sound);
       inst->data_source.reset_stream();
-      if (inst->data_source.is_standart_mono()) {
+      if (inst->pool == sound_instance::pool_kind::mono) {
         m_instances_mono_stack.push_back(inst);
-      } else if (inst->data_source.is_standart_stereo()) {
+      } else if (inst->pool == sound_instance::pool_kind::stereo) {
         m_instances_stereo_stack.push_back(inst);
       } else {
         uninit_sound_instance(inst);
@@ -1308,7 +1439,11 @@ void system::update(const size_t time) {
         if (free_frames > 0 && t.frames_decoded < t.stream_frames_count) {
           const size_t input_cache_frames = bytes_to_pcm_frames(cache1.size() * sizeof(cache1[0]), t.decoder->channels(), t.decoder->format());
           const size_t output_cache_frames = bytes_to_pcm_frames(cache2.size() * sizeof(cache2[0]), t.inst->data_source.channels, t.inst->data_source.format);
-          const size_t frames_to_read = std::min({free_frames, decode_frames_per_update, input_cache_frames, output_cache_frames,
+          const size_t output_capacity = std::min(free_frames, output_cache_frames);
+          ma_uint64 required_input = 0;
+          const auto estimate = ma_data_converter_get_required_input_frame_count(t.converter.get(), output_capacity, &required_input);
+          if (estimate != MA_SUCCESS) utils::error{}("sound task '{}': could not estimate converter input: {}", t.task.res.id, int(estimate));
+          const size_t frames_to_read = std::min({size_t(required_input), decode_frames_per_update, input_cache_frames,
                                                   t.stream_frames_count - t.frames_decoded});
           if (frames_to_read > 0) {
             ma_uint64 frames = t.decoder->get_frames(cache1.data(), frames_to_read);
@@ -1317,12 +1452,15 @@ void system::update(const size_t time) {
               // frames_count() — оценка) → фиксируем реально произведённое, иначе не завершится.
               t.stream_frames_count = t.frames_decoded;
             } else {
-              ma_uint64 frames_out = frames;
-              t.frames_decoded += frames;
+              ma_uint64 frames_out = output_capacity;
+              const ma_uint64 read = frames;
               auto res = ma_data_converter_process_pcm_frames(t.converter.get(), cache1.data(), &frames, cache2.data(), &frames_out);
               if (res != MA_SUCCESS) {
                 utils::error{}("Could not convert {} frames data for resorce '{}'", frames, t.task.res.id);
               }
+              if (frames != read) utils::error{}("sound task '{}': converter consumed {} of {} input frames", t.task.res.id, frames, read);
+              t.frames_decoded += frames;
+              t.output_frames_written += frames_out;
               const size_t writed_frames = write_decoded_pcm_frames(&t.inst->data_source, cache2.data(), frames_out);
               assert(writed_frames == frames_out);
               static_cast<void>(writed_frames);
@@ -1346,7 +1484,7 @@ void system::update(const size_t time) {
         // штатно: кольцо вычитано callback'ом. Дедлайн — страховка от «неотыгранных» голосов
         // (позиционный/приглушённый звук, который miniaudio может перестать читать).
         const size_t frames_read = t.inst->data_source.frames_read_total.load(std::memory_order_acquire);
-        const bool fully_read = frames_read >= t.stream_begin_frame + t.stream_frames_count;
+        const bool fully_read = frames_read >= t.stream_begin_frame + t.output_frames_written;
         if (fully_read || cur_time - t.active_time > t.lifetime_budget) {
           t.phase = task_phase::finished;
         }
@@ -1365,6 +1503,7 @@ void system::update(const size_t time) {
       ++it;
     }
   }
+  if (output_) mix_output();
 }
 
 size_t system::find_task_id(const size_t task_id) const {
@@ -1392,6 +1531,7 @@ uint32_t system::instance_init(sound_instance* inst, const uint32_t sample_rate,
     utils::error{}("Could not initialize data source");
   }
 
+  inst->data_source_initialized = true;
   uint32_t flags = 0;
   if (channels > 1) {
     flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
@@ -1402,6 +1542,7 @@ uint32_t system::instance_init(sound_instance* inst, const uint32_t sample_rate,
   if (result != MA_SUCCESS) {
     utils::error{}("Could not initialize sound");
   }
+  inst->sound_initialized = true;
   if (channels == 1) {
     result = attach_directional_coloration(m_engine.get(), inst);
     if (result != MA_SUCCESS) {

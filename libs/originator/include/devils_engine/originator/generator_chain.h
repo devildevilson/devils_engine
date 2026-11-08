@@ -13,11 +13,13 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <tuple>
 
 #include "devils_engine/utils/type_traits.h"
 
 #include "buffer.h"
 #include "pipeline.h"
+#include "workspace.h"
 
 // ЦЕПОЧКА ГЕНЕРАТОРОВ: выходные буферы одного генератора — входы следующего.
 //
@@ -61,6 +63,21 @@ struct instance_key {
 
   bool operator==(const instance_key& other) const noexcept = default;
   auto operator<=>(const instance_key& other) const noexcept = default;
+};
+
+class primitive_field;
+
+// Explicit execution state. It may move between workers between calls, never be used
+// simultaneously. release() drops reusable capacity and Lua hosts while workers stay alive.
+struct generation_context {
+  std::vector<std::tuple<const void*, uint64_t, instance_key>> building;
+  int step_depth = 0;
+  std::shared_ptr<const void> current_node;
+  const std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>>* fields = nullptr;
+  field_workspace field_scratch;
+  std::map<std::pair<const void*, std::string>, std::shared_ptr<void>> hosts;
+  void release();
+  generation_context fork_task() const;
 };
 
 // Слово ключа в буфере — одна компонента `ul` (или `l`), читается целым путём: через double 64-битное
@@ -343,6 +360,7 @@ public:
   // экземпляры собраны раньше.
   uint64_t seed() const noexcept;
   const instance_key& key() const noexcept;
+  generation_context& context() const noexcept { return *context_; }
   // Общие значения генератора с наложенными значениями цепочки.
   const parameters& values() const noexcept;
 
@@ -372,6 +390,7 @@ private:
   friend class generator_chain;
 
   const generator_chain* chain_ = nullptr;
+  generation_context* context_ = nullptr;
   const chain_generator* generator_ = nullptr;
   uint64_t world_seed_ = 0;
   uint64_t seed_ = 0;
@@ -387,8 +406,8 @@ private:
 // Исполнитель генератора-пайплайна по умолчанию — `run.run_steps()`. Хост ставит свой, когда шагам
 // нужен контекст вокруг (нативные инструменты, читающие объект производителя), и зовёт run_steps сам.
 using generator_executor = std::function<void(generator_run&)>;
-// Даёт invoker для пайплайна этого генератора в ТЕКУЩЕМ потоке (обычно lua-хост из пула потока).
-using invoker_source = std::function<step_invoker(const chain_generator&)>;
+// Даёт invoker генератора в эксклюзивном execution context (Lua host принадлежит context).
+using invoker_source = std::function<step_invoker(const chain_generator&, generation_context&)>;
 
 // Текст, который исполнитель генератора-пайплайна загружает в свой хост: тело шага или программа.
 struct script_text {
@@ -428,6 +447,7 @@ class generator_chain {
 
 public:
   generator_chain(chain_description description, chain_setup setup);
+  ~generator_chain();
 
   const chain_description& description() const noexcept;
   const chain_generator& generator(const std::string_view& name) const;
@@ -436,14 +456,18 @@ public:
   void set_native(const std::string_view& name, generator_executor body);
   void set_executor(const std::string_view& name, generator_executor executor);
   void set_invoker_source(invoker_source source);
+  void set_invoker_source(std::function<step_invoker(const chain_generator&)> source);
 
   // Экземпляр из кэша или собранный сейчас. Потокобезопасно; одна сборка на ключ.
   result_ptr get(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
+  result_ptr get(generation_context& context, const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
   // Строит всё, от чего зависит экземпляр (разрешает его связи), но не сам экземпляр: опережающая
   // подготовка тяжёлых производителей для чанков впереди по ходу.
   void prefetch(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
+  void prefetch(generation_context& context, const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
   // Пересобирает экземпляр мимо кэша и сравнивает с кэшированным. Пусто — совпали.
   std::string verify(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
+  std::string verify(generation_context& context, const std::string_view& name, const uint64_t world_seed, const instance_key& key) const;
 
   // Отпечаток генератора вместе со всеми его производителями. Кэш живёт внутри цепочки, а её
   // содержимое после постройки не меняется, поэтому отпечаток называет КЭШ целиком, а не запись: он
@@ -471,6 +495,8 @@ public:
   // генераторов с keep_fields = false, когда поле всё же нужно после сборки (сверка, отладка).
   std::shared_ptr<const primitive_field> field(const std::string_view& name, uint64_t world_seed,
                                                const instance_key& key, const std::string_view& field_name) const;
+  std::shared_ptr<const primitive_field> field(generation_context& context, const std::string_view& name, uint64_t world_seed,
+                                               const instance_key& key, const std::string_view& field_name) const;
   // Что держит кэш генератора сейчас: готовые экземпляры и байты их буферов (без полей и представлений).
   struct footprint {
     size_t instances = 0;
@@ -479,7 +505,17 @@ public:
   std::vector<std::pair<std::string, footprint>> cache_footprint() const;
   void reset_stats() const;
 
+  // Convenience root calls lease chain-owned contexts. Nested/native calls pass run.context().
+  // Only idle contexts can be discarded; cached generator results have independent lifetime.
+  void release_contexts() const;
+  size_t context_count() const;
+
 private:
+  struct context_slot;
+  struct context_lease;
+  context_lease acquire_context() const;
+  mutable std::mutex contexts_lock_;
+  mutable std::vector<std::unique_ptr<context_slot>> contexts_;
   struct entry {
     std::shared_future<result_ptr> future;
     uint64_t used = 0;
@@ -516,12 +552,12 @@ private:
 
   slot& find_slot(const std::string_view& name);
   const slot& find_slot(const std::string_view& name) const;
-  claimed claim(const slot& at, const uint64_t world_seed, const instance_key& key) const;
-  void run_claim(pending_build& job) const;
-  void wait_helping(const slot& at, const uint64_t world_seed, const instance_key& key,
+  claimed claim(generation_context& context, const slot& at, const uint64_t world_seed, const instance_key& key) const;
+  void run_claim(generation_context& context, pending_build& job) const;
+  void wait_helping(generation_context& context, const slot& at, const uint64_t world_seed, const instance_key& key,
                     const std::shared_future<result_ptr>& future) const;
-  result_ptr build(const slot& at, const uint64_t world_seed, const instance_key& key) const;
-  std::vector<resolved_link> resolve(const slot& at, const uint64_t world_seed, const instance_key& key) const;
+  result_ptr build(generation_context& context, const slot& at, const uint64_t world_seed, const instance_key& key) const;
+  std::vector<resolved_link> resolve(generation_context& context, const slot& at, const uint64_t world_seed, const instance_key& key) const;
   uint64_t fingerprint_of(const slot& at, std::vector<const slot*>& visiting) const;
   static void trim_outputs(const chain_generator& g, generator_result& result);
 

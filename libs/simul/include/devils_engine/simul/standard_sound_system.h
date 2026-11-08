@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_STANDARD_SOUND_SYSTEM_H
 #define DEVILS_ENGINE_SIMUL_STANDARD_SOUND_SYSTEM_H
 
+#include "devils_engine/utils/log.h"
+
 // Broker-driven sound-system implementation shared by standard applications.
 
 #include <atomic>
@@ -28,9 +30,19 @@ public:
   explicit standard_sound_system(const size_t frame_time) noexcept : base_type(frame_time) {}
   ~standard_sound_system() noexcept override = default;
 
+  // Topology is selected before init; recreation preserves the choice.
+  void set_mixing_mode(std::string_view name) {
+    if (container) utils::error{}("sound: mixing mode requires system recreation");
+    config_.mixing = sound::parse_mixing_mode(name);
+  }
+  void set_output_buffer_seconds(double seconds) {
+    if (container) utils::error{}("sound: output buffer requires system recreation");
+    config_.output_buffer_seconds = seconds;
+  }
+
   void init() override {
     container.reset(new state);
-    container->s.reset(new sound::system);
+    container->s.reset(new sound::system(config_));
   }
 
   bool stop_predicate() const override {
@@ -58,7 +70,10 @@ public:
     {
       command_recreate_sound_system cmd{};
       while (br.recreate_sound.try_pop(cmd)) {
-        container->s.reset(new sound::system(cmd.device_name));
+        config_.device_name = cmd.device_name;
+        // Close the previous device before opening its replacement (exclusive backends too).
+        container->s.reset();
+        container->s = std::make_unique<sound::system>(config_);
         if (container->s) {
           container->s->set_master_volume(container->master_gain);
           container->s->set_directional_coloration(container->directional_coloration);
@@ -195,6 +210,7 @@ private:
     return counter.fetch_add(1, std::memory_order_relaxed);
   }
 
+  sound::system_config config_;
   std::unique_ptr<state> container;
 };
 

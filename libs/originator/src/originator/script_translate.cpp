@@ -1,7 +1,10 @@
+#include "script_math.h"
+#include "script_ast.h"
 #include "devils_engine/originator/script_translate.h"
 
 #include <algorithm>
 #include <format>
+#include <optional>
 #include <ranges>
 
 #include <devils_script/script_ast.h>
@@ -44,7 +47,7 @@ struct direct_function {
 constexpr direct_function direct_functions[] = {
   {"max", 2, 2},        {"min", 2, 2},   {"abs", 1, 1},        {"ceil", 1, 1},
   {"floor", 1, 1},      {"round", 1, 1}, {"trunc", 1, 1},      {"exp", 1, 1},
-  {"sqrt", 1, 1},       {"inversesqrt", 1, 1},                 {"sin", 1, 1},
+  {"pow", 2, 2}, {"sqrt", 1, 1},       {"inversesqrt", 1, 1},                 {"sin", 1, 1},
   {"cos", 1, 1},        {"asin", 1, 1},  {"acos", 1, 1},       {"tan", 1, 1},
   {"atan", 1, 2},       {"sign", 1, 1},  {"fma", 3, 3},        {"fract", 1, 1},
   {"mix", 3, 3},        {"clamp", 3, 3}, {"smoothstep", 3, 3}, {"step", 2, 2},
@@ -106,8 +109,10 @@ struct translator {
     return parser->content(token.span);
   }
 
-  [[noreturn]] void refuse(const tavl::token& token, const std::string_view& what) const {
-    utils::error{}("originator script '{}' @ {}:{}: {}", program_name, token.span.line, token.span.column, what);
+  mutable std::string refusal;
+  std::string refuse(const tavl::token& token, const std::string_view& what) const {
+    if (refusal.empty()) refusal = std::format("originator script '{}' @ {}:{}: {}", program_name, token.span.line, token.span.column, what);
+    return {};
   }
 
   std::string declare(const std::string_view& name, const std::string_view& type, const std::string& value) {
@@ -132,7 +137,7 @@ struct translator {
     static constexpr std::string_view prefix = "ctx:arg:";
     const auto name = path.substr(prefix.size());
     if (name.empty()) {
-      refuse(token, "ctx:arg: names no argument");
+      return refuse(token, "ctx:arg: names no argument");
     }
 
     // `ctx_set` перекрывает аргумент локалью, и чтение ПОСЛЕ него обязано видеть локаль: у `ds`
@@ -154,7 +159,7 @@ struct translator {
     static constexpr std::string_view prefix = "ctx:saved:";
     const auto name = path.substr(prefix.size());
     if (std::find(saved.begin(), saved.end(), name) == saved.end()) {
-      refuse(token, std::format("'{}' is read before any ctx_save wrote it", path));
+      return refuse(token, std::format("'{}' is read before any ctx_save wrote it", path));
     }
     return saved_local(name);
   }
@@ -187,6 +192,19 @@ struct translator {
     return node;
   }
 
+  uint32_t output_component = 0;
+
+  std::optional<std::pair<size_t, uint32_t>> input_reference(const std::string_view name) const {
+    static constexpr std::string_view suffix[]{"_x", "_y", "_z", "_w"};
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      if (inputs[i].name == name) return std::pair{i, uint32_t(0)};
+      if (inputs[i].components <= 1) continue;
+      for (uint32_t c = 0; c < inputs[i].components; ++c)
+        if (name == inputs[i].name + std::string(suffix[c])) return std::pair{i, c};
+    }
+    return {};
+  }
+
   bool integer_leaf(const tavl::node_view outer) const {
     const auto node = unwrap(outer);
     const auto& root = node.root();
@@ -196,9 +214,8 @@ struct translator {
     }
     if (root.token.type != tavl::token_type::identifier) return false;
     const auto name = text(root.token);
-    for (const auto& binding : inputs) {
-      if (binding.name != name) continue;
-      const auto base = device_storage_base(binding.base);
+    if (const auto ref = input_reference(name)) {
+      const auto base = device_storage_base(inputs[ref->first].base);
       return base == field_base::ui || base == field_base::i;
     }
     return false;
@@ -212,12 +229,10 @@ struct translator {
     if (root.token.type != tavl::token_type::identifier) {
       return std::string(content);
     }
-    for (size_t i = 0; i < inputs.size(); ++i) {
-      if (inputs[i].name != name_of(root.token)) continue;
-      // Знаковое и беззнаковое сравнивать между собой нельзя, поэтому оба приводятся к знаковому:
-      // диапазон идентификаторов сюда влезает, а смешение родов — нет.
-      return device_storage_base(inputs[i].base) == field_base::i ? std::format("in_{}_at(index)", i)
-                                                                  : std::format("int(in_{}_at(index))", i);
+    if (const auto ref = input_reference(name_of(root.token))) {
+      const auto [i, component] = *ref;
+      const auto read = component == 0 ? std::format("in_{}_at(index)", i) : std::format("in_{}_at(index, {}u)", i, component);
+      return device_storage_base(inputs[i].base) == field_base::i ? read : std::format("int({})", read);
     }
     return std::string(content);
   }
@@ -228,16 +243,18 @@ struct translator {
 
   // Чтение поля своего элемента. Никакого другого обращения к данным у программы нет — она
   // структурно pointwise, и именно поэтому один её вызов это одна инвокация без синхронизации.
-  std::string field(const std::string_view& name, const tavl::token& token) const {
-    for (size_t i = 0; i < inputs.size(); ++i) {
-      if (inputs[i].name != name) continue;
-      // Читается тот род, в котором поле ЛЕЖИТ на устройстве: у `ub1` это `uint`, а не байт.
-      const auto type = device_type_name(device_storage_base(inputs[i].base));
-      return type == "float" ? std::format("in_{}_at(index)", i)
-                             : std::format("float(in_{}_at(index))", i);
+  std::string field(const std::string_view& name, const tavl::token& token) {
+    if (name == "result_component") return std::format("{:.1f}", double(output_component));
+    if (const auto ref = input_reference(name)) {
+      const auto [i, component] = *ref;
+      const auto read = component == 0 ? std::format("in_{}_at(index)", i) : std::format("in_{}_at(index, {}u)", i, component);
+      return device_type_name(device_storage_base(inputs[i].base)) == "float" ? read : std::format("float({})", read);
     }
 
-    refuse(token, std::format("'{}' is not one of the bound fields: a program is compiled against the names of "
+    if (name.starts_with("param_")) return argument(std::string("ctx:arg:") + std::string(name.substr(6)), token);
+    if (name == "element_index" || name == "other_index") return "float(index)";
+
+    return refuse(token, std::format("'{}' is not one of the bound fields: a program is compiled against the names of "
                               "its bindings, and an unbound name cannot become anything",
                               name));
   }
@@ -247,7 +264,7 @@ struct translator {
   std::string required(const tavl::node_view node, const std::string_view& what) {
     auto result = value(node);
     if (result.empty()) {
-      refuse(node.root().token, std::format("{} is a statement and produces no value", what));
+      return refuse(node.root().token, std::format("{} is a statement and produces no value", what));
     }
     return result;
   }
@@ -317,11 +334,11 @@ std::string translator::binary(const std::string_view& op, const tavl::node_view
     if (op == "-") return std::format("(-{})", operand);
     if (op == "+") return operand;
     if (op == "not") return std::format("(!{})", operand);
-    refuse(token, std::format("unary operator '{}' has no shader form", op));
+    return refuse(token, std::format("unary operator '{}' has no shader form", op));
   }
 
   if (node.size() != 2) {
-    refuse(token, std::format("operator '{}' got {} operands", op, node.size()));
+    return refuse(token, std::format("operator '{}' got {} operands", op, node.size()));
   }
 
   // ДВА ЦЕЛЫХ ЛИСТА СРАВНИВАЮТСЯ ЦЕЛЫМИ: у `ds` это сравнение двух точных double, то есть тот же
@@ -353,7 +370,7 @@ std::string translator::binary(const std::string_view& op, const tavl::node_view
   if (op == "and") return std::format("({} && {})", left, right);
   if (op == "or") return std::format("({} || {})", left, right);
 
-  refuse(token, std::format("operator '{}' has no shader form", op));
+  return refuse(token, std::format("operator '{}' has no shader form", op));
 }
 
 // `select = { { condition = c, v }, ..., { else } }`: первое истинное условие побеждает, последний
@@ -362,7 +379,7 @@ std::string translator::binary(const std::string_view& op, const tavl::node_view
 // собирать текст можно как угодно.
 std::string translator::select_block(const tavl::node_view args, const tavl::token& token) {
   if (args.size() < 2) {
-    refuse(token, "'select' needs at least one conditional block and an else block");
+    return refuse(token, "'select' needs at least one conditional block and an else block");
   }
 
   std::vector<std::pair<std::string, std::string>> clauses;
@@ -375,13 +392,13 @@ std::string translator::select_block(const tavl::node_view args, const tavl::tok
     tavl::node_view test;
     if (!named(clause, "condition", test)) {
       if (!last) {
-        refuse(clause.root().token, "every block of 'select' except the last one needs a 'condition'");
+        return refuse(clause.root().token, "every block of 'select' except the last one needs a 'condition'");
       }
       otherwise = required(clause, "the else block of 'select'");
       continue;
     }
     if (last) {
-      refuse(clause.root().token, "the last block of 'select' is the else branch and must not carry a 'condition'");
+      return refuse(clause.root().token, "the last block of 'select' is the else branch and must not carry a 'condition'");
     }
 
     // Условие первой ветки вычисляется всегда, остальные — только если предыдущие не сработали.
@@ -399,7 +416,7 @@ std::string translator::select_block(const tavl::node_view args, const tavl::tok
   }
 
   if (otherwise.empty()) {
-    refuse(token, "'select' has no else block, and a shader has nowhere to return no value to");
+    return refuse(token, "'select' has no else block, and a shader has nowhere to return no value to");
   }
 
   auto result = std::move(otherwise);
@@ -413,7 +430,7 @@ std::string translator::select_block(const tavl::node_view args, const tavl::tok
 // обрывает всю цепочку. Накопитель тот же, что у `ds`: сумма у числовой программы, И у предикатной.
 std::string translator::sequence_block(const tavl::node_view args, const tavl::token& token) {
   if (args.size() == 0) {
-    refuse(token, "'sequence' with no blocks computes nothing");
+    return refuse(token, "'sequence' with no blocks computes nothing");
   }
 
   const bool predicate = kind == script_program::result_kind::predicate;
@@ -426,7 +443,7 @@ std::string translator::sequence_block(const tavl::node_view args, const tavl::t
 
     tavl::node_view test;
     if (!named(clause, "condition", test)) {
-      refuse(clause.root().token, "every block of 'sequence' needs a 'condition'");
+      return refuse(clause.root().token, "every block of 'sequence' needs a 'condition'");
     }
 
     branch_depth += uint32_t(i != 0);
@@ -454,7 +471,7 @@ std::string translator::sequence_block(const tavl::node_view args, const tavl::t
 std::string translator::switch_block(const tavl::node_view args, const tavl::token& token) {
   tavl::node_view subject_node;
   if (!named(args, "value", subject_node)) {
-    refuse(token, "'switch' needs a top-level 'value' to compare against");
+    return refuse(token, "'switch' needs a top-level 'value' to compare against");
   }
 
   const auto subject = temporary(required(subject_node, "the 'value' of 'switch'"));
@@ -465,12 +482,12 @@ std::string translator::switch_block(const tavl::node_view args, const tavl::tok
     if (pair_name(args.child(i)) == "value") continue;
     const auto clause = clause_of(args.child(i));
     if (!is_block(clause)) {
-      refuse(clause.root().token, "a case of 'switch' is a block with its own 'value'");
+      return refuse(clause.root().token, "a case of 'switch' is a block with its own 'value'");
     }
 
     tavl::node_view case_node;
     if (!named(clause, "value", case_node)) {
-      refuse(clause.root().token, "every case block of 'switch' needs its own 'value'");
+      return refuse(clause.root().token, "every case block of 'switch' needs its own 'value'");
     }
 
     branch_depth += uint32_t(!cases.empty());
@@ -486,7 +503,7 @@ std::string translator::switch_block(const tavl::node_view args, const tavl::tok
   }
 
   if (cases.empty()) {
-    refuse(token, "'switch' needs at least one case block");
+    return refuse(token, "'switch' needs at least one case block");
   }
 
   // НЕСОВПАВШИЙ `switch` ОТДАЁТ НУЛЬ, и это объявленное расхождение с CPU: у `ds` ветки по умолчанию
@@ -504,7 +521,7 @@ std::string translator::switch_block(const tavl::node_view args, const tavl::tok
 // итог. Поэтому веса становятся локалями: они вычисляются один раз и безусловно.
 std::string translator::random_block(const tavl::node_view args, const tavl::token& token) {
   if (args.size() == 0) {
-    refuse(token, "'random' with no blocks has nothing to choose from");
+    return refuse(token, "'random' with no blocks has nothing to choose from");
   }
 
   std::vector<std::string> thresholds;
@@ -513,7 +530,7 @@ std::string translator::random_block(const tavl::node_view args, const tavl::tok
     const auto clause = clause_of(args.child(i));
     tavl::node_view weight;
     if (!named(clause, "weight", weight)) {
-      refuse(clause.root().token, "every block of 'random' needs a 'weight'");
+      return refuse(clause.root().token, "every block of 'random' needs a 'weight'");
     }
     auto value = required(weight, "a 'weight' of 'random'");
     // Порог — префиксная сумма, а не сам вес: сравнение идёт с накопленной границей.
@@ -548,13 +565,13 @@ std::string translator::random_block(const tavl::node_view args, const tavl::tok
 std::string translator::save_block(const tavl::node_view args, const tavl::token& token, const bool into_argument) {
   const std::string_view name_of = into_argument ? "ctx_set" : "ctx_save";
   if (args.size() == 0) {
-    refuse(token, std::format("'{}' needs at least one 'name = value' pair", name_of));
+    return refuse(token, std::format("'{}' needs at least one 'name = value' pair", name_of));
   }
   // ЗАПИСЬ ИЗ ВЕТКИ ОТКЛОНЯЕТСЯ. Локаль поднимается в преамбулу и вычисляется всегда, поэтому запись
   // внутри невыбранной ветки состоялась бы всё равно — то есть программа считала бы не то, что
   // написано. Доказательства доминирования у перевода нет, поэтому граница проведена по синтаксису.
   if (branch_depth != 0) {
-    refuse(token, std::format("'{}' inside a branch does not translate: a shader local is computed before the "
+    return refuse(token, std::format("'{}' inside a branch does not translate: a shader local is computed before the "
                               "branch is chosen, so the write would happen even when the branch is not taken",
                               name_of));
   }
@@ -562,11 +579,11 @@ std::string translator::save_block(const tavl::node_view args, const tavl::token
   for (size_t i = 0; i < args.size(); ++i) {
     const auto pair = args.child(i);
     if (pair.root().type != tavl::node_type::pair || pair.size() != 2) {
-      refuse(pair.root().token, std::format("'{}' takes 'name = value' pairs", name_of));
+      return refuse(pair.root().token, std::format("'{}' takes 'name = value' pairs", name_of));
     }
     const auto head = pair.child(0);
     if (head.root().type != tavl::node_type::token) {
-      refuse(pair.root().token, std::format("'{}' takes 'name = value' pairs", name_of));
+      return refuse(pair.root().token, std::format("'{}' takes 'name = value' pairs", name_of));
     }
 
     const auto name = text(head.root().token);
@@ -592,7 +609,7 @@ std::string translator::call(const std::string_view& callee,
                              const tavl::token& token) {
   for (const auto& entry : refusals) {
     if (entry.name == callee) {
-      refuse(token, std::format("'{}' does not translate: {}", callee, entry.reason));
+      return refuse(token, std::format("'{}' does not translate: {}", callee, entry.reason));
     }
   }
 
@@ -601,7 +618,7 @@ std::string translator::call(const std::string_view& callee,
   // непроверенная догадка о порядке аргументов означала бы правило, считающее не то.
   if (callee == "value_or") {
     if (args.size() != 3) {
-      refuse(token, std::format("'value_or' with {} arguments is not translated; the three-argument form "
+      return refuse(token, std::format("'value_or' with {} arguments is not translated; the three-argument form "
                                 "(condition, then, else) is",
                                 args.size()));
     }
@@ -628,7 +645,7 @@ std::string translator::call(const std::string_view& callee,
   // что `ds` их молча игнорирует, и написанное число выглядело бы как порог, которым оно не является.
   if (callee == "chance") {
     if (args.root().type == tavl::node_type::token || args.size() != 0) {
-      refuse(token, "'chance' takes no arguments: it is a value in [0, 1), written as `chance < 0.5`");
+      return refuse(token, "'chance' takes no arguments: it is a value in [0, 1), written as `chance < 0.5`");
     }
     return chance_value();
   }
@@ -638,7 +655,7 @@ std::string translator::call(const std::string_view& callee,
   if (callee == "rndmix1" || callee == "rndmix") {
     const size_t expected = callee == "rndmix1" ? 1 : 2;
     if (args.size() != expected) {
-      refuse(token, std::format("'{}' takes {} arguments, got {}", callee, expected, args.size()));
+      return refuse(token, std::format("'{}' takes {} arguments, got {}", callee, expected, args.size()));
     }
     const auto first = required(args.child(0), std::format("the argument of '{}'", callee));
     if (expected == 1) {
@@ -651,7 +668,7 @@ std::string translator::call(const std::string_view& callee,
   // `inv` — единственная арифметическая функция ds без тёзки в GLSL.
   if (callee == "inv") {
     if (args.size() != 1) {
-      refuse(token, std::format("'inv' takes one argument, got {}", args.size()));
+      return refuse(token, std::format("'inv' takes one argument, got {}", args.size()));
     }
     return std::format("(1.0 / {})", required(args.child(0), "the argument of 'inv'"));
   }
@@ -659,7 +676,7 @@ std::string translator::call(const std::string_view& callee,
   for (const auto& entry : direct_functions) {
     if (entry.name != callee) continue;
     if (args.size() < entry.min_args || args.size() > entry.max_args) {
-      refuse(token, std::format("'{}' takes {}..{} arguments, got {}", callee, entry.min_args, entry.max_args,
+      return refuse(token, std::format("'{}' takes {}..{} arguments, got {}", callee, entry.min_args, entry.max_args,
                                 args.size()));
     }
 
@@ -676,7 +693,7 @@ std::string translator::call(const std::string_view& callee,
     return result;
   }
 
-  refuse(token, std::format("'{}' is not a function the translator knows; the vocabulary is the GLSL-named "
+  return refuse(token, std::format("'{}' is not a function the translator knows; the vocabulary is the GLSL-named "
                             "arithmetic of ds, value_or, inv, the branch blocks (select, sequence, switch, "
                             "random), randomness (chance, rndmix, rndmix1) and the locals (ctx_save, ctx_set)",
                             callee));
@@ -687,7 +704,7 @@ std::string translator::call(const std::string_view& callee,
 // правило то же, а не своё. Операторы (`ctx_save`) значения не дают и в свёртку не входят.
 std::string translator::block(const tavl::node_view node, const std::span<const std::string_view>& skip) {
   if (node.size() == 0) {
-    refuse(node.root().token, "an empty block computes nothing");
+    return refuse(node.root().token, "an empty block computes nothing");
   }
 
   std::vector<std::string> parts;
@@ -702,7 +719,7 @@ std::string translator::block(const tavl::node_view node, const std::span<const 
   }
 
   if (parts.empty()) {
-    refuse(node.root().token, "a block of statements alone computes nothing");
+    return refuse(node.root().token, "a block of statements alone computes nothing");
   }
   if (parts.size() == 1) {
     return parts.front();
@@ -719,6 +736,7 @@ std::string translator::block(const tavl::node_view node, const std::span<const 
 }
 
 std::string translator::value(const tavl::node_view node) {
+  if (!refusal.empty()) return {};
   const auto& root = node.root();
 
   switch (root.type) {
@@ -743,12 +761,12 @@ std::string translator::value(const tavl::node_view node) {
           if (content.starts_with("ctx:saved:")) {
             return saved_value(content, root.token);
           }
-          refuse(root.token, std::format("scope path '{}' has no shader form: a program can read the fields of "
+          return refuse(root.token, std::format("scope path '{}' has no shader form: a program can read the fields of "
                                          "its own element, its arguments and its own saved slots, and nothing else",
                                          content));
         }
         default:
-          refuse(root.token, std::format("token '{}' of type '{}' has no shader form", content,
+          return refuse(root.token, std::format("token '{}' of type '{}' has no shader form", content,
                                          tavl::to_string(root.token.type)));
       }
     }
@@ -759,11 +777,11 @@ std::string translator::value(const tavl::node_view node) {
       // Вызов с пустым оператором — та же запись через скобки. Всё остальное — математика.
       if (op.empty() || op == "=" || op == "?=") {
         if (node.size() != 2) {
-          refuse(root.token, std::format("a call needs a callee and its arguments, got {} parts", node.size()));
+          return refuse(root.token, std::format("a call needs a callee and its arguments, got {} parts", node.size()));
         }
         const auto callee = node.child(0);
         if (callee.root().type != tavl::node_type::token) {
-          refuse(root.token, "the callee of a call is not a name");
+          return refuse(root.token, "the callee of a call is not a name");
         }
         return call(text(callee.root().token), node.child(1), callee.root().token);
       }
@@ -777,62 +795,74 @@ std::string translator::value(const tavl::node_view node) {
       return block(node);
 
     default:
-      refuse(root.token, std::format("node of type '{}' has no shader form", int(root.type)));
+      return refuse(root.token, std::format("node of type '{}' has no shader form", int(root.type)));
   }
 }
 } // namespace
 
-translation translate_to_glsl(const std::string_view& name,
+std::expected<translation, std::string> try_translate_to_glsl(const std::string_view& name,
                              const std::string_view& source,
                              const std::span<const translated_field>& inputs,
                              const translated_field& output,
                              const script_program::result_kind kind,
-                             const uint32_t group_size) {
+                             const uint32_t group_size, const uint32_t output_component, const uint32_t result_component) {
+  if (output_component >= output.components) return std::unexpected("output component is outside the bound field");
   if (inputs.size() > max_script_inputs) {
-    utils::error{}("originator script '{}': {} input fields, at most {} are supported", name, inputs.size(),
-                   max_script_inputs);
+    return std::unexpected(std::format("originator script '{}': {} input fields, at most {} are supported", name, inputs.size(),
+                   max_script_inputs));
   }
   // РОД ПОЛЯ БОЛЬШЕ НЕ ОТКАЗ: узкое поле живёт на устройстве расширенным (`device_storage_base`), и
   // перевод обязан видеть тот же род, что объявит план, — иначе аксессор шейдера читал бы поле не
   // своим типом. Отказ остаётся только у рода, у которого нет представления вообще.
   if (device_storage_base(output.base) == field_base::count) {
-    utils::error{}("originator script '{}': output field '{}' has storage kind '{}', which has no device "
+    return std::unexpected(std::format("originator script '{}': output field '{}' has storage kind '{}', which has no device "
                    "representation at all",
-                   name, output.name, to_string(output.base));
+                   name, output.name, to_string(output.base)));
   }
   for (const auto& field : inputs) {
     if (device_storage_base(field.base) != field_base::count) continue;
-    utils::error{}("originator script '{}': input field '{}' has storage kind '{}', which has no device "
+    return std::unexpected(std::format("originator script '{}': input field '{}' has storage kind '{}', which has no device "
                    "representation at all",
-                   name, field.name, to_string(field.base));
+                   name, field.name, to_string(field.base)));
   }
   for (const auto& field : inputs) {
     // `chance` — имя встроенного значения, и поле с таким именем сделало бы случайность невидимой:
     // программа читала бы поле там, где написана случайность, и наоборот.
     if (field.name != "chance") continue;
-    utils::error{}("originator script '{}': a bound field named 'chance' cannot be told apart from the builtin "
+    return std::unexpected(std::format("originator script '{}': a bound field named 'chance' cannot be told apart from the builtin "
                    "randomness of the same name",
-                   name);
+                   name));
   }
 
+  std::vector<std::string> bound_names;
+  for (const auto& field : inputs) {
+    if (field.components < 1 || field.components > 4) return std::unexpected("invalid component count");
+    bound_names.push_back(field.name);
+  }
+  static constexpr const char* suffix[]{"_x", "_y", "_z", "_w"};
+  for (const auto& field : inputs) {
+    if (field.components <= 1) continue;
+    for (uint32_t c = 0; c < field.components; ++c) {
+      const auto alias = field.name + suffix[c];
+      if (std::find(bound_names.begin(), bound_names.end(), alias) != bound_names.end())
+        return std::unexpected(std::format("ambiguous component name '{}'", alias));
+      bound_names.push_back(alias);
+    }
+  }
   // Парсер настраивает САМА система ds: приоритеты и фиксность операторов объявлены в ней, и второй
   // их список разъехался бы с первым молча.
   ds::system system;
   system.init_basic_functions();
   system.init_math();
+  detail::add_generation_math(system);
 
   tavl::parser parser;
   system.configure_parser(parser);
 
-  std::vector<tavl::node> nodes;
-  try {
-    nodes = ds::make_script_ast(parser, source);
-  } catch (const std::exception& error) {
-    utils::error{}("originator script '{}': could not parse for translation: {}", name, error.what());
-  }
-  if (nodes.empty()) {
-    utils::error{}("originator script '{}': the program is empty", name);
-  }
+  auto parsed = detail::read_script_ast(parser, source);
+  if (!parsed) return std::unexpected(std::format("originator script '{}': could not parse for translation: {}", name, parsed.error()));
+  const auto& nodes = *parsed;
+  if (nodes.size() <= 1) return std::unexpected(std::format("originator script '{}': the program is empty", name));
 
   translation result;
   result.group_size = group_size;
@@ -840,6 +870,7 @@ translation translate_to_glsl(const std::string_view& name,
   std::string prelude;
 
   translator emitter;
+  emitter.output_component = result_component == UINT32_MAX ? output_component : result_component;
   emitter.parser = &parser;
   emitter.program_name = name;
   emitter.inputs = inputs;
@@ -848,6 +879,7 @@ translation translate_to_glsl(const std::string_view& name,
   emitter.prelude = &prelude;
 
   const auto expression = emitter.value(tavl::node_view{nodes});
+  if (!emitter.refusal.empty()) return std::unexpected(std::move(emitter.refusal));
 
   // Преобразование результата в род поля повторяет `store_component` НАРОЧНО: две разные записи одного
   // и того же значения дали бы два разных поля, и разница проявилась бы только на границах диапазона.
@@ -919,10 +951,12 @@ translation translate_to_glsl(const std::string_view& name,
   for (const auto& binding : inputs) {
     device_binding declared;
     declared.base = device_storage_base(binding.base);
+    declared.components = binding.components;
     shape.push_back(declared);
   }
   device_binding written;
   written.base = device_storage_base(output.base);
+  written.components = output.components;
   written.writable = true;
   shape.push_back(written);
 
@@ -939,20 +973,53 @@ translation translate_to_glsl(const std::string_view& name,
   // ошибка: очередь остаётся на CPU и считает то же самое. Сказано здесь, а не общей проверкой
   // сборщика, потому что причина у перевода СВОЯ — столько-то `ctx:arg:`, — и она называется.
   if (params.size() > device_param_limit) {
-    utils::error{}("originator script '{}': {} arguments do not fit the push constant; {} bytes hold a "
+    return std::unexpected(std::format("originator script '{}': {} arguments do not fit the push constant; {} bytes hold a "
                    "header plus {}",
-                   name, params.size(), device_push_limit, device_param_limit);
+                   name, params.size(), device_push_limit, device_param_limit));
   }
 
   // Форма ВЫДАЁТСЯ здесь и только здесь: чужое тело попадает на устройство ровно как переведённая
   // программа `devils_script`, и никак иначе. Локали идут перед записью — в них живут сохранённые
   // слоты, перекрытые аргументы и веса ветвлений.
-  auto body = prelude + std::format("  out_0_set(index, {});\n", stored);
+  auto body = prelude + (output_component == 0 ? std::format("  out_0_set(index, {});\n", stored) :
+    std::format("  out_0_set(index, {}u, {});\n", output_component, stored));
   text.append(build_device_shader(shape, params, body, group_size));
   result.form = translated_form(translation_authority::key(), std::move(body), std::move(params), {});
 
   result.source = std::move(text);
   return result;
+}
+
+translated_form combine_component_forms(const std::span<const translated_form> forms, const bool separate_outputs) {
+  std::vector<device_param> params;
+  std::string body;
+  for (size_t component = 0; component < forms.size(); ++component) {
+    const auto& form = forms[component];
+    if (!form.declared()) return form;
+    for (const auto& param : form.params()) {
+      const auto found = std::find_if(params.begin(), params.end(), [&](const auto& p) { return p.name == param.name; });
+      if (found == params.end()) params.push_back(param);
+    }
+    std::string part = form.body();
+    if (separate_outputs) {
+      const std::string prefix = "out_" + std::to_string(component) + "_";
+      size_t at = 0;
+      while ((at = part.find("out_0_", at)) != std::string::npos) {
+        part.replace(at, 6, prefix); at += prefix.size();
+      }
+    }
+    body += "  {\n" + part + "  }\n";
+  }
+  if (params.size() > device_param_limit) return translated_form::refused("component programs exceed push constant capacity");
+  return translated_form(translation_authority::key(), std::move(body), std::move(params), {});
+}
+
+translation translate_to_glsl(const std::string_view& name, const std::string_view& source,
+                              const std::span<const translated_field>& inputs, const translated_field& output,
+                              const script_program::result_kind kind, const uint32_t group_size, const uint32_t output_component, const uint32_t result_component) {
+  auto result = try_translate_to_glsl(name, source, inputs, output, kind, group_size, output_component, result_component);
+  if (!result) utils::error{}("{}", result.error());
+  return std::move(*result);
 }
 
 } // namespace originator

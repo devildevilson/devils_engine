@@ -1,0 +1,19 @@
+// Для выбранной границы: closing, shear, subduction; компонент 3 — пригодность соседа.
+{
+  ctx_save = { n = sqrt(position_x*position_x + position_y*position_y + position_z*position_z) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+  ctx_save = { nx = position_x*ctx:saved:inverse, ny = position_y*ctx:saved:inverse, nz = position_z*ctx:saved:inverse }
+  ctx_save = { cx = other_position_x-position_x, cy = other_position_y-position_y, cz = other_position_z-position_z }
+  ctx_save = { projection = ctx:saved:cx*ctx:saved:nx + ctx:saved:cy*ctx:saved:ny + ctx:saved:cz*ctx:saved:nz }
+  ctx_save = { dx = ctx:saved:cx-ctx:saved:nx*ctx:saved:projection, dy = ctx:saved:cy-ctx:saved:ny*ctx:saved:projection, dz = ctx:saved:cz-ctx:saved:nz*ctx:saved:projection }
+  ctx_save = { n = sqrt(ctx:saved:dx*ctx:saved:dx + ctx:saved:dy*ctx:saved:dy + ctx:saved:dz*ctx:saved:dz) }
+  ctx_save = { valid = value_or(plate != other_plate and ctx:saved:n > 1e-12,1.0,0.0) }
+    ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+    ctx_save = { dx = ctx:saved:dx*ctx:saved:inverse, dy = ctx:saved:dy*ctx:saved:inverse, dz = ctx:saved:dz*ctx:saved:inverse }
+    ctx_save = { cx = velocity_x-other_velocity_x, cy = velocity_y-other_velocity_y, cz = velocity_z-other_velocity_z }
+    ctx_save = { closing = ctx:saved:cx*ctx:saved:dx + ctx:saved:cy*ctx:saved:dy + ctx:saved:cz*ctx:saved:dz }
+
+  value_or(result_component > 2.5,ctx:saved:valid,value_or(ctx:saved:valid < 0.5,0.0,value_or(result_component < 0.5,ctx:saved:closing,value_or(result_component > 1.5,
+      value_or(ctx:saved:closing > 0.0 and (other_crust > crust or ((other_crust >= crust and other_crust <= crust) and other_plate < plate)),1.0,0.0),
+      sqrt((ctx:saved:cx-ctx:saved:dx*ctx:saved:closing)*(ctx:saved:cx-ctx:saved:dx*ctx:saved:closing) + (ctx:saved:cy-ctx:saved:dy*ctx:saved:closing)*(ctx:saved:cy-ctx:saved:dy*ctx:saved:closing) + (ctx:saved:cz-ctx:saved:dz*ctx:saved:closing)*(ctx:saved:cz-ctx:saved:dz*ctx:saved:closing))))))
+}

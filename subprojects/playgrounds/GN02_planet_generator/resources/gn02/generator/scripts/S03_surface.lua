@@ -25,13 +25,13 @@ return function(step)
   -- читались бы в неопределённом состоянии, поэтому проходы идут парами: height -> smooth -> height.
   -- Нечётное число проходов оставило бы результат не в том поле, и это была бы тихая ошибка.
   for _ = 1, math.floor(p.relief_smoothing) do
-    originator.graph_blur{
-      inputs = { offsets, arcs, height },
+    originator.blur{
+      inputs = { height, offsets, arcs },
       outputs = { smooth },
       params = { self_weight = p.relief_self_weight },
     }
-    originator.graph_blur{
-      inputs = { offsets, arcs, smooth },
+    originator.blur{
+      inputs = { smooth, offsets, arcs },
       outputs = { height },
       params = { self_weight = p.relief_self_weight },
     }
@@ -76,8 +76,8 @@ return function(step)
     -- суши уедет вниз вместе со смытым, а доля — это требование автора мира, а не что получится.
     -- Поддержка считается размытием по графу: доля суши среди клетки и её соседей.
     for _ = 1, erosion_passes do
-      originator.graph_blur{
-        inputs = { offsets, arcs, land },
+      originator.blur{
+        inputs = { land, offsets, arcs },
         outputs = { land_support },
         params = { self_weight = 1.0, neighbour_weight = 1.0 },
       }
@@ -110,8 +110,8 @@ return function(step)
     outputs = { cells:field("ocean_seed") },
   }
 
-  originator.graph_flood{
-    inputs = { offsets, arcs, cells:field("ocean_seed"), one, one },
+  originator.flood{
+    inputs = { cells:field("ocean_seed"), one, one, offsets, arcs },
     outputs = { cells:field("scratch_label"), cells:field("ocean_distance") },
     params = { unreached = -1 },
   }

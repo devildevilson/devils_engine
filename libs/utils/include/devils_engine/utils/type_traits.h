@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_UTILS_TYPE_TRAITS_H
 #define DEVILS_ENGINE_UTILS_TYPE_TRAITS_H
 
+#include "numeric.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -613,10 +615,6 @@ struct sequential_type_id_impl {
 };
 } // namespace detail
 
-template <typename T>
-constexpr T min(const T& a, const T& b) noexcept {
-  return a < b ? a : b;
-}
 
 template <typename T>
 constexpr size_t function_arguments_count = detail::function_traits_v2<T>::argument_count;

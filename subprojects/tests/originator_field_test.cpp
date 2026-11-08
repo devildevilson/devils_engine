@@ -92,7 +92,7 @@ test_setup make() {
   originator::pipeline_description probe;
   probe.name = "probe";
   probe.buffers = originator::parse_buffers(probe_buffers, "probe");
-  probe.steps.push_back({.name = "ask", .body = "probe/ask", .reads = {}, .writes = {"points"}});
+  probe.steps.push_back({.name = "ask", .body = "probe/ask", .reads = {}, .writes = {"points"}, .params = {}, .programs = {}});
   setup.pipelines.emplace_back("probe", std::move(probe));
   setup.scripts.push_back({"probe", {{false, "ask", "probe/ask", probe_body}}});
   setup.sizes.set("one", 1);
@@ -239,7 +239,7 @@ TEST_CASE("primitive field: roles — natural minimum, fill with a smooth seam, 
 
 TEST_CASE("primitive field refusals") {
   auto test = make();
-  CHECK_THROWS(originator::current_field("world")); // вне сборки экземпляра
+  CHECK_THROWS(originator::current_field(originator::generation_context{}, "world")); // вне сборки экземпляра
 
   // Поле над связью, которой нет.
   originator::chain_setup setup;
@@ -247,7 +247,7 @@ TEST_CASE("primitive field refusals") {
   originator::pipeline_description probe;
   probe.name = "probe";
   probe.buffers = originator::parse_buffers(probe_buffers, "probe");
-  probe.steps.push_back({.name = "ask", .body = "probe/ask", .reads = {}, .writes = {"points"}});
+  probe.steps.push_back({.name = "ask", .body = "probe/ask", .reads = {}, .writes = {"points"}, .params = {}, .programs = {}});
   setup.pipelines.emplace_back("probe", probe);
   setup.sizes.set("one", 1);
   setup.vocabulary = test.words.get();
@@ -345,4 +345,25 @@ TEST_CASE("natural and cut shapes can round a union without changing distant sur
     std::vector<double> values(points.size());field.sample_points(points,values,{},2);
     for(size_t i=0;i<points.size();++i)CHECK(values[i]==doctest::Approx(field.value(points[i]).value));
   }
+}
+
+TEST_CASE("nested field evaluation keeps parent scratch alive and can release its capacity") {
+  using namespace originator;
+  auto inner_words = make_vocabulary();
+  const field_term_rows inner_rows[]{ {"ball", shape_vocabulary::pack(std::vector<std::pair<ball, field_box>>{{ball{{0,0,0}, 2}, field_box::around({0,0,0}, {0,0,0}, 5)}})} };
+  primitive_field inner(*inner_words, inner_rows);
+  field_workspace workspace;
+  shape_vocabulary outer_words;
+  outer_words.set_background([](field_point&, bool&) { return shape_value{10, 0}; }, 10);
+  outer_words.add_kind_erased("nested", {}, [&](const void* rows, size_t row, field_point& p) {
+    const auto value = inner.value(p.position(), workspace);
+    return shape_value{value.value + (*static_cast<const std::vector<double>*>(rows))[row], uint32_t(row)};
+  });
+  const auto box = field_box::around({0,0,0}, {0,0,0}, 5);
+  const field_term_rows rows[]{ {"nested", shape_vocabulary::pack(std::vector<std::pair<double, field_box>>{{0, box},{1, box}})} };
+  primitive_field outer(outer_words, rows);
+  for (size_t i = 0; i < 100; ++i) CHECK(outer.value({0,0,0}, workspace).value == -2);
+  CHECK(workspace.retained_bytes() > 0);
+  workspace.release();
+  CHECK(workspace.retained_bytes() == 0);
 }

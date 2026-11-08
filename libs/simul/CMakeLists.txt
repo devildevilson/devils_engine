@@ -12,6 +12,7 @@ add_library(devils_simul
   src/simul/lua_script_resource.cpp
   src/simul/startup_resources.cpp
   include/devils_engine/simul/interface.h
+  include/devils_engine/simul/configuration_layers.h
   include/devils_engine/simul/boot_config.h
   include/devils_engine/simul/app_runtime.h
   include/devils_engine/simul/game_host.h
@@ -50,8 +51,7 @@ target_link_libraries(devils_simul
   # act + aesthetics — для generic system-pipeline (interaction_commit.h; ROADMAP п.11/п.16). act тянет
   # devils_script транзитивно: осознанно, simul становится слоем, где живёт геймплейный пайплайн.
   PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue devils_engine::demiurg
-         devils_engine::act devils_engine::aesthetics
-  PRIVATE tavl
+         devils_engine::act devils_engine::aesthetics tavl
 )
 
 add_library(devils_engine::simul ALIAS devils_simul)

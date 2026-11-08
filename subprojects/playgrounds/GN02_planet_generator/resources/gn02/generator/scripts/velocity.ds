@@ -1,0 +1,14 @@
+// v = normalized(axis) * rate cross position. Одна формула пишет три компоненты.
+{
+  ctx_save = { length = sqrt(plate_axis_x*plate_axis_x + plate_axis_y*plate_axis_y + plate_axis_z*plate_axis_z) }
+  ctx_save = { inverse = value_or(ctx:saved:length > 1e-12, 1.0 / ctx:saved:length, 0.0) }
+  ctx_save = {
+    x = plate_axis_x * ctx:saved:inverse * plate_rate
+    y = plate_axis_y * ctx:saved:inverse * plate_rate
+    z = plate_axis_z * ctx:saved:inverse * plate_rate
+  }
+  value_or(result_component < 0.5,
+    ctx:saved:y * position_z - ctx:saved:z * position_y,
+    value_or(result_component > 1.5, ctx:saved:x * position_y - ctx:saved:y * position_x,
+      ctx:saved:z * position_x - ctx:saved:x * position_z))
+}

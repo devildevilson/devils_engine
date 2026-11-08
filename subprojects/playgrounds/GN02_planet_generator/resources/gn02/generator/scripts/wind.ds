@@ -1,0 +1,43 @@
+// Пояса ветра. Временные n/inverse переиспользуются: лимит DS saved slots остаётся 16.
+{
+  ctx_save = { n = sqrt(position_x*position_x + position_y*position_y + position_z*position_z) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12, 1.0/ctx:saved:n, 0.0) }
+  ctx_save = {
+    px = position_x*ctx:saved:inverse, py = position_y*ctx:saved:inverse, pz = position_z*ctx:saved:inverse
+    rotation = max(0.05, ctx:arg:rotation)
+    direction = min(floor(abs(asin(clamp(lat_sin,-1.0,1.0)))/(1.5707963267948966/ctx:arg:bands)),ctx:arg:bands-1.0)
+  }
+  ctx_save = {
+    ex = value_or(ctx:arg:axis < 0.5, 0.0, value_or(ctx:arg:axis > 1.5, -1.0*ctx:saved:py, ctx:saved:pz))
+    ey = value_or(ctx:arg:axis < 0.5, -1.0*ctx:saved:pz, value_or(ctx:arg:axis > 1.5, ctx:saved:px, 0.0))
+    ez = value_or(ctx:arg:axis < 0.5, ctx:saved:py, value_or(ctx:arg:axis > 1.5, 0.0, -1.0*ctx:saved:px))
+    direction = value_or(ctx:saved:direction % 2.0 < 0.5, -1.0, 1.0)
+  }
+  ctx_save = { n = sqrt(ctx:saved:ex*ctx:saved:ex + ctx:saved:ey*ctx:saved:ey + ctx:saved:ez*ctx:saved:ez) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12, 1.0/ctx:saved:n, 0.0) }
+  ctx_save = {
+    ex = value_or(ctx:saved:n > 1e-12, ctx:saved:ex*ctx:saved:inverse, 0.0)
+    ey = value_or(ctx:saved:n > 1e-12, ctx:saved:ey*ctx:saved:inverse, value_or(ctx:arg:axis < 0.5,-1.0,value_or(ctx:arg:axis > 1.5,1.0,0.0)))
+    ez = value_or(ctx:saved:n > 1e-12, ctx:saved:ez*ctx:saved:inverse, value_or(ctx:arg:axis > 0.5 and ctx:arg:axis < 1.5,-1.0,0.0))
+  }
+  ctx_save = {
+    ux = ctx:saved:py*ctx:saved:ez - ctx:saved:pz*ctx:saved:ey
+    uy = ctx:saved:pz*ctx:saved:ex - ctx:saved:px*ctx:saved:ez
+    uz = ctx:saved:px*ctx:saved:ey - ctx:saved:py*ctx:saved:ex
+  }
+  ctx_save = { n = sqrt(ctx:saved:ux*ctx:saved:ux + ctx:saved:uy*ctx:saved:uy + ctx:saved:uz*ctx:saved:uz) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+  ctx_save = {
+    ux = ctx:saved:ux*ctx:saved:inverse*value_or(lat_sin >= 0.0,1.0,-1.0)
+    uy = ctx:saved:uy*ctx:saved:inverse*value_or(lat_sin >= 0.0,1.0,-1.0)
+    uz = ctx:saved:uz*ctx:saved:inverse*value_or(lat_sin >= 0.0,1.0,-1.0)
+  }
+  ctx_save = {
+    wx = ctx:saved:ex*(ctx:saved:direction*ctx:saved:rotation) + ctx:saved:ux*(ctx:saved:direction*ctx:arg:meridional/ctx:saved:rotation)
+    wy = ctx:saved:ey*(ctx:saved:direction*ctx:saved:rotation) + ctx:saved:uy*(ctx:saved:direction*ctx:arg:meridional/ctx:saved:rotation)
+    wz = ctx:saved:ez*(ctx:saved:direction*ctx:saved:rotation) + ctx:saved:uz*(ctx:saved:direction*ctx:arg:meridional/ctx:saved:rotation)
+  }
+  ctx_save = { n = sqrt(ctx:saved:wx*ctx:saved:wx + ctx:saved:wy*ctx:saved:wy + ctx:saved:wz*ctx:saved:wz) }
+  ctx_save = { inverse = value_or(ctx:saved:n > 1e-12,1.0/ctx:saved:n,0.0) }
+  value_or(result_component < 0.5,ctx:saved:wx,value_or(result_component > 1.5,ctx:saved:wz,ctx:saved:wy))*ctx:saved:inverse*ctx:arg:speed
+}

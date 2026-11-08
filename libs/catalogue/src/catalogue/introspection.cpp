@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "devils_engine/catalogue/introspection.h"
 #include "devils_engine/catalogue/logging.h" // logs().name() для префикса домена
 

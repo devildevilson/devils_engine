@@ -69,6 +69,14 @@ set(HDR_LIST
   include/devils_engine/thread/spsc_queue.h
   include/devils_engine/utils/type_traits.h
   include/devils_engine/utils/core.h
+  include/devils_engine/utils/error.h
+  include/devils_engine/utils/log.h
+  include/devils_engine/utils/numeric.h
+  include/devils_engine/utils/print.h
+  include/devils_engine/utils/trace.h
+  include/devils_engine/utils/unicode.h
+  include/devils_engine/utils/platform.h
+  include/devils_engine/utils/crc32c.h
   include/devils_engine/utils/string-utils.hpp
   include/devils_engine/utils/safe_handle.h
   include/devils_engine/utils/prng.h

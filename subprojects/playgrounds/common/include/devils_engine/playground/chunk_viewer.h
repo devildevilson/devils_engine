@@ -8,8 +8,8 @@
 
 #include "devils_engine/originator/pipeline.h"
 
-#include "memory.h"
-#include "streaming.h"
+#include "devils_engine/playground/world_memory.h"
+#include "devils_engine/playground/chunk_streaming.h"
 
 // Окно площадки: свободная камера и геометрия, которая строится вокруг неё.
 //

@@ -8,7 +8,7 @@ import tempfile
 
 
 def run(executable, args, expected):
-  result = subprocess.run([str(executable), *args], text=True, capture_output=True, timeout=30)
+  result = subprocess.run([str(executable), *args], text=True, encoding="utf-8", capture_output=True, timeout=30)
   if result.returncode != expected:
     raise AssertionError(f"{executable.name} {args}: exit {result.returncode}, expected {expected}\n"
                          f"{result.stdout}\n{result.stderr}")

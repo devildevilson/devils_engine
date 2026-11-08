@@ -342,7 +342,7 @@ protected:
   std::vector<vk::SubpassDescription> descs;
 };
 
-// layers такие же как и у инстанса
+// Слои задаются у instance; аргумент layers у create сохранён для совместимости.
 class device_maker {
 public:
   device_maker(vk::Instance inst);

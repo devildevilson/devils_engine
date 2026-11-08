@@ -276,7 +276,7 @@ back, elastic, bounce плюс linear) переводят долю пройде�
    перенести под `utils/spatial/` и покрыть едиными тестами query-контракта.
 
 7. Уменьшить тяжесть частых заголовков.
-   `core.h` и `type_traits.h` тянут много зависимостей. После разбиения
+   `core.h` уже оставлен диагностическим входом; `type_traits.h` требует отдельного дальнейшего разбора. После разбиения
    стоит проверить include graph и сократить transitive includes для горячих библиотек.
 
 8. Добавить/расширить тесты.
@@ -289,3 +289,25 @@ back, elastic, bounce плюс linear) переводят долю пройде�
    или `std::expected`-подобного результата вместо выбрасывания исключений/фатальных ошибок.
    Это сделает инструмент пригоднее для загрузчиков ресурсов, редакторских сценариев и
    фоновых потоков, где ошибка файла должна быть обычным результатом операции.
+
+## Narrow utility headers
+
+`core.h` is the minimal diagnostics entry point (`error.h`): `utils::error`, `critical_error`,
+source location and diagnostic path formatting. Runtime logging/throw formatting is implemented
+in the utils library; callers link `devils_engine::utils`. Constant evaluation still rejects fatal
+invariants at compile time. Names and numeric behavior are preserved; include the facility used:
+
+| Header | Facilities |
+| --- | --- |
+| `log.h` | `utils::info`, `utils::warn`, spdlog integration |
+| `print.h` | print/println |
+| `trace.h` | tracer |
+| `numeric.h` | epsilon, min/max, scalar math, alignment and bit helpers |
+| `platform.h` | app/project/cache paths and CPU name |
+| `unicode.h` | cast/cast16/cast32 |
+| `crc32c.h` | CRC32C overloads |
+| `type_traits.h` | reflection/type/function traits; no implicit core include |
+
+Header-only or external consumers previously relying on core's transitive includes must include
+these headers explicitly. This split does not change rounding, CRC bytes, path policy, or the
+existing noexcept contracts; those are separate semantic audits.

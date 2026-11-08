@@ -1,0 +1,6 @@
+// Компоненты читаются из той же binding без промежуточных scalar buffers.
+{
+  ctx_save = { length = sqrt(position_x*position_x + position_y*position_y + position_z*position_z) }
+  ctx_save = { component = value_or(ctx:arg:axis < 0.5, position_x, value_or(ctx:arg:axis > 1.5, position_z, position_y)) }
+  value_or(ctx:saved:length > 1e-12, ctx:saved:component / ctx:saved:length, 0.0)
+}

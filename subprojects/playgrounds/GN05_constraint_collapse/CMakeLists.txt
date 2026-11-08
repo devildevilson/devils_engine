@@ -22,7 +22,7 @@ set_target_properties(GN05_constraint_collapse PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/playgrounds/GN05_constraint_collapse/bin")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME GN05_constraint_collapse_verify
+  devils_add_test(NAME GN05_constraint_collapse_verify
     COMMAND GN05_constraint_collapse --verify --size=64)
   set_tests_properties(GN05_constraint_collapse_verify PROPERTIES LABELS devils_engine)
 endif()

@@ -28,6 +28,7 @@ steps = [
     name = topology
     body = ./scripts/S01_topology.lua
     writes = [ cells, cell_offsets, cell_arcs ]
+    programs = { axis = ./scripts/axis.ds }
   }
 
   // 2. Тектоника: плиты, их движение, стыки и рельеф.
@@ -37,6 +38,9 @@ steps = [
     reads = [ cell_offsets, cell_arcs ]
     writes = [ cells, plates, plate_offsets, plate_order, hotspots, state ]
     programs = {
+      hotspot = ./scripts/hotspot.ds
+      interaction = ./scripts/interaction.ds
+      velocity = ./scripts/velocity.ds
       convergent = ./scripts/S02_convergent.ds
       divergent = ./scripts/S02_divergent.ds
       relief_convergent = ./scripts/S02_relief_convergent.ds
@@ -80,7 +84,8 @@ steps = [
     name = climate
     body = ./scripts/S05_climate.lua
     reads = [ cell_offsets, cell_arcs ]
-    writes = [ cells ]
+    writes = [ cells, transport ]
+    programs = { insolation = ./scripts/insolation.ds, wind = ./scripts/wind.ds, moisture = ./scripts/moisture.ds, upwind = ./scripts/upwind.ds }
   }
 
   // 6. Сезоны: лето и зима как тёплый и холодный из двух наклонений, отсюда же градиент и зоны.
@@ -89,6 +94,7 @@ steps = [
     body = ./scripts/S06_seasons.lua
     writes = [ cells, state ]
     programs = {
+      insolation = ./scripts/insolation.ds
       summer = ./scripts/S06_summer.ds
       winter = ./scripts/S06_winter.ds
       seasonality = ./scripts/S06_seasonality.ds

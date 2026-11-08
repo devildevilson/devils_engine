@@ -3,6 +3,7 @@
 
 #include <array>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +33,7 @@ typedef struct ma_device ma_device;
 typedef struct ma_engine ma_engine;
 typedef struct ma_sound ma_sound;
 typedef struct ma_context ma_context;
+typedef struct ma_resource_manager ma_resource_manager;
 
 // как бы аккуратно сделать поиск?
 #define SOUND_SYSTEM_EXTENSION_LIST \
@@ -112,12 +114,37 @@ struct task_status {
   vec3 vel;
 };
 
+enum class mixing_mode { owner, device };
+mixing_mode parse_mixing_mode(std::string_view name);
+
+// Offline mode runs the same voices/decoders/mixer without opening a hardware device.
+// Useful for deterministic rendering and measuring update versus mixer CPU cost.
+struct system_config {
+  std::string device_name;
+  double stream_buffer_seconds = 1.0;
+  size_t decode_frames_per_update = 0;
+  bool offline = false;
+  uint32_t sample_rate = 48000;
+  uint32_t channels = 2;
+  mixing_mode mixing = mixing_mode::owner;
+  double output_buffer_seconds = 0.05;
+};
+
 class system {
 public:
   struct sound_instance;
   struct miniaudio_data_converter;
 
   system(const std::string_view device_name = {}, const double stream_buffer_seconds = 1.0, const size_t decode_frames_per_update = 0); // сюда передать устройство, пересоздадим всю структуру чтобы поменять устройство
+  explicit system(const system_config& config);
+  // Offline sink. With owner mixing update() produces PCM and render() drains it;
+  // with device mixing render() runs the graph directly. One consumer, no simultaneous renders.
+  void render(std::span<float> interleaved);
+  bool offline() const noexcept { return offline_; }
+  mixing_mode mixing() const noexcept { return mixing_; }
+  uint32_t queued_output_frames() const noexcept;
+  uint32_t resource_manager_worker_count() const noexcept;
+  uint32_t native_device_count() const noexcept;
   ~system() noexcept;
 
   system(const system& copy) noexcept = delete;
@@ -172,6 +199,7 @@ private:
     size_t lifetime_budget; // макс. µs в active+draining (длительность сегмента + запас)
     size_t frames_decoded;
     size_t stream_begin_frame;
+    size_t output_frames_written;
     size_t stream_frames_count;
     size_t source_frames_count;
     task_phase phase;
@@ -180,6 +208,19 @@ private:
     std::unique_ptr<miniaudio_data_converter> converter;
   };
 
+  static void playback_callback(ma_device*, void*, const void*, uint32_t frames);
+  void read_output(void* output, uint32_t frames);
+  void mix_output();
+  struct playback_stream;
+  std::unique_ptr<playback_stream> output_;
+  mixing_mode mixing_ = mixing_mode::owner;
+  void initialize(const system_config& config);
+  void shutdown() noexcept;
+  bool offline_ = false;
+  bool context_initialized_ = false;
+  bool device_initialized_ = false;
+  bool engine_initialized_ = false;
+  bool resource_manager_initialized_ = false;
   size_t cur_time;
   uint32_t playback_channels;
   uint32_t playback_sample_rate;
@@ -188,6 +229,7 @@ private:
   directional_coloration_config directional_coloration_config_;
   std::array<float, static_cast<size_t>(type::count)> source_volume;
   std::unique_ptr<ma_context> m_context;
+  std::unique_ptr<ma_resource_manager> m_resource_manager;
   std::unique_ptr<ma_engine> m_engine;
   std::unique_ptr<ma_device> m_device;
   std::vector<std::unique_ptr<sound_instance>> m_instances_mono;

@@ -93,8 +93,8 @@ return function(step)
   local function grow(seed_field, label_field, passable, cost, capacity, score, unassigned_program,
                       primary_distance)
     local function flood()
-      originator.graph_flood{
-        inputs = { offsets, arcs, seed_field, cost, passable },
+      originator.flood{
+        inputs = { seed_field, cost, passable, offsets, arcs },
         outputs = { label_field, scratch_distance },
         params = { unreached = -1, capacity = capacity },
       }
@@ -156,8 +156,8 @@ return function(step)
       outputs = { province_starts, province_order },
       key_support = "global",
     }
-    originator.graph_frontier{
-      inputs = { offsets, arcs, province },
+    originator.frontier{
+      inputs = { province, offsets, arcs },
       outputs = { frontier },
       params = { ignore = 0 },
     }

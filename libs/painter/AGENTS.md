@@ -33,13 +33,16 @@ Rendering и GPU assets, цель `devils_engine::painter`. Начинать с 
 ## Память и задачи
 
 Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
-[указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
-хронологию экспериментов — в отдельном audit/history.
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
+История разработки не является обязательной памятью проекта.
 
 ## Технический аудит 2026-11-07
 
 Минимальное устройство — Vulkan 1.0. 256 МиБ VRAM — диагностический ориентир; graphics_base и assets_base VMA allocators учитываются вместе,
 включая retiring/staging/per-frame generations. Driver heap budget — не project quota.
 Painter пока сохраняет отдельную exception policy; это не отменяет проверок external config в Release.
-GPU-измерения в техническом аудите не выполнялись: нужны реальные allocation/residency counters.
+GPU-измерения в техническом аудите не выполнялись. `memory_statistics()` у обоих owners отдаёт
+allocation/block bytes и counts по heap; `combine_memory_statistics` проверяет owners/device и складывает их.
+
+TECH-10 не требует слияния graphics/assets VMA: их owners различны. Per-owner/per-heap
+accounting реализован; правило не складывать process-wide heap budgets дважды — docs/review/LIFETIME_AND_RESOURCES.md.

@@ -1,0 +1,9 @@
+// Один перенос из уже выбранного upwind. Второй output накапливает свой rain.
+{
+    ctx_save = { capacity = max(0.05,param_capacity_base + param_capacity_gain*temperature) }
+    ctx_save = { carried = upwind_moisture*clamp(param_transport,0.0,1.0) }
+    ctx_save = { carried = min(ctx:saved:carried + value_or(land == 0.0,param_evaporation,param_land_evaporation)*ctx:saved:capacity,ctx:saved:capacity) }
+    ctx_save = { share = param_convective*pow(clamp(temperature/max(1.0,param_convective_reference),0.0,1.0),max(0.1,param_convective_exponent)) + param_orographic*max(0.0,height-upwind_height) }
+    ctx_save = { share = clamp(ctx:saved:share + value_or(land == 0.0,param_ocean_rain,0.0),0.0,1.0) }
+  value_or(result_component < 0.5,ctx:saved:carried-ctx:saved:carried*ctx:saved:share,rain+ctx:saved:carried*ctx:saved:share)
+}

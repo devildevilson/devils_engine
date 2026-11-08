@@ -1,5 +1,6 @@
+#include "devils_engine/playground/cli.h"
 #include "runtime.h"
-#include "viewer.h"
+#include "devils_engine/playground/chunk_viewer.h"
 #include <atomic>
 #include <algorithm>
 #include <cmath>
@@ -31,67 +32,45 @@ int main(int argc, char** argv) {
     std::array<double, 3> position{};
     bool positioned = false;
     std::string module = "gn09_next", view;
-    for (int i = 1; i < argc; ++i) {
-      std::string a = argv[i];
-      if (a == "--natural")
-        natural = true;
-      else if (a == "--caves-only")
-        caves_only = true;
-      else if (a == "--clear")
-        clear_view = true;
-      else if (a == "--uncapped")
-        options.uncapped = true;
-      else if (a.starts_with("--seed="))
-        options.seed = std::stoull(a.substr(7));
-      else if (a.starts_with("--speed="))
-        options.move_speed = std::stod(a.substr(8));
-      else if (a.starts_with("--cave-layer="))
-        cave_layer = std::stoi(a.substr(13));
-      else if (a.starts_with("--frames="))
-        options.frames = std::stoul(a.substr(9));
-      else if (a.starts_with("--flight="))
-        options.flight_speed = std::stod(a.substr(9));
-      else if (a.starts_with("--turn-seconds="))
-        options.flight_turn_seconds = std::stod(a.substr(15));
-      else if (a.starts_with("--yaw="))
-        options.start_yaw = std::stof(a.substr(6));
-      else if (a == "--diagnostic") {
-        diagnostic = true;
-        options.mode = 1;
-        options.fog_density = 0.003f;
-        options.ambient = 3;
-        options.lamp = 3;
-      } else if (a.starts_with("--pitch="))
-        options.start_pitch = std::stof(a.substr(8));
-      else if (a.starts_with("--radius=")) {
-        const auto radius = std::stoi(a.substr(9));
-        if (radius < 2 || radius > 8) throw std::runtime_error("view radius must be between 2 and 8 chunks");
-        options.window.horizontal_radius = radius;
-        options.window.vertical_radius = radius;
-        options.arena_vertices = size_t(2 * radius + 1) * size_t(2 * radius + 1) * size_t(2 * radius + 1) * 24000;
-      } else if (a.starts_with("--workers="))
-        options.workers = std::stoul(a.substr(10));
-      else if (a.starts_with("--guard="))
-        options.guard_radius = std::stoi(a.substr(8));
-      else if (a.starts_with("--dump="))
-        options.dump_path = a.substr(7);
-      else if (a.starts_with("--view="))
-        view = a.substr(7);
-      else if (a.starts_with("--module="))
-        module = a.substr(9);
-      else if (a.starts_with("--position=")) {
-        const auto first = a.find(','), second = a.find(',', first + 1);
-        if (first == std::string::npos || second == std::string::npos) throw std::runtime_error("position requires x,y,z");
-        position = {std::stod(a.substr(11, first - 11)), std::stod(a.substr(first + 1, second - first - 1)), std::stod(a.substr(second + 1))};
-        positioned = true;
-      } else if (a.starts_with("--sector=")) {
-        auto c = a.find(',');
-        sx = std::stoi(a.substr(9, c - 9));
-        sz = std::stoi(a.substr(c + 1));
-      } else
-        throw std::runtime_error("unknown option: " + a);
+    CLI::App app{"GN09 NEXT viewer"};
+    app.option_defaults()->always_capture_default();
+    app.add_flag("--natural", natural);
+    app.add_flag("--caves-only", caves_only);
+    app.add_flag("--clear", clear_view);
+    app.add_flag("--uncapped", options.uncapped);
+    app.add_flag("--diagnostic", diagnostic);
+    app.add_option("--seed", options.seed, "World seed");
+    app.add_option("--speed", options.move_speed, "Camera speed")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+    app.add_option("--cave-layer", cave_layer, "Cave layer");
+    app.add_option("--frames", options.frames, "Frame limit");
+    app.add_option("--flight", options.flight_speed, "Flight speed")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+    app.add_option("--turn-seconds", options.flight_turn_seconds, "Flight turn interval")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+    app.add_option("--yaw", options.start_yaw, "Camera yaw")->check(devils_engine::playground::finite_number);
+    app.add_option("--pitch", options.start_pitch, "Camera pitch")->check(devils_engine::playground::finite_number);
+    int radius = options.window.horizontal_radius;
+    app.add_option("--radius", radius, "View radius (chunks)")->check(CLI::Range(2, 8));
+    app.add_option("--workers", options.workers, "Workers")->check(CLI::PositiveNumber);
+    app.add_option("--guard", options.guard_radius, "Guard radius");
+    app.add_option("--dump", options.dump_path, "Frame output");
+    app.add_option("--view", view, "Debug view")->check(CLI::IsMember({"gallery", "clutter", "hall", "ocean", "cave", "cave-hall", "cave-tight", "cave-shaft", "station", "station-room", "station-exterior", "collapse"}));
+    app.add_option("--module", module, "Generator module");
+    std::array<int, 2> sector{sx, sz};
+    devils_engine::playground::add_tuple(app, "--sector", sector, ',');
+    devils_engine::playground::add_tuple(app, "--position", position, ',');
+    if (auto code = devils_engine::playground::parse_cli(app, argc, argv)) return *code;
+    sx = sector[0]; sz = sector[1];
+    positioned = app.count("--position") != 0;
+    if (app.count("--radius")) {
+      options.window.horizontal_radius = radius;
+      options.window.vertical_radius = radius;
+      options.arena_vertices = size_t(2 * radius + 1) * size_t(2 * radius + 1) * size_t(2 * radius + 1) * 24000;
     }
-    if (options.workers == 0 || options.flight_speed < 0 || options.flight_turn_seconds < 0 || options.move_speed < 0 || !std::isfinite(options.move_speed)) throw std::runtime_error("invalid worker count or flight parameters");
+    if (diagnostic) {
+      options.mode = 1;
+      options.fog_density = 0.003f;
+      options.ambient = 3;
+      options.lamp = 3;
+    }
     if (caves_only && view.empty()) view = "cave-hall";
     if (caves_only || view.starts_with("cave")) {
       if (options.move_speed == 0) options.move_speed = 0.9;

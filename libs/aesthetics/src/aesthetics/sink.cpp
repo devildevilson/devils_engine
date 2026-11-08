@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "devils_engine/aesthetics/sink.h"
 
 #include <fstream>

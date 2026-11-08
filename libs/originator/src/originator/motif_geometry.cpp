@@ -1,9 +1,9 @@
+#include "devils_engine/utils/error.h"
 #include "devils_engine/originator/motif_geometry.h"
 
 #include <algorithm>
 #include <cstdlib>
 #include <format>
-#include <stdexcept>
 #include <utility>
 
 // Реестр не доверяет даже собственной процедуре: один валидатор защищает потребителя
@@ -94,7 +94,7 @@ motif_geometry_result diagonal(const motif_geometry_input& input) {
 
 void motif_geometry_registry::add(std::string name, const motif_geometry_builder builder) {
   if (name.empty() || !builder || contains(name)) {
-    throw std::invalid_argument(std::format("motif geometry: invalid or duplicate operation '{}'", name));
+    utils::error{}("motif geometry: invalid or duplicate operation '{}' (builder present: {})", name, builder != nullptr);
   }
   operations_.push_back({std::move(name), builder});
 }

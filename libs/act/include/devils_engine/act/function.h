@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_ACT_FUNCTION_H
 #define DEVILS_ENGINE_ACT_FUNCTION_H
 
+#include "devils_engine/utils/type_traits.h"
+
 #include <cstdint>
 #include <functional>
 #include <string>

@@ -18,6 +18,9 @@ GLFW core/window helpers, input events и action bindings. `core.h`, `events.h`,
 
 ## Проверка
 
+Public headers: `devils_public_headers`; `public_link_input` линкует только
+`devils_engine::input` и проверяет его usage requirements без aggregate target.
+
 `input_bindings_test`, `tile_frontier_config_test`, `simul_settings_files_test`;
 изменение native callbacks/window lifecycle дополнительно требует реального window smoke.
 Не выдавать headless проверки synthetic mouse за проверку всей клавиатуры GLFW.
@@ -29,6 +32,5 @@ GLFW core/window helpers, input events и action bindings. `core.h`, `events.h`,
 ## Память и задачи
 
 Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
-[указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
-хронологию экспериментов — в отдельном audit/history.
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
+История разработки не является обязательной памятью проекта.

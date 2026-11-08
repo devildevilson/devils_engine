@@ -1,3 +1,4 @@
+#include "devils_engine/originator/graph_walk.h"
 #include "site_graph.h"
 
 #include <algorithm>
@@ -394,25 +395,19 @@ std::vector<uint32_t> neighbours(const graph& graph, const uint32_t id) {
 }
 
 std::vector<uint32_t> path(const graph& graph, const uint32_t from, const uint32_t to) {
-  std::vector<uint32_t> previous(graph.nodes.size(), UINT32_MAX);
-  std::queue<uint32_t> pending;
-  previous[from] = from;
-  pending.push(from);
-  while (!pending.empty() && previous[to] == UINT32_MAX) {
-    const auto here = pending.front();
-    pending.pop();
-    for (const auto next : neighbours(graph, here))
-      if (previous[next] == UINT32_MAX) {
-        previous[next] = here;
-        pending.push(next);
-      }
-  }
-  if (previous[to] == UINT32_MAX) return {};
-  std::vector<uint32_t> result;
-  for (auto at = to; at != from; at = previous[at]) result.push_back(at);
-  result.push_back(from);
-  std::reverse(result.begin(), result.end());
-  return result;
+  devils_engine::originator::edge_workspace topology;
+  std::vector<uint32_t> arcs;
+  devils_engine::originator::build_edge_adjacency(graph.nodes.size(),graph.edges.size(),
+    [&](size_t edge) { return std::array{graph.edges[edge].a,graph.edges[edge].b}; },
+    [](size_t,size_t,size_t) { return 1.0; }, [](size_t) { return true; },
+    [](size_t,size_t) {}, [&](size_t size) { arcs.resize(size); },
+    [&](size_t at,size_t node,double) { arcs[at]=uint32_t(node); },topology,"site graph route");
+  devils_engine::originator::breadth_workspace workspace;
+  devils_engine::originator::breadth_path(graph.nodes.size(), from, to,
+    [&](const uint32_t here, const auto& visit) {
+      for (size_t arc=topology.offsets[here];arc<topology.offsets[here+1];++arc) visit(arcs[arc]);
+    }, workspace, "site graph route");
+  return devils_engine::originator::reconstruct_path(workspace, from, to, "site graph route");
 }
 
 graph assemble(const site_decl& site, const size_t scale, const uint64_t seed) {
@@ -1531,17 +1526,13 @@ std::vector<projection::route_crossing> trace_plan_route(const graph& graph, con
   };
   const auto start = find_part({graph.route.front(), 0});
   const auto goal = find_part({graph.route.back(), 0});
-  std::vector<size_t> previous(plan.parts.size(), SIZE_MAX);
+  devils_engine::originator::breadth_workspace workspace;
   std::vector<devils_engine::originator::motif_boundary_segment> portals(plan.parts.size());
-  std::queue<size_t> pending;
-  previous[start] = start;
-  pending.push(start);
-  while (!pending.empty() && previous[goal] == SIZE_MAX) {
-    const auto here = pending.front();
-    pending.pop();
+  if (!devils_engine::originator::breadth_path(plan.parts.size(), uint32_t(start), uint32_t(goal),
+    [&](const uint32_t here, const auto& visit) {
     const auto from_index = route_index[plan.parts[here].ref.area];
     for (size_t next = 0; next < plan.parts.size(); ++next) {
-      if (previous[next] != SIZE_MAX || next == here) continue;
+      if (workspace.previous[next] != UINT32_MAX || next == here) continue;
       const auto to_index = route_index[plan.parts[next].ref.area];
       if (from_index == UINT32_MAX || to_index == UINT32_MAX ||
           (from_index != to_index && from_index + 1 != to_index)) continue;
@@ -1549,13 +1540,11 @@ std::vector<projection::route_crossing> trace_plan_route(const graph& graph, con
           !declared_crossings.contains(pair_of(plan.parts[here].ref, plan.parts[next].ref))) continue;
       const auto shared = shared_motif_boundary(plan.parts[here].outline, plan.parts[next].outline);
       if (shared.empty()) continue;
-      previous[next] = here;
-      portals[next] = shared.front();
-      pending.push(next);
+      if (visit(uint32_t(next))) portals[next] = shared.front();
     }
-  }
-  if (previous[goal] == SIZE_MAX)
+  }, workspace, "site continuous route"))
     throw std::runtime_error("site route: graph route has no continuous chain of convex parts");
+  const auto& previous = workspace.previous;
   std::vector<projection::route_crossing> result;
   for (auto at = goal; at != start; at = previous[at]) {
     const auto from = previous[at];

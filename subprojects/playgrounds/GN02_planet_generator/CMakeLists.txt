@@ -9,7 +9,6 @@ add_executable(GN02_planet_generator
   src/main.cpp
   src/names.cpp src/names.h
   src/package.cpp src/package.h
-  src/planet_tools.cpp src/planet_tools.h
   src/visual.cpp src/visual.h
   src/viewer.cpp src/viewer.h)
 
@@ -42,7 +41,9 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   # Постройка поперёк в две сотни километров на решётке из 16 тысяч клеток занимает полторы клетки, то
   # есть не существует, и проверка «острова годятся под провинцию» падала честно; на 32768 она падает
   # на части зёрен. Полное разрешение (262144 по умолчанию) остаётся ручным прогоном.
-  add_test(NAME GN02_planet_generator_verify
+  devils_add_test(NAME GN02_planet_generator_verify
     COMMAND GN02_planet_generator --verify --cells=49152 --provinces=450 --sea-zones=50 --cultures=24)
   set_tests_properties(GN02_planet_generator_verify PROPERTIES LABELS devils_engine)
 endif()
+
+target_link_libraries(GN02_planet_generator PRIVATE devils_engine::playground_cli devils_engine::playground_generator)

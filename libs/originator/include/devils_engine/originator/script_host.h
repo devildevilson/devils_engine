@@ -150,9 +150,11 @@ private:
   // причина описана в script_host.cpp рядом со свободными функциями биндингов.
   sol::object run_tool(const std::string& tool_name, const sol::table args, sol::this_state s);
   void run_program(const sol::table args);
+  void run_gather_program(const sol::table args);
   bool has_tool(const std::string& tool_name) const;
   queue_call declare_tool(const std::string& tool_name, const sol::table args);
   queue_call declare_program(const sol::table args);
+  queue_call declare_gather_program(const sol::table args);
   sol::object execute_queue(const sol::table self, const sol::table args, sol::this_state s);
 
   // Записывает измеренный вызов, если учёт включён. Отдельным методом, потому что мест вызова три
@@ -173,6 +175,8 @@ private:
   // Собирает объявленный вызов из таблицы аргументов lua; счётчик объявлений трогают declare_*.
   queue_call make_tool_call(const std::string& tool_name, const sol::table& args);
   queue_call make_script_call(const sol::table& args);
+  queue_call make_gather_call(const sol::table& args);
+  queue_call make_vector_call(const sol::table& args, size_t* temporary = nullptr);
   sol::table make_step_table(const step_context& context);
   const body_entry* find_body(const std::string_view& step_name) const noexcept;
   // Исполнение очереди, объявившей себя устройственной. Отсутствие исполнителя — громкий отказ.
@@ -184,11 +188,11 @@ private:
                                              const std::string_view& signature,
                                              const std::span<const field_ref>& inputs,
                                              const field_ref& output,
-                                             const script_program::result_kind kind);
+                                             const script_program::result_kind kind, uint32_t output_component = 0, uint32_t result_component = UINT32_MAX);
 
   const script_program& acquire_program(const std::string_view& program_name,
                                         const std::span<const field_ref>& inputs,
-                                        const script_program::result_kind kind);
+                                        const script_program::result_kind kind, size_t own_inputs = SIZE_MAX, const parameters* params = nullptr, std::span<const std::string> explicit_names = {});
 
   sol::state lua_;
   sol::environment env_;
@@ -222,17 +226,18 @@ private:
   uint64_t current_seed_ = 0;
   bool current_chunked_ = false;
   std::string current_step_;
+  generation_context* current_generation_ = nullptr;
 };
 
 class generator_chain;
 
-// LUA-ХОСТЫ ДЛЯ ЦЕПОЧКИ ГЕНЕРАТОРОВ: по одному на (поток, генератор), с телами и программами,
-// которые цепочка получила при постройке. Состояние lua однопоточно, а экземпляры собираются из
-// потоков хоста; поэтому хост живёт в потоке и строится при первой сборке генератора в нём.
+// LUA-ХОСТЫ ДЛЯ ЦЕПОЧКИ: по одному на (generation_context, генератор), создаются лениво.
+// Контекст используется эксклюзивно; между вызовами его можно передать другому worker.
 //
 // `add_tools` наполняет реестр инструментов хоста: нативные инструменты проекта добавляются здесь
-// же, рядом со стандартными наборами. Хосты живут до конца своего потока; источник, переживший
-// цепочку, — ошибка вызывающего.
+// же, рядом со стандартными наборами. context.release() уничтожает Lua hosts; implicit contexts
+// принадлежат chain и освобождаются chain.release_contexts() после drain. Сам источник и вызовы
+// не должны пережить chain; внешний контекст следует освободить до удаления chain.
 invoker_source make_chain_invokers(const generator_chain& chain, std::function<void(tool_registry&)> add_tools,
                                    thread::atomic_pool* pool = nullptr);
 

@@ -1,3 +1,5 @@
+#include <exception>
+#include "devils_engine/playground/cli.h"
 #include "adventure.h"
 #include "local_structure.h"
 #include "surface.h"
@@ -22,8 +24,8 @@
 #include <string>
 #include <string_view>
 
-#include "memory.h"
-#include "viewer.h"
+#include "devils_engine/playground/world_memory.h"
+#include "devils_engine/playground/chunk_viewer.h"
 #include "devils_engine/utils/prng.h"
 
 namespace {
@@ -65,112 +67,53 @@ struct options {
   float fog = 0.0f, fog_density = 0.012f, lamp = 1.8f, ambient = 1.5f;
 };
 
-template <typename Number>
-bool parse_number(const std::string_view source, Number& target) {
-  const auto [end, error] = std::from_chars(source.data(), source.data() + source.size(), target);
-  return error == std::errc() && end == source.data() + source.size();
-}
 
-bool parse(const int argc, char** argv, options& result) {
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    if (arg == "--help") {
-      std::cout << "GN09_local_adventure_viewer [--seed=N] [--radius=R] [--frames=N] "
-                   "[--view=0..3] [--start-edge=N|--start-site=N|--start-cave=N] "
-                   "[--site-exterior|--site-roof|--start-exit=0..1] "
-                   "[--start-hall=N [--hall-entrance|--hall-niche=K]] [--window=H,V] "
-                   "[--start-sector=X,Z] [--dump=PATH] "
-                   "[--surface | --fog=M --fog-density=D --lamp=S --ambient=A] [--lines=0..2] "
-                   "[--grid] [--validation]\n";
-      return false;
-    }
-    if (arg == "--grid") { result.grid = true; continue; }
-    if (arg == "--validation") { result.validation = true; continue; }
-    if (arg == "--site-exterior") { result.site_exterior = true; continue; }
-    if (arg == "--site-roof") { result.site_roof = true; continue; }
-    if (arg == "--site-window") { result.site_window = true; continue; }
-    if (arg == "--cave-hub") { result.cave_hub = true; continue; }
-    if (arg == "--cave-lair") { result.cave_lair = true; continue; }
-    if (arg == "--hall-entrance") { result.hall_entrance = true; continue; }
-    if (arg == "--surface") { result.surface = true; continue; }
-    if (arg.starts_with("--lines=") && parse_number(arg.substr(8), result.lines) &&
-        result.lines <= 2) continue;
-    if (arg.starts_with("--fog=") && parse_number(arg.substr(6), result.fog) &&
-        result.fog >= 0.0f) continue;
-    if (arg.starts_with("--fog-density=") && parse_number(arg.substr(14), result.fog_density) &&
-        result.fog_density >= 0.0f) continue;
-    if (arg.starts_with("--lamp=") && parse_number(arg.substr(7), result.lamp) &&
-        result.lamp >= 0.0f) continue;
-    if (arg.starts_with("--ambient=") && parse_number(arg.substr(10), result.ambient) &&
-        result.ambient >= 0.0f) continue;
-    if (arg.starts_with("--start-sector=")) {
-      const std::string_view pair = arg.substr(15);
-      const size_t comma = pair.find(',');
-      if (comma != std::string_view::npos &&
-          parse_number(pair.substr(0, comma), result.sector_x) &&
-          parse_number(pair.substr(comma + 1), result.sector_z)) continue;
-    }
-    if (arg.starts_with("--window=")) {
-      const std::string_view pair = arg.substr(9);
-      const size_t comma = pair.find(',');
-      if (comma != std::string_view::npos &&
-          parse_number(pair.substr(0, comma), result.window_horizontal) &&
-          parse_number(pair.substr(comma + 1), result.window_vertical) &&
-          result.window_horizontal >= 1 && result.window_horizontal <= 16 &&
-          result.window_vertical >= 1 && result.window_vertical <= 16) continue;
-    }
-    if (arg.starts_with("--seed=") && parse_number(arg.substr(7), result.seed)) continue;
-    if (arg.starts_with("--mods=")) { gn09::set_world_mods(arg.substr(7)); continue; }
-    if (arg.starts_with("--frames=") && parse_number(arg.substr(9), result.frames)) continue;
-    if (arg.starts_with("--flight=")) { result.flight = std::stod(std::string(arg.substr(9))); continue; }
-    if (arg.starts_with("--workers=") && parse_number(arg.substr(10), result.workers) && result.workers >= 1) continue;
-    if (arg.starts_with("--prefetch=") && parse_number(arg.substr(11), result.prefetch)) continue;
-    if (arg.starts_with("--guard=") && parse_number(arg.substr(8), result.guard)) continue;
-    if (arg.starts_with("--view=") && parse_number(arg.substr(7), result.mode) &&
-        result.mode <= 3) continue;
-    uint32_t edge = 0;
-    if (arg.starts_with("--start-edge=") && parse_number(arg.substr(13), edge)) {
-      result.start_edge = edge;
-      continue;
-    }
-    if (arg.starts_with("--start-tunnel=") && parse_number(arg.substr(15), edge)) {
-      result.start_tunnel = edge;
-      continue;
-    }
-    if (arg.starts_with("--hall-outpost=") && parse_number(arg.substr(15), edge)) {
-      result.hall_outpost = edge;
-      continue;
-    }
-    if (arg.starts_with("--start-site=") && parse_number(arg.substr(13), edge)) {
-      result.start_site = edge;
-      continue;
-    }
-    if (arg.starts_with("--start-cave=") && parse_number(arg.substr(13), edge)) {
-      result.start_cave = edge;
-      continue;
-    }
-    if (arg.starts_with("--hall-niche=") && parse_number(arg.substr(13), edge)) {
-      result.hall_niche = edge;
-      continue;
-    }
-    if (arg.starts_with("--start-hall=") && parse_number(arg.substr(13), edge)) {
-      result.start_hall = edge;
-      continue;
-    }
-    if (arg.starts_with("--start-exit=") && parse_number(arg.substr(13), edge)) {
-      result.start_exit = edge;
-      continue;
-    }
-    if (arg.starts_with("--radius=") && parse_number(arg.substr(9), result.radius) &&
-        std::isfinite(result.radius) && result.radius >= 0.5 && result.radius <= 3.0) continue;
-    if (arg.starts_with("--dump=") && arg.size() > 7) {
-      result.dump = arg.substr(7);
-      continue;
-    }
-    std::cerr << "unknown or invalid option: " << arg << '\n';
-    return false;
-  }
-  return true;
+
+std::optional<int> parse(const int argc, char** argv, options& result) {
+  CLI::App app{"GN09 local adventure viewer"};
+  app.option_defaults()->always_capture_default();
+  app.add_flag("--grid", result.grid, "grid");
+  app.add_flag("--validation", result.validation, "validation");
+  app.add_flag("--site-exterior", result.site_exterior, "site-exterior");
+  app.add_flag("--site-roof", result.site_roof, "site-roof");
+  app.add_flag("--site-window", result.site_window, "site-window");
+  app.add_flag("--cave-hub", result.cave_hub, "cave-hub");
+  app.add_flag("--cave-lair", result.cave_lair, "cave-lair");
+  app.add_flag("--hall-entrance", result.hall_entrance, "hall-entrance");
+  app.add_flag("--surface", result.surface, "surface");
+  app.add_option("--seed", result.seed, "World seed");
+  app.add_option("--radius", result.radius, "Clearance radius")->check(devils_engine::playground::finite_number)->check(CLI::Range(0.5, 3.0));
+  app.add_option("--frames", result.frames, "Frame limit");
+  app.add_option("--flight", result.flight, "Flight speed")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+  app.add_option("--workers", result.workers, "Workers")->check(CLI::PositiveNumber);
+  app.add_option("--prefetch", result.prefetch, "Prefetch layers");
+  app.add_option("--guard", result.guard, "Guard radius");
+  app.add_option("--view", result.mode, "Debug view")->check(CLI::Range(0, 3));
+  app.add_option("--lines", result.lines, "Graph lines")->check(CLI::Range(0, 2));
+  app.add_option("--fog", result.fog, "Fog")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+  app.add_option("--fog-density", result.fog_density, "Fog density")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+  app.add_option("--lamp", result.lamp, "Lamp")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+  app.add_option("--ambient", result.ambient, "Ambient")->check(devils_engine::playground::finite_number)->check(CLI::NonNegativeNumber);
+  app.add_option("--dump", result.dump, "Frame output");
+  app.add_option("--start-edge", result.start_edge, "Start view index");
+  app.add_option("--start-tunnel", result.start_tunnel, "Start view index");
+  app.add_option("--hall-outpost", result.hall_outpost, "Start view index");
+  app.add_option("--start-site", result.start_site, "Start view index");
+  app.add_option("--start-cave", result.start_cave, "Start view index");
+  app.add_option("--hall-niche", result.hall_niche, "Start view index");
+  app.add_option("--start-hall", result.start_hall, "Start view index");
+  app.add_option("--start-exit", result.start_exit, "Start view index");
+  std::string mods;
+  app.add_option("--mods", mods, "Ordered mod folders");
+  std::array<int, 2> sector{result.sector_x, result.sector_z};
+  std::array<int, 2> window{result.window_horizontal, result.window_vertical};
+  devils_engine::playground::add_tuple(app, "--start-sector", sector, ',');
+  devils_engine::playground::add_tuple(app, "--window", window, ',', [](const auto& v) { return v[0] >= 1 && v[0] <= 16 && v[1] >= 1 && v[1] <= 16; });
+  if (auto code = devils_engine::playground::parse_cli(app, argc, argv)) return code;
+  result.sector_x = sector[0]; result.sector_z = sector[1];
+  result.window_horizontal = window[0]; result.window_vertical = window[1];
+  if (app.count("--mods")) gn09::set_world_mods(mods);
+  return std::nullopt;
 }
 
 // ГРАФ МАРШРУТОВ ТОНКИМИ ЛИНИЯМИ во viewer: рёбра, крестики узлов по теме, залы с петлёй
@@ -324,9 +267,9 @@ devils_engine::gn03::factory_builder make_builder(const double radius) {
 
 } // namespace
 
-int main(const int argc, char** argv) {
+int main(const int argc, char** argv) try {
   options cli;
-  if (!parse(argc, argv, cli)) return 2;
+  if (auto code = parse(argc, argv, cli)) return *code;
   const gn09::adventure start_world = gn09::generate(cli.seed,
     {cli.sector_x, cli.sector_z, cli.sector_x + 2, cli.sector_z + 2}, cli.radius);
   if (cli.start_edge && *cli.start_edge >= start_world.route.edges.size()) {
@@ -659,4 +602,7 @@ int main(const int argc, char** argv) {
   });
 #endif
   return devils_engine::gn03::run_viewer(viewer, make_builder(cli.radius));
+} catch (const std::exception& error) {
+  std::cerr << "GN09 viewer: " << error.what() << '\n';
+  return 1;
 }

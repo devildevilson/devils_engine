@@ -19,7 +19,6 @@ return function(step)
   local season_b = cells:field("season_b")
 
   local insolation = {
-    tilt = p.axial_tilt,
     equator_temperature = p.equator_temperature,
     pole_temperature = p.pole_temperature,
     exponent = p.insolation_exponent,
@@ -28,15 +27,17 @@ return function(step)
     ocean_reference = p.ocean_reference / spacing,
   }
 
-  insolation.season = 1.0
-  originator.insolation{
+  insolation.declination = p.axial_tilt * math.pi / 180.0
+  originator.run_script{
+    program = step.programs.insolation,
     inputs = { lat_sin, height, ocean_distance },
     outputs = { season_a },
     params = insolation,
   }
 
-  insolation.season = -1.0
-  originator.insolation{
+  insolation.declination = p.axial_tilt * math.pi / 180.0 * -1.0
+  originator.run_script{
+    program = step.programs.insolation,
     inputs = { lat_sin, height, ocean_distance },
     outputs = { season_b },
     params = insolation,

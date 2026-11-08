@@ -1,3 +1,5 @@
+#include "devils_engine/utils/log.h"
+#include "devils_engine/utils/numeric.h"
 #include <cmath>
 #include <limits>
 
@@ -157,6 +159,10 @@ graphics_base::~graphics_base() noexcept {
   if (cache != VK_NULL_HANDLE) {
     dev.destroy(cache);
   }
+}
+
+gpu_memory_statistics graphics_base::memory_statistics() const {
+  return read_memory_statistics(allocator, physical_device);
 }
 
 void graphics_base::create_allocator(const size_t preferred_heap_block) {

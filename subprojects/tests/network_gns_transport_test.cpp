@@ -1,3 +1,4 @@
+#include <atomic>
 #include <devils_engine/network/gns_transport.h>
 #include <steam/steamnetworkingsockets.h>
 #include <doctest/doctest.h>
@@ -678,4 +679,19 @@ TEST_CASE("network GNS real UDP high priority message overtakes fragmented bulk"
                      5s));
   CHECK(received[0].lane() == 2);
   CHECK(std::ranges::equal(received[0].payload(), bulk));
+}
+
+TEST_CASE("network GNS empty dispatcher pumps serialize across callers without TLS") {
+  runtime native;
+  REQUIRE(native.initialized);
+  // No transports or native events: exercise only process-wide pump serialization.
+  std::array<std::jthread, 8> workers;
+  std::atomic<size_t> completed = 0;
+  for (auto& worker : workers) worker = std::jthread([&] {
+    net::gns_dispatcher dispatcher(*SteamNetworkingSockets(), *SteamNetworkingUtils(), 1);
+    for (size_t i = 0; i < 100; ++i) dispatcher.pump();
+    ++completed;
+  });
+  for (auto& worker : workers) worker.join();
+  CHECK(completed == workers.size());
 }

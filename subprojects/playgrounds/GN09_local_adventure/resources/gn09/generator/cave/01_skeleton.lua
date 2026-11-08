@@ -343,13 +343,7 @@ return function(step)
 
   -- ---------------------------------------------------------------------------------------- цели
   local function path(i, j)
-    -- Длина пути по дереву между узлами i и j.
-    local up = {}
-    local x, d = i, 0.0
-    while x do up[x] = d; d = d + (tree[x].span or 0.0); x = tree[x].parent end
-    x, d = j, 0.0
-    while x and up[x] == nil do d = d + (tree[x].span or 0.0); x = tree[x].parent end
-    return d + up[x]
+    return originator.algorithms.tree_distance(tree,i,j)
   end
 
   -- ---------------------------------------------------------------------------------------- петли

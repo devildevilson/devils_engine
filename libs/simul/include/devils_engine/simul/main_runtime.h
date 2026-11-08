@@ -1,6 +1,9 @@
 #ifndef DEVILS_ENGINE_SIMUL_MAIN_RUNTIME_H
 #define DEVILS_ENGINE_SIMUL_MAIN_RUNTIME_H
 
+#include "devils_engine/utils/log.h"
+#include "devils_engine/utils/platform.h"
+
 // Shared bootstrap helpers for project main loops and engine registries.
 
 #include <algorithm>
@@ -26,6 +29,7 @@
 #include <devils_engine/painter/render_config_source.h>
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/simul/boot_config.h>
+#include <devils_engine/simul/configuration_layers.h>
 #include <devils_engine/simul/render_config.h>
 #include <devils_engine/simul/systems.h>
 #include <devils_engine/thread/atomic_pool.h>
@@ -45,6 +49,8 @@ struct standard_runtime_bootstrap {
   Settings default_settings;
   PersistedSettings persisted_settings;
   PersistedSettings default_persisted_settings;
+  runtime_debug_settings<Settings> persisted_debug;
+  runtime_debug_settings<Settings> default_persisted_debug;
 
   input::bindings_config bindings;
   input::bindings_config default_bindings;
@@ -67,6 +73,8 @@ void export_persisted_settings(Bootstrap& boot) {
   } else {
     boot.export_persisted_settings();
   }
+  boot.persisted_debug.metrics = boot.settings.metrics;
+  boot.persisted_debug.logging = boot.settings.logging;
 }
 
 template <typename Bootstrap>
@@ -79,6 +87,8 @@ void import_persisted_settings(Bootstrap& boot) {
   } else {
     boot.import_persisted_settings();
   }
+  boot.settings.metrics = boot.persisted_debug.metrics;
+  boot.settings.logging = boot.persisted_debug.logging;
 }
 
 size_t frame_time_from_fps(uint32_t fps) noexcept;
@@ -95,6 +105,11 @@ std::string settings_path(const Bootstrap& boot) {
     return boot.engine.settings_file;
   }
   return utils::project_folder() + boot.engine.settings_file;
+}
+
+template <typename Bootstrap>
+std::string debug_settings_path(const Bootstrap& boot) {
+  return project_path(boot.engine.debug_settings_file.empty() ? "debug.tavl" : boot.engine.debug_settings_file);
 }
 
 template <typename Bootstrap>
@@ -205,6 +220,8 @@ void sync_engine_boot_config(engine_boot_config& engine, const Settings& setting
   }
   engine.render_fps = settings.simulation.render_fps;
   engine.sound_fps = settings.simulation.sound_fps;
+  if constexpr (requires { settings.simulation.sound_mixing; }) engine.sound_mixing = settings.simulation.sound_mixing;
+  if constexpr (requires { settings.simulation.sound_output_buffer_ms; }) engine.sound_output_buffer_ms = settings.simulation.sound_output_buffer_ms;
   engine.assets_fps = settings.simulation.assets_fps;
   engine.worker_threads_reserved = settings.simulation.worker_threads_reserved;
   engine.min_worker_threads = settings.simulation.min_worker_threads;
@@ -253,6 +270,15 @@ template <typename Bootstrap>
 config_file_status deserialize_settings_file(Bootstrap& boot, const std::string& path) {
   const auto status = load_tavl_file(
     path, boot.default_persisted_settings, boot.persisted_settings, "settings");
+  const auto debug_path = debug_settings_path(boot);
+  if (!file_io::exists(debug_path)) {
+    // Preserve logging/metrics from the former combined user settings before splitting it.
+    load_tavl_file(path, boot.default_persisted_debug, boot.persisted_debug, "legacy debug settings");
+    if (write_tavl_file(boot.persisted_debug, debug_path, "debug settings") && status == config_file_status::loaded)
+      write_tavl_file(boot.persisted_settings, path, "settings migration");
+  } else {
+    load_tavl_file(debug_path, boot.default_persisted_debug, boot.persisted_debug, "debug settings");
+  }
   import_persisted_settings(boot);
   sync_engine_boot_config(boot);
   return status;
@@ -291,8 +317,9 @@ bool save_settings(Bootstrap& boot) {
   export_persisted_settings(boot);
   const bool settings_written = write_tavl_file(
     boot.persisted_settings, settings_path(boot), "settings");
+  const bool debug_written = write_tavl_file(boot.persisted_debug, debug_settings_path(boot), "debug settings");
   const bool bindings_written = save_key_bindings(boot);
-  return settings_written && bindings_written;
+  return settings_written && debug_written && bindings_written;
 }
 
 template <typename Bootstrap>
@@ -350,17 +377,19 @@ void init_standard_bootstrap(Bootstrap& boot) {
 
   preload_render_config_sources(*boot.engine_resources);
 
-  const auto config_path = utils::project_folder() + boot.engine.resource_root + boot.engine.engine_module + "/config/app.tavl";
-  if (auto* cfg_res = boot.engine_resources->template get<AppConfigResource>(boot.engine.app_config_id)) {
-    cfg_res->load(utils::safe_handle_t{});
-    boot.settings = cfg_res->config();
-  } else {
-    utils::warn("engine registry: '{}' not found, using app_config defaults", boot.engine.app_config_id);
+  for (const auto& id : {boot.engine.engine_config_id, boot.engine.project_config_id, boot.engine.debug_config_id}) {
+    if (auto* cfg_res = boot.engine_resources->template get<AppConfigResource>(id)) {
+      cfg_res->load(utils::safe_handle_t{});
+      cfg_res->apply_to(boot.settings);
+    } else {
+      utils::warn("engine registry: '{}' not found, using configuration defaults", id);
+    }
   }
 
   boot.default_settings = boot.settings;
   export_persisted_settings(boot);
   boot.default_persisted_settings = boot.persisted_settings;
+  boot.default_persisted_debug = boot.persisted_debug;
   boot.default_bindings = standard_key_bindings();
 
   sync_engine_boot_config(boot);
@@ -404,7 +433,7 @@ void init_standard_bootstrap(Bootstrap& boot) {
   utils::info("Using cpu '{}', cores: {}, worker threads: {}", cpu_name, hw_threads, thread_count);
   DE_LOG(catalogue::log_domain::main, flow,
          "Loaded app config '{}': window {}x{}, render config '{}'",
-         config_path,
+         boot.engine.engine_config_id,
          boot.settings.window.width,
          boot.settings.window.height,
          boot.settings.render.config_folder);
@@ -517,6 +546,10 @@ auto make_standard_workers(Bootstrap& boot, std::string app_name) {
 
   if (boot.engine.sound_enabled) {
     auto sound = std::make_unique<SoundType>(frame_time_from_fps(boot.engine.sound_fps));
+    if constexpr (requires { sound->set_mixing_mode(boot.engine.sound_mixing); })
+      sound->set_mixing_mode(boot.engine.sound_mixing);
+    if constexpr (requires { sound->set_output_buffer_seconds(0.05); })
+      sound->set_output_buffer_seconds(double(boot.engine.sound_output_buffer_ms) / 1000.0);
     const auto wait = start_gap(*sound);
     workers.add(std::move(sound), wait, 2);
   } else {

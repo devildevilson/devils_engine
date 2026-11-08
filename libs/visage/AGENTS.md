@@ -21,8 +21,11 @@ Lua/Nuklear UI host и render output. `system.h`/`src/visage/system.cpp` — sta
 
 ## Проверка
 
+Public headers: `devils_public_headers`; `public_link_visage` линкует только
+`devils_engine::visage` и проверяет его usage requirements без aggregate target.
+
 Бюджеты/host проверяются через `simul_lifecycle_test` и профильные consumer smokes;
-font/asset preparation — `painter_shader_prepare_test`. Отдельного visage test executable сейчас нет.
+font/asset preparation — `painter_shader_prepare_test`. Отдельного функционального UI test executable сейчас нет.
 Изменение nk output/шрифтов требует визуального прогона UI; наличие headless tests его не заменяет.
 
 Собирать из корня: `cmake --build build-release --target <test_target> -j 8`, затем
@@ -32,6 +35,5 @@ font/asset preparation — `painter_shader_prepare_test`. Отдельного v
 ## Память и задачи
 
 Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
-[указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
-хронологию экспериментов — в отдельном audit/history.
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
+История разработки не является обязательной памятью проекта.

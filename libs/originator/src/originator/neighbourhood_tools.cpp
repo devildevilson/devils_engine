@@ -1,6 +1,10 @@
+#include "neighbourhood_device.h"
 #include "devils_engine/originator/neighbourhood.h"
+#include "devils_engine/originator/graph_walk.h"
 
 #include <algorithm>
+#include <array>
+#include <type_traits>
 #include <cmath>
 #include <queue>
 #include <vector>
@@ -24,7 +28,7 @@ namespace devils_engine {
 namespace originator {
 
 neighbourhood resolve_neighbourhood(const tool_call& call, const size_t offsets_input, const field_ref& shaped,
-                                    const size_t count) {
+                                    const size_t count, const bool weighted) {
   if (call.has_input(offsets_input) != call.has_input(offsets_input + 1)) {
     utils::error{}("originator step '{}': {} got CSR offsets without targets or the other way round", call.step_name,
                    call.tool_name);
@@ -33,11 +37,11 @@ neighbourhood resolve_neighbourhood(const tool_call& call, const size_t offsets_
     csr_neighbourhood csr;
     csr.offsets = call.input(offsets_input).read();
     csr.arcs = call.input(offsets_input + 1).read();
-    if (call.has_input(offsets_input + 2)) csr.weights = call.input(offsets_input + 2).read();
+    if (weighted && call.has_input(offsets_input + 2)) csr.weights = call.input(offsets_input + 2).read();
     csr.count = count;
-    if (csr.offsets.count() < count + 1) {
-      utils::error{}("originator step '{}': {} got {} CSR offsets for {} elements (needs one more)", call.step_name,
-                     call.tool_name, csr.offsets.count(), count);
+    if (csr.offsets.count() <= call.range_end) {
+      utils::error{}("originator step '{}': {} got {} CSR offsets for range ending at {} (needs one more)", call.step_name,
+                     call.tool_name, csr.offsets.count(), call.range_end);
     }
     return csr;
   }
@@ -167,64 +171,96 @@ void vote_range(const neighbourhood& around, const const_field_accessor& labels,
   }, around);
 }
 
+size_t components_whole(const neighbourhood& around, const const_field_accessor& mask,
+                        const const_field_accessor& existing, const field_accessor& target,
+                        const size_t count, const size_t minimum, const uint32_t label_base) {
+  if (count > UINT32_MAX) utils::error{}("originator components: node count exceeds uint32");
+  std::vector<uint32_t> raw(count, 0), stack;
+  std::vector<size_t> sizes;
+  stack.reserve(count);
+  sizes.reserve(count);
+  std::visit([&](const auto& form) {
+    for (size_t root = 0; root < count; ++root) {
+      if (raw[root] || mask.get(root) == 0 || (existing.valid() && existing.get(root) != 0)) continue;
+      const auto label = uint32_t(sizes.size() + 1);
+      sizes.push_back(0);
+      walk_component(uint32_t(root), [&](size_t node, auto visit) { form.each(node, visit); },
+        [&](size_t node) {
+          if (node >= count || raw[node] || mask.get(node) == 0 || (existing.valid() && existing.get(node) != 0)) return false;
+          raw[node] = label;
+          ++sizes.back();
+          return true;
+        }, stack);
+    }
+  }, around);
+  std::vector<uint32_t> renumber(sizes.size() + 1, 0);
+  size_t kept = 0;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    if (sizes[i] < minimum) continue;
+    if (uint64_t(label_base) + ++kept > UINT32_MAX) utils::error{}("originator components: label domain exceeds uint32");
+    renumber[i + 1] = uint32_t(label_base + kept);
+  }
+  for (size_t node = 0; node < count; ++node) {
+    const double before = existing.valid() ? existing.get(node) : 0.0;
+    target.set(node, before != 0 ? before : double(renumber[raw[node]]));
+  }
+  return kept;
+}
+
+size_t neighbourhood_arc_bound(const neighbourhood& around, const size_t count) {
+  return std::visit([&](const auto& form) -> size_t {
+    using type = std::decay_t<decltype(form)>;
+    if constexpr (std::is_same_v<type, csr_neighbourhood>) return form.arcs.count();
+    else {
+      const size_t dimensions = 1 + size_t(form.extent.y > 1) + size_t(form.extent.z > 1);
+      size_t neighbours = 0;
+      if (form.form == stencil_neighbourhood::shape::cross) neighbours = dimensions * 2 * form.radius;
+      else {
+        neighbours = 1;
+        for (size_t axis = 0; axis < dimensions; ++axis)
+          neighbours = walk_size_multiply(neighbours, 2 * form.radius + 1, "stencil");
+        --neighbours;
+      }
+      return walk_size_multiply(count, neighbours, "stencil");
+    }
+  }, around);
+}
+
+size_t flood_footprint(const neighbourhood& around, const size_t count) {
+  return walk_footprint(count, neighbourhood_arc_bound(around, count));
+}
+
 void flood_whole(const neighbourhood& around, const const_field_accessor& seeds, const const_field_accessor& costs,
                  const const_field_accessor& passable, const field_accessor& label_out,
                  const field_accessor& distance_out, const size_t count, const double unreached,
                  const size_t capacity, const std::string_view& step_name) {
-  struct entry {
-    double distance = 0.0;
-    uint32_t label = 0;
-    uint32_t cell = 0;
-    // priority_queue отдаёт МАКСИМУМ, поэтому сравнение перевёрнуто: ближе — «больше».
-    bool operator<(const entry& other) const noexcept {
-      if (distance != other.distance) return distance > other.distance;
-      if (label != other.label) return label > other.label;
-      return cell > other.cell;
-    }
-  };
-
-  std::priority_queue<entry> queue;
-  std::vector<uint32_t> assigned(count, 0);
-  std::vector<uint32_t> used;
-  const bool open_everywhere = !passable.valid();
-
+  std::vector<walk_seed> sources;
+  sources.reserve(count);
   for (size_t i = 0; i < count; ++i) {
     label_out.set(i, 0.0);
     distance_out.set(i, unreached);
-    const auto seed = uint32_t(seeds.get(i));
-    if (seed != 0 && (open_everywhere || passable.get(i) != 0.0)) {
-      queue.push(entry{0.0, seed, uint32_t(i)});
-      if (used.size() <= seed) used.resize(seed + 1, 0);
-    }
+    const double raw = seeds.get(i);
+    if (!std::isfinite(raw) || raw < 0 || raw > double(UINT32_MAX) || std::floor(raw) != raw)
+      utils::error{}("originator step '{}': flood label {} at {} is not uint32", step_name, raw, i);
+    const auto label = uint32_t(raw);
+    if (label) sources.push_back({uint32_t(i), label});
   }
-
+  walk_workspace workspace;
   std::visit([&](const auto& form) {
-    const bool weighted = form.weighted();
-    while (!queue.empty()) {
-      const entry current = queue.top();
-      queue.pop();
-      if (assigned[current.cell] != 0) continue;
-      if (used.size() <= current.label) used.resize(size_t(current.label) + 1, 0);
-      // Метка, выбравшая свой лимит, дальше не растёт — но клетка при этом НЕ занимается: её ещё может
-      // забрать другая метка, у которой лимит остался.
-      if (capacity != 0 && used[current.label] >= capacity) continue;
-
-      assigned[current.cell] = current.label;
-      used[current.label] += 1;
-      label_out.set(current.cell, double(current.label));
-      distance_out.set(current.cell, current.distance);
-
-      form.each(current.cell, [&](const size_t other, const double arc) {
-        if (other >= count || assigned[other] != 0 || (!open_everywhere && passable.get(other) == 0.0)) return;
+    const size_t arcs = neighbourhood_arc_bound(around, count);
+    const auto each = [&](const size_t node, auto visit) {
+      form.each(node, [&](const size_t other, const double arc) {
         double step = costs.valid() ? costs.get(other) : 0.0;
-        if (weighted) step += arc;
-        if (step < 0.0) {
-          // Отрицательная стоимость превращает заливку в бесконечный цикл: это ошибка данных.
-          utils::error{}("originator step '{}': flood got a negative step {} into element {}", step_name, step, other);
-        }
-        queue.push(entry{current.distance + step, current.label, uint32_t(other)});
+        if (form.weighted()) step += arc;
+        visit(other, step);
       });
-    }
+    };
+    walk_distances(count, arcs, sources, each,
+      [&](const size_t node) { return !passable.valid() || passable.get(node) != 0.0; },
+      [&](const size_t node, const uint32_t label, const double distance, const uint32_t) {
+        label_out.set(node, double(label));
+        distance_out.set(node, distance);
+      }, capacity, workspace, step_name);
   }, around);
 }
 
@@ -252,6 +288,18 @@ void tool_vote(const tool_call& call, const size_t begin, const size_t end) {
              end, call.params->number("threshold", 0.0));
 }
 
+void tool_components(const tool_call& call, const size_t begin, const size_t end) {
+  if (begin != 0) utils::error{}("originator step '{}': components walks the whole neighbourhood", call.step_name);
+  const auto around = resolve_neighbourhood(call, 1, call.output(0), end, false);
+  const auto base = call.params->number("label_base", 0);
+  if (!std::isfinite(base) || base < 0 || base > double(UINT32_MAX) || std::floor(base) != base)
+    utils::error{}("originator step '{}': components label_base {} is not uint32", call.step_name, base);
+  const auto count = components_whole(around, call.input(0).read(),
+    call.has_input(3) ? call.input(3).read() : const_field_accessor{}, call.output(0).write(), end,
+    size_t(std::max<int64_t>(0, call.params->integer("min_size", 0))), uint32_t(base));
+  if (call.has_output(1)) call.output(1).write().set(0, double(count));
+}
+
 void tool_flood(const tool_call& call, const size_t begin, const size_t end) {
   if (begin != 0) {
     utils::error{}("originator step '{}': flood walks the WHOLE neighbourhood, its range must start at 0, got [{}, {})",
@@ -277,62 +325,61 @@ void tool_edge_csr(const tool_call& call, const size_t, const size_t) {
     utils::error{}("originator step '{}': edge_csr of {} nodes and {} edges does not fit its buffers", call.step_name,
                    nodes, edges);
   }
-  std::vector<size_t> degree(nodes + 1, 0);
-  for (size_t e = 0; e < edges; ++e) {
-    const auto a = size_t(edge_a.get(e)), b = size_t(edge_b.get(e));
-    if (a >= nodes || b >= nodes) {
-      utils::error{}("originator step '{}': edge_csr edge {} joins {}-{} beyond the {} nodes", call.step_name, e, a, b,
-                     nodes);
-    }
-    ++degree[a + 1];
-    ++degree[b + 1];
-  }
-  for (size_t i = 0; i < nodes; ++i) degree[i + 1] += degree[i];
-  for (size_t i = 0; i <= nodes; ++i) offsets.set(i, double(degree[i]));
-  std::vector<size_t> fill(degree.begin(), degree.end() - 1);
   auto lengths = weighted ? call.output(2).write() : field_accessor{};
-  for (size_t e = 0; e < edges; ++e) {
-    const auto a = size_t(edge_a.get(e)), b = size_t(edge_b.get(e));
-    double length = 0.0;
-    if (weighted) {
-      for (uint32_t c = 0; c < std::min<uint32_t>(positions.type().components, 3); ++c) {
-        const double d = positions.get(a, c) - positions.get(b, c);
-        length += d * d;
+  edge_workspace scratch;
+  build_edge_adjacency(nodes, edges,
+    [&](size_t e) { return std::array{size_t(edge_a.get(e)), size_t(edge_b.get(e))}; },
+    [&](size_t, size_t a, size_t b) {
+      double length = 0.0;
+      if (weighted) {
+        for (uint32_t c = 0; c < std::min<uint32_t>(positions.type().components, 3); ++c) {
+          const double d = positions.get(a, c) - positions.get(b, c);
+          length += d * d;
+        }
       }
-      length = std::sqrt(length);
-    }
-    arcs.set(fill[a], double(b));
-    if (weighted) lengths.set(fill[a], length);
-    ++fill[a];
-    arcs.set(fill[b], double(a));
-    if (weighted) lengths.set(fill[b], length);
-    ++fill[b];
-  }
+      return std::sqrt(length);
+    }, [](size_t) { return true; },
+    [&](size_t node, size_t offset) { offsets.set(node, double(offset)); },
+    [](size_t) {},
+    [&](size_t index, size_t node, double length) {
+      arcs.set(index, double(node));
+      if (weighted) lengths.set(index, length);
+    }, scratch, call.step_name);
+
 }
 
 } // namespace
 
 void tool_registry::add_neighbourhood_tools() {
   add(tool_description{.name = "blur", .shape = aperture::gather, .input_count = 4, .optional_inputs = 3,
-                       .output_count = 1, .body = tool_blur, .footprint = no_temporary_memory});
+                       .output_count = 1, .body = tool_blur, .footprint = no_temporary_memory,
+                       .device_body = detail::csr_device_body("blur",0,1,2,3,-1,true), .device_params = {{"self_weight",1.0},{"neighbour_weight",1.0}},
+                       .device_min_inputs = 3, .device_integer_ready = true});
   add(tool_description{.name = "frontier", .shape = aperture::gather, .input_count = 3, .optional_inputs = 2,
-                       .output_count = 1, .body = tool_frontier, .footprint = no_temporary_memory});
+                       .output_count = 1, .body = tool_frontier, .footprint = no_temporary_memory,
+                       .device_body = detail::csr_device_body("frontier",0,1,2), .device_params = {{"ignore",-1.0}},
+                       .device_min_inputs = 3, .device_integer_ready = true});
   add(tool_description{.name = "slope", .shape = aperture::gather, .input_count = 3, .optional_inputs = 2,
-                       .output_count = 1, .body = tool_slope, .footprint = no_temporary_memory});
+                       .output_count = 1, .body = tool_slope, .footprint = no_temporary_memory,
+                       .device_body = detail::csr_device_body("slope",0,1,2), .device_params = {},
+                       .device_min_inputs = 3, .device_integer_ready = true});
   add(tool_description{.name = "vote", .shape = aperture::gather, .input_count = 5, .optional_inputs = 2,
-                       .output_count = 1, .body = tool_vote, .footprint = no_temporary_memory});
+                       .output_count = 1, .body = tool_vote, .footprint = no_temporary_memory,
+                       .device_body = detail::csr_device_body("vote",0,3,4,1,2), .device_params = {{"threshold",0.0}},
+                       .device_min_inputs = 5, .device_integer_ready = true});
   add(tool_description{.name = "flood", .shape = aperture::sequential, .input_count = 6, .optional_inputs = 3,
                        .output_count = 2, .body = tool_flood,
-                       // Очередь не длиннее числа дуг (у трафарета — элементов на число соседей) плюс отметка
-                       // занятости: ВЕРХНЯЯ оценка.
                        .footprint = [](const tool_call& call) {
-                         const size_t count = call.range_count();
-                         const size_t arcs = call.has_input(4) ? call.input(4).count() : count * 8;
-                         return count * sizeof(uint32_t) * 2 + arcs * (sizeof(uint32_t) * 2 + sizeof(double));
+                         const auto around = resolve_neighbourhood(call, 3, call.output(0), call.range_count());
+                         return flood_footprint(around, call.range_count());
                        }});
+  add(tool_description{.name = "components", .shape = aperture::sequential, .input_count = 4,
+                       .optional_inputs = 3, .output_count = 2, .optional_outputs = 1,
+                       .body = tool_components,
+                       .footprint = [](const tool_call& call) { return (call.range_count() + 1) * 64; }});
   add(tool_description{.name = "edge_csr", .shape = aperture::sequential, .input_count = 3, .output_count = 3,
                        .optional_outputs = 1, .body = tool_edge_csr,
-                       .footprint = [](const tool_call& call) { return call.input(0).count() * sizeof(size_t) * 2; }});
+                       .footprint = [](const tool_call& call) { return (call.input(0).count() * 2 + 1) * sizeof(size_t); }});
 }
 
 } // namespace originator

@@ -19,7 +19,8 @@
 - `thread/mailbox.h`, `spsc_queue.h`, `byte_ring.h`, `payload_channel.h` — разные delivery/ownership
   contracts. Не заменять их общей queue без сохранения overflow и lifetime.
 - Размер/выравнивание аллокаторов — контракт. Не оживлять actor_ref/context_stack из exclude.
-- `core.h` и старые event/loader helpers требуют отдельного разбора consumers перед дроблением.
+- `core.h` — только диагностика через error.h; остальные функции требуют явных narrow includes.
+  Карта — README.md. Не возвращать umbrella include type_traits/spdlog/print в core.
 
 ## Проверка
 
@@ -35,9 +36,8 @@ CMake проверяет зависимости zstd/ZLIB; не предпола
 ## Память и задачи
 
 Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
-[указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
-хронологию экспериментов — в отдельном audit/history.
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
+История разработки не является обязательной памятью проекта.
 
 ## Технический аудит 2026-11-07
 
@@ -45,6 +45,6 @@ CMake проверяет зависимости zstd/ZLIB; не предпола
 Исправлены F-01 (pool teardown: drain + join до разрушения членов), F-03 (move переносит
 выданные blocks; source пуст), F-08 (variadic min). Регрессии: thread_general_test,
 fixed_pool_move_test, utils_contract_test. Destruction требует остановленных producers.
-Core разбирается на narrow headers с сохранением публичных имён; Lua converter принадлежит
+Core разделён на narrow headers с сохранением публичных имён; Lua converter принадлежит
 bindings_base. Zpp_bits и glaze в живом коде отсутствуют; named_serializer удалён.
 utils::error бросает critical_error; не подавлять этот тип ради успешного продолжения.

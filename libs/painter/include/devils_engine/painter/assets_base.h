@@ -1,6 +1,7 @@
 #ifndef DEVILS_ENGINE_PAINTER_ASSETS_BASE_H
 #define DEVILS_ENGINE_PAINTER_ASSETS_BASE_H
 
+#include "memory_statistics.h"
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -118,6 +119,7 @@ struct assets_base {
   VkCommandBuffer graphics_command_buffer;
 
   VmaAllocator allocator;
+  gpu_memory_statistics memory_statistics() const;
 
   graphics_base* base; // нужно чтобы геометрию найти и удалить mesh из draw_group при unload
 

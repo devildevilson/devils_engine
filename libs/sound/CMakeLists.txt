@@ -34,14 +34,12 @@ set(HDR_LIST
 )
 
 add_library(devils_sound ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_sound PRIVATE
-  devils_engine::options
-  devils_engine::utils
-  devils_engine::catalogue
-  devils_engine::demiurg
+target_link_libraries(devils_sound
+  PUBLIC devils_engine::options devils_engine::utils devils_engine::demiurg
+  PRIVATE devils_engine::catalogue
   miniaudio
   OpusFile::opusfile)
-target_include_directories(devils_sound INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
+target_include_directories(devils_sound PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>" "$<BUILD_INTERFACE:${dr_libs_SOURCE_DIR}>")
 target_include_directories(devils_sound PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/sound>")
 target_include_directories(devils_sound PRIVATE "${stb_SOURCE_DIR}" "${dr_libs_SOURCE_DIR}")
 

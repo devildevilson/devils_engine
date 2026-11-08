@@ -1,3 +1,4 @@
+#include "devils_engine/utils/error.h"
 #include <doctest/doctest.h>
 
 #include <stdexcept>
@@ -85,9 +86,9 @@ TEST_CASE("project geometry can be registered without modifying standard dispatc
   CHECK(first.pieces == again.pieces);
   CHECK(first.pieces[0][1] == motif_path_point{9,0});
   CHECK_FALSE(registry.build("project_chamfer", {12,10,74,{}}).valid());
-  CHECK_THROWS_AS(registry.add("project_chamfer", chamfer), std::invalid_argument);
-  CHECK_THROWS_AS(registry.add("", chamfer), std::invalid_argument);
-  CHECK_THROWS_AS(registry.add("null", nullptr), std::invalid_argument);
+  CHECK_THROWS_AS(registry.add("project_chamfer", chamfer), devils_engine::utils::critical_error);
+  CHECK_THROWS_AS(registry.add("", chamfer), devils_engine::utils::critical_error);
+  CHECK_THROWS_AS(registry.add("null", nullptr), devils_engine::utils::critical_error);
 }
 
 TEST_CASE("invalid inputs refuse before invoking motif builders") {

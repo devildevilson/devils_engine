@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_CATALOGUE_LOGGING_H
 #define DEVILS_ENGINE_CATALOGUE_LOGGING_H
 
+#include "devils_engine/utils/log.h"
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -8,7 +10,7 @@
 #include <source_location>
 #include <string_view>
 
-#include "devils_engine/utils/core.h" // spdlog + utils::info + make_sane_file_name (сжатие пути)
+#include "devils_engine/utils/core.h" // make_sane_file_name; log.h above owns spdlog/info
 
 namespace devils_engine {
 namespace catalogue {

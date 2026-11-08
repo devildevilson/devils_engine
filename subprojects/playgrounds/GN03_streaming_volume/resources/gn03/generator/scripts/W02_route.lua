@@ -7,10 +7,8 @@
 -- выбирается минимальное расстояние, а при равенстве — меньший индекс. Настоящая задача маршрута
 -- (минимальная стоимость по рельефу, ветвления, узлы-развязки) принадлежит проекту, а не площадке.
 --
--- КРИВАЯ РАСПРЯМЛЯЕТСЯ ЗДЕСЬ. Движок умеет расстояние до ломаной и намеренно не знает ни Безье, ни
--- Катмулл-Рома: их много, они разные, и распрямляются они ОДИН раз на грубом масштабе, где точек
--- сотни. Густота распрямления (`route_flatten`) и есть гладкость коридора: чем больше точек на
--- звено, тем меньше огранка на повороте.
+-- Обход и вычисление кривой — общая механика originator.algorithms. Стиль, плотность
+-- распрямления и группировка звеньев остаются правилами этого мира.
 
 return function(step)
   local nodes = step.reads.nodes
@@ -39,27 +37,12 @@ return function(step)
     return node_position:get(index), node_position:get(index, 1), node_position:get(index, 2)
   end
 
-  -- Обход: ближайший сосед, при равенстве — меньший индекс.
-  local visited = {}
-  local order = { 0 }
-  visited[0] = true
-  for _ = 2, count do
-    local last = order[#order]
-    local lx, ly, lz = node_at(last)
-    local best, best_distance = nil, nil
-    for candidate = 0, count - 1 do
-      if not visited[candidate] then
-        local cx, cy, cz = node_at(candidate)
-        local dx, dy, dz = cx - lx, cy - ly, cz - lz
-        local distance = dx * dx + dy * dy + dz * dz
-        if best_distance == nil or distance < best_distance then
-          best, best_distance = candidate, distance
-        end
-      end
-    end
-    visited[best] = true
-    order[#order + 1] = best
+  local algorithms=originator.algorithms
+  local function point_at(index)
+    local x,y,z=node_at(index)
+    return {x=x,y=y,z=z}
   end
+  local order=algorithms.nearest_order(count,point_at)
 
   -- Катмулл-Ром через узлы обхода: кривая проходит ЧЕРЕЗ точки, а не мимо них, и это важно — узел
   -- геймплейный, маршрут обязан прийти именно в него, а не рядом.
@@ -123,16 +106,10 @@ return function(step)
         local x3, y3, z3 = control(i + 2)
         for k = 0, flatten - 1 do
           local t = k / flatten
-          local t2 = t * t
-          local t3 = t2 * t
-          -- Стандартный Катмулл-Ром с натяжением 0.5.
-          local a0 = -0.5 * t3 + t2 - 0.5 * t
-          local a1 = 1.5 * t3 - 2.5 * t2 + 1.0
-          local a2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t
-          local a3 = 0.5 * t3 - 0.5 * t2
-          emit(a0 * x0 + a1 * x1 + a2 * x2 + a3 * x3,
-               a0 * y0 + a1 * y1 + a2 * y2 + a3 * y3,
-               a0 * z0 + a1 * z1 + a2 * z2 + a3 * z3)
+          local point=algorithms.catmull_rom(
+            {x=x0,y=y0,z=z0},{x=x1,y=y1,z=z1},
+            {x=x2,y=y2,z=z2},{x=x3,y=y3,z=z3},t,'weights')
+          emit(point.x,point.y,point.z)
         end
       end
       local ex, ey, ez = control(last + 1)

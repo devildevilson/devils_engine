@@ -1,0 +1,6 @@
+#pragma once
+#include <string_view>
+// Встроенная библиотека управляющей механики: установка не зависит от resource root GN.
+namespace devils_engine::originator {
+inline constexpr std::string_view algorithms_source = R"ORIGINATOR_LUA(@ORIGINATOR_ALGORITHMS_SOURCE@)ORIGINATOR_LUA";
+}

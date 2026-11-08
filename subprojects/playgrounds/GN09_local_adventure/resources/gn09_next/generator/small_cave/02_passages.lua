@@ -6,6 +6,7 @@ return function(step)
   local r=function(salt) return C.random(step.world_seed,step.key[1],step.key[2],step.key[3],salt) end
   local low,high=W.get(meta:field('low'),0),W.get(meta:field('high'),0)
   local made,slits,details=0,0,0
+  local write_segment=originator.algorithms.segment_writer(passages)
   for edge=0,meta:field('edges'):get(0)-1 do
     local a=W.get(nodes:field('centre'),edges:field('a'):get(edge))
     local b=W.get(nodes:field('centre'),edges:field('b'):get(edge))
@@ -41,10 +42,7 @@ return function(step)
       assert(made<passages:count(),'cave passage capacity exceeded')
       local p=point(j/steps)
       local wa,ra,fa=profile((j-1)/steps);local wb,rb,fb=profile(j/steps)
-      local v=W.sub(p,last);local local_right,local_up,tangent=C.frame(v)
-      W.put(passages:field('a'),made,last);W.put(passages:field('b'),made,p)
-      W.put(passages:field('right'),made,local_right);W.put(passages:field('up'),made,local_up)
-      passages:field('length2'):set(made,W.length(v)^2)
+      local local_right,local_up,tangent=write_segment(made,last,p)
       for _,item in ipairs({{'width_a',wa},{'width_b',wb},{'roof_a',ra},{'roof_b',rb},{'floor_a',fa},{'floor_b',fb}}) do passages:field(item[1]):set(made,item[2]) end
       local maximum,minimum=math.max(wa,wb,ra,rb,fa,fb),math.min(wa,wb,ra,rb,fa,fb)
       local relief=math.min(0.5,minimum*0.08)

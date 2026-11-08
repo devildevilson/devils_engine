@@ -223,6 +223,10 @@ void assets_base::create_command_buffer(transfer_queue transfer, graphics_queue 
   }
 }
 
+gpu_memory_statistics assets_base::memory_statistics() const {
+  return read_memory_statistics(allocator, physical_device);
+}
+
 void assets_base::create_allocator(VkInstance inst, const size_t preferred_heap_block) {
   vma::VulkanFunctions fns = make_functions();
 

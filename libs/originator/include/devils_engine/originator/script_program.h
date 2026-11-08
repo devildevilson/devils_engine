@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -11,6 +12,7 @@
 
 #include "common.h"
 #include "tools.h"
+#include "neighbourhood.h"
 
 // Средний уровень исполнения: devils_script над плотным буфером.
 //
@@ -18,11 +20,11 @@
 // Имена берутся у самих привязок в момент первой компиляции, поэтому одно и то же имя означает одно
 // и то же в конфиге, в lua и в скрипте.
 //
-// Апертура здесь не объявляется руками, а СЛЕДУЕТ ИЗ РЕГИСТРАЦИИ. Скрипту доступны ровно два вида
-// обращений: прочитать поле СВОЕГО элемента и вернуть значение. Функции, которая пишет, не
-// зарегистрировано; функции, которая доберётся до соседа, тоже. Поэтому программа структурно
-// pointwise, и её невозможно случайно сделать не такой. Когда появится доступ к соседям, он
-// приедет отдельной регистрацией — и вместе с ней апертура станет gather со всеми её проверками.
+// Обычный запуск структурно pointwise: программа читает только свой элемент. Gather имеет
+// отдельную регистрацию own/other и свёртку по явно ограниченному CSR/stencil/множеству.
+// Поля-векторы читаются как name_x/y/z/w; result_component выбирает формулу группы выходов.
+// Pure subset исполняется колонками, остальное — VM; отказ column compiler является данными,
+// а критическая ошибка не перехватывается ради переключения исполнителя.
 //
 // Случайность: перед каждым элементом состояние PRNG у devils_script выставляется в
 // hash(зерно шага, индекс элемента). Поэтому `chance`/`random` внутри скрипта тоже не зависят от
@@ -32,7 +34,8 @@
 // Параметры: то, что скрипт читает как `ctx:arg:имя`, приходит из параметров шага. Это разделение
 // правила и его порогов — само правило живёт в скрипте, а числа остаются в конфиге, где их можно
 // крутить, не трогая ни скрипт, ни C++. Аргументы выставляются ОДИН раз на контекст и постоянны на
-// весь проход: они описывают проход, а не элемент.
+// весь проход: они описывают проход, а не элемент. param_<name> — числовые uniforms вне
+// ограниченного root/argument стека VM; имена явно входят в compile binding signature.
 
 namespace devils_engine {
 namespace thread {
@@ -44,6 +47,9 @@ namespace originator {
 // Сколько входных полей программа может видеть. Ограничение существует потому, что каждое имя —
 // отдельная compile-time инстанциация аксессора.
 constexpr size_t max_script_inputs = 16;
+constexpr size_t max_script_parameters = 64;
+enum class script_backend { automatic, virtual_machine };
+struct script_gather_call;
 
 class script_program {
 public:
@@ -62,13 +68,17 @@ public:
   static std::unique_ptr<script_program> compile(const std::string_view& name,
                                                  const std::string_view& source,
                                                  const std::span<const std::string>& input_names,
-                                                 const result_kind kind);
+                                                 const result_kind kind,
+                                                 const std::span<const field_type> input_types = {},
+                                                 const std::span<const std::string> parameter_names = {},
+                                                 script_backend backend = script_backend::automatic);
 
   const std::string& name() const noexcept;
   size_t input_count() const noexcept;
   // Имена, которые скрипт читает как `ctx:arg:имя`. Каждое обязано найтись в параметрах шага.
   const std::vector<std::string>& argument_names() const noexcept;
   result_kind kind() const noexcept;
+  const std::vector<field_type>& input_types() const noexcept;
   aperture::values shape() const noexcept;
   // Имена, под которыми программа была скомпилирована: пересобирать её при других именах нельзя.
   const std::vector<std::string>& input_names() const noexcept;
@@ -82,7 +92,9 @@ private:
 
   std::unique_ptr<implementation> impl_;
 
-  friend size_t script_footprint(const script_program&, const size_t);
+  friend std::optional<size_t> script_footprint(const script_program&, const size_t);
+  friend void check_gather_program(const script_gather_call&);
+  friend void dispatch_gather_program(const script_gather_call&, thread::atomic_pool*);
 
   friend void dispatch_script(const script_program&,
                               const std::span<const field_ref>&,
@@ -92,14 +104,44 @@ private:
                               const size_t,
                               const size_t,
                               const std::string_view&,
-                              thread::atomic_pool*);
+                              thread::atomic_pool*, uint32_t, uint32_t);
 };
 
-// ВРЕМЕННАЯ ПАМЯТЬ ПРОГРАММЫ: контекст виртуальной машины `devils_script`, СВОЙ У КАЖДОГО ЧАНКА.
-// Величина маленькая (стек операндов, сохранённые слоты и списки, объявленные самой программой), но
-// она есть, а «есть и мало» и «неизвестно» — разные ответы: молчание здесь означало бы, что учёт
-// памяти считает программы бесплатными, ничего об этом не сказав.
-size_t script_footprint(const script_program& program, const size_t workers);
+struct script_reduction {
+  enum class kind { maximum, minimum, maximum_absolute, sum, argmin, argmax };
+  kind operation = kind::maximum;
+  uint32_t score_component = 0;
+  double initial = 0;
+};
+
+// Программа видит fields своего элемента и other_fields соседнего. Остальные адреса
+// выразить нельзя. Список соседей — CSR/stencil либо всё ограниченное множество other.
+// Каждый output скалярный; result_component выбирает формулу score/value. Validity
+// необязательна и тоже определяется программой, не названием предметного алгоритма.
+struct script_gather_call {
+  const script_program* program = nullptr;
+  std::span<const field_ref> inputs;
+  size_t own_inputs = 0;
+  std::span<const field_ref> outputs;
+  const parameters* params = nullptr;
+  const neighbourhood* around = nullptr;
+  size_t other_count = 0;
+  std::span<const script_reduction> reductions;
+  int validity_component = -1;
+  bool empty_self = false;
+  uint64_t seed = 0;
+  size_t begin = 0;
+  size_t end = 0;
+  std::string_view step;
+};
+
+void check_gather_program(const script_gather_call& call);
+void dispatch_gather_program(const script_gather_call& call, thread::atomic_pool* pool);
+
+// Верхняя оценка временного frame на одновременно работающих chunks. VM lists могут
+// расти из программы: для них возвращается nullopt, а не размер одних заголовков списков.
+// nullopt также означает непредставимый размер; allocator metadata не входит в оценку.
+std::optional<size_t> script_footprint(const script_program& program, const size_t workers);
 
 // Проверяет вызов программы, не исполняя его: число входов, совпадение имён привязок с теми, под
 // которыми программа компилировалась, изменяемость выхода, диапазон и наличие каждого `ctx:arg:` в
@@ -111,7 +153,7 @@ dispatch_check check_script_dispatch(const script_program& program,
                                      const parameters& params,
                                      const size_t range_begin,
                                      const size_t range_end,
-                                     const std::string_view& step_name);
+                                     const std::string_view& step_name, uint32_t output_component = 0);
 
 // Запуск программы над диапазоном элементов. Форма та же, что у нативного инструмента, и проверки
 // те же: выход обязан быть привязан на запись, диапазон обязан помещаться, число входов обязано
@@ -124,7 +166,7 @@ void dispatch_script(const script_program& program,
                      const size_t range_begin,
                      const size_t range_end,
                      const std::string_view& step_name,
-                     thread::atomic_pool* pool);
+                     thread::atomic_pool* pool, uint32_t output_component = 0, uint32_t result_component = UINT32_MAX);
 
 } // namespace originator
 } // namespace devils_engine

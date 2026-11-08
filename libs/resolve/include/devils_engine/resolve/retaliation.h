@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_RESOLVE_RETALIATION_H
 #define DEVILS_ENGINE_RESOLVE_RETALIATION_H
 
+#include "devils_engine/utils/error.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <numeric>
@@ -98,7 +100,7 @@ public:
     while (begin < keyed_order.size()) {
       const auto& value = records[keyed_order[begin]];
       if (value.header.generation > limits.max_generation) {
-        throw std::length_error("resolve::retaliation generation budget exceeded");
+        utils::error{}("resolve retaliation: trigger {} generation {} exceeds limit {}", value.key.triggering_instance, value.header.generation, limits.max_generation);
       }
       if (value.key.triggering_instance != current_trigger) {
         current_trigger = value.key.triggering_instance;
@@ -106,7 +108,7 @@ public:
       }
       ++per_trigger;
       if (per_trigger > limits.max_retaliations_per_trigger) {
-        throw std::length_error("resolve::retaliation per-trigger budget exceeded");
+        utils::error{}("resolve retaliation: trigger {} emitted {} rules, limit {}", current_trigger, per_trigger, limits.max_retaliations_per_trigger);
       }
       keep[keyed_order[begin]] = 1;
 
@@ -131,7 +133,7 @@ public:
     seal_ordered(limits);
     const instance_id available = std::numeric_limits<instance_id>::max() - next_instance;
     if (next_instance == invalid_instance || sealed_.size() > available) {
-      throw std::overflow_error("resolve::retaliation instance id space exhausted");
+      utils::error{}("resolve retaliation: cannot assign {} ids starting at {}, available {}", sealed_.size(), next_instance, available);
     }
     for (auto& value : sealed_)
       value.header.id = next_instance++;

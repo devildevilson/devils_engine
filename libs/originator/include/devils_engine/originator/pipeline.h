@@ -162,6 +162,8 @@ struct step_link {
 };
 
 // Что тело шага видит на входе.
+struct generation_context;
+
 struct step_context {
   std::string_view name;
   size_t index = 0;
@@ -190,6 +192,7 @@ struct step_context {
   // хоста, нужно именно оно. Нули вне цепочки.
   std::array<uint64_t, 3> instance{};
   uint64_t world_seed = 0;
+  generation_context* generation = nullptr;
 
   buffer* find_write(const std::string_view& buffer_name) const noexcept;
   const buffer* find_read(const std::string_view& buffer_name) const noexcept;
@@ -199,6 +202,7 @@ using step_invoker = std::function<void(const step_context&)>;
 
 class pipeline {
 public:
+  void set_context(generation_context* context) noexcept { generation_ = context; }
   pipeline(pipeline_description description, const size_table& sizes, const uint64_t seed);
   // СВЯЗАННЫЕ БУФЕРЫ — выходы другого генератора цепочки. Пайплайн их не владеет и не пишет: шаг может
   // их только читать, а объявлять их у себя второй раз нельзя — раскладка принадлежит производителю,
@@ -261,6 +265,7 @@ private:
   std::vector<step_link> links_;
   std::array<uint64_t, 3> instance_{};
   uint64_t world_seed_ = 0;
+  generation_context* generation_ = nullptr;
   std::vector<std::vector<buffer*>> step_writes_;
   std::vector<std::vector<const buffer*>> step_reads_;
 };

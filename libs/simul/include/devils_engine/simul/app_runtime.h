@@ -1,12 +1,13 @@
 #ifndef DEVILS_ENGINE_SIMUL_APP_RUNTIME_H
 #define DEVILS_ENGINE_SIMUL_APP_RUNTIME_H
 
+#include "devils_engine/utils/error.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <numeric>
 #include <stop_token>
-#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -85,7 +86,7 @@ public:
     main_->set_broker(broker_.get());
     for (auto& worker : workers_.entries()) {
       if (!registry_.add(worker.type, worker.name, worker.system.get())) {
-        throw std::logic_error("simul::app_runtime: duplicate worker system type or type-id collision");
+        utils::error{}("simul app_runtime: worker '{}' has duplicate system type or type-id collision", worker.name);
       }
       worker.system->set_broker(broker_.get());
     }

@@ -70,15 +70,15 @@ return function(step)
   -- Уклон РАЗМЫВАЕТСЯ: вид области — свойство места, а не отдельной клетки, и одиночный обрыв посреди
   -- равнины не делает её горной страной.
   local slope_queue = {
-    originator.queue.graph_slope{ inputs = { offsets, arcs, height }, outputs = { relief_local } },
+    originator.queue.slope{ inputs = { height, offsets, arcs }, outputs = { relief_local } },
     originator.queue.remap{ inputs = { relief_local }, outputs = { relief_local }, params = { scale = 0.0157 / spacing } },
   }
   for _ = 1, smoothing do
-    slope_queue[#slope_queue + 1] = originator.queue.graph_blur{
-      inputs = { offsets, arcs, relief_local }, outputs = { work },
+    slope_queue[#slope_queue + 1] = originator.queue.blur{
+      inputs = { relief_local, offsets, arcs }, outputs = { work },
       params = { self_weight = p.landform_self_weight } }
-    slope_queue[#slope_queue + 1] = originator.queue.graph_blur{
-      inputs = { offsets, arcs, work }, outputs = { relief_local },
+    slope_queue[#slope_queue + 1] = originator.queue.blur{
+      inputs = { work, offsets, arcs }, outputs = { relief_local },
       params = { self_weight = p.landform_self_weight } }
   end
   slope_queue.output = { relief_local }
@@ -89,11 +89,11 @@ return function(step)
     originator.queue.remap{ inputs = { height }, outputs = { smooth }, params = { scale = 1.0 } },
   }
   for _ = 1, smoothing do
-    smooth_queue[#smooth_queue + 1] = originator.queue.graph_blur{
-      inputs = { offsets, arcs, smooth }, outputs = { work },
+    smooth_queue[#smooth_queue + 1] = originator.queue.blur{
+      inputs = { smooth, offsets, arcs }, outputs = { work },
       params = { self_weight = p.landform_self_weight } }
-    smooth_queue[#smooth_queue + 1] = originator.queue.graph_blur{
-      inputs = { offsets, arcs, work }, outputs = { smooth },
+    smooth_queue[#smooth_queue + 1] = originator.queue.blur{
+      inputs = { work, offsets, arcs }, outputs = { smooth },
       params = { self_weight = p.landform_self_weight } }
   end
   smooth_queue.output = { smooth }
@@ -101,8 +101,8 @@ return function(step)
 
   -- 3. Доля суши в окрестности: по ней опознаётся архипелаг — мелководье, вокруг которого есть земля,
   -- в отличие от такого же мелководья у открытого океана.
-  originator.graph_blur{
-    inputs = { offsets, arcs, land },
+  originator.blur{
+    inputs = { land, offsets, arcs },
     outputs = { land_support },
     params = { self_weight = 1.0, neighbour_weight = 1.0 },
   }
@@ -178,10 +178,10 @@ return function(step)
   -- километров), — вся разница набегала на стыках с хребтом. Размытый множитель делает переход
   -- постепенным, а у природы он такой и есть: между низиной и холмами нет линии.
   for _ = 1, math.floor(p.landform_blend) do
-    originator.graph_blur{ inputs = { offsets, arcs, gain }, outputs = { work }, params = { self_weight = 1.5 } }
-    originator.graph_blur{ inputs = { offsets, arcs, work }, outputs = { gain }, params = { self_weight = 1.5 } }
-    originator.graph_blur{ inputs = { offsets, arcs, offset }, outputs = { work }, params = { self_weight = 1.5 } }
-    originator.graph_blur{ inputs = { offsets, arcs, work }, outputs = { offset }, params = { self_weight = 1.5 } }
+    originator.blur{ inputs = { gain, offsets, arcs }, outputs = { work }, params = { self_weight = 1.5 } }
+    originator.blur{ inputs = { work, offsets, arcs }, outputs = { gain }, params = { self_weight = 1.5 } }
+    originator.blur{ inputs = { offset, offsets, arcs }, outputs = { work }, params = { self_weight = 1.5 } }
+    originator.blur{ inputs = { work, offsets, arcs }, outputs = { offset }, params = { self_weight = 1.5 } }
   end
 
   -- 6. Усиление: отклонение от сглаженной высоты, помноженное на множитель вида, плюс поправка.
@@ -211,8 +211,8 @@ return function(step)
     for _ = 1, erosion_passes do
       -- Поддержка считается В СВОЁ поле, а не в рабочее: правило `coast` читает поля по ИМЕНИ
       -- привязки, и поле, названное иначе, для него просто не существует.
-      originator.graph_blur{
-        inputs = { offsets, arcs, land },
+      originator.blur{
+        inputs = { land, offsets, arcs },
         outputs = { land_support },
         params = { self_weight = 1.0, neighbour_weight = 1.0 },
       }
@@ -241,8 +241,8 @@ return function(step)
     inputs = { land },
     outputs = { cells:field("ocean_seed") },
   }
-  originator.graph_flood{
-    inputs = { offsets, arcs, cells:field("ocean_seed"), one, one },
+  originator.flood{
+    inputs = { cells:field("ocean_seed"), one, one, offsets, arcs },
     outputs = { cells:field("scratch_label"), cells:field("ocean_distance") },
     params = { unreached = -1 },
   }

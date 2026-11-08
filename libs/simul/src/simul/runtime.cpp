@@ -1,3 +1,5 @@
+#include "devils_engine/utils/numeric.h"
+#include "devils_engine/utils/platform.h"
 #include "devils_engine/simul/instance_layout.h"
 #include "devils_engine/simul/interpolation.h"
 #include "devils_engine/simul/lifecycle.h"

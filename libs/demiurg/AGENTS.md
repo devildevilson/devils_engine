@@ -23,6 +23,9 @@ Modules, registry, stable resource handles, staged load/unload. `module_system.h
 
 ## Проверка
 
+Public headers: `devils_public_headers`; `public_link_demiurg` линкует только
+`devils_engine::demiurg` и проверяет его usage requirements без aggregate target.
+
 `demiurg_resource_loader_test`; после resource path/config изменений —
 `originator_config_test`, `painter_shader_prepare_test`, `goap_config_test`, `fsm_config_test`.
 Проверять staged refusal, dependency gating и stable handle при clear/reparse.
@@ -34,9 +37,8 @@ Modules, registry, stable resource handles, staged load/unload. `module_system.h
 ## Память и задачи
 
 Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Исторические подробности доступны через
-[указатель архива](../../docs/history/README.md). Новые контракты записывать здесь,
-хронологию экспериментов — в отдельном audit/history.
+[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
+История разработки не является обязательной памятью проекта.
 
 ## Технический аудит 2026-11-07
 

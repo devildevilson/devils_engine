@@ -29,29 +29,31 @@ set_target_properties(GN07_location_brief PROPERTIES
 if (DEVILS_ENGINE_BUILD_TESTS)
   set(GN07_BRIEFS ${CMAKE_CURRENT_SOURCE_DIR}/resources/gn07/briefs)
   foreach(BRIEF first_mine big_mine plain_mine)
-    add_test(NAME GN07_${BRIEF}_verify
+    devils_add_test(NAME GN07_${BRIEF}_verify
       COMMAND GN07_location_brief --verify --brief=${GN07_BRIEFS}/${BRIEF}.tavl)
     set_tests_properties(GN07_${BRIEF}_verify PROPERTIES LABELS devils_engine)
   endforeach()
 
   # Невыполнимое задание обязано отказать С ПРИЧИНОЙ, а не выдать частичный граф.
-  add_test(NAME GN07_refuse_budget
+  devils_add_test(NAME GN07_refuse_budget
     COMMAND GN07_location_brief --brief=${GN07_BRIEFS}/refuse_budget.tavl)
   set_tests_properties(GN07_refuse_budget PROPERTIES LABELS devils_engine
     PASS_REGULAR_EXPRESSION "refused: no attempt of 64 satisfied the brief; most frequent cause \\(64/64\\): main line blocked")
 
-  add_test(NAME GN07_refuse_capability
+  devils_add_test(NAME GN07_refuse_capability
     COMMAND GN07_location_brief --brief=${GN07_BRIEFS}/refuse_capability.tavl)
   set_tests_properties(GN07_refuse_capability PROPERTIES LABELS devils_engine
     PASS_REGULAR_EXPRESSION "refused: link to 'tunnel_3' is secret: archetype 'mine' has no secret port")
 
-  add_test(NAME GN07_refuse_no_entrance
+  devils_add_test(NAME GN07_refuse_no_entrance
     COMMAND GN07_location_brief --brief=${GN07_BRIEFS}/refuse_no_entrance.tavl)
   set_tests_properties(GN07_refuse_no_entrance PROPERTIES LABELS devils_engine
     PASS_REGULAR_EXPRESSION "refused: location 'mine_4' has no ordinary link")
 
-  add_test(NAME GN07_refuse_allowance
+  devils_add_test(NAME GN07_refuse_allowance
     COMMAND GN07_location_brief --brief=${GN07_BRIEFS}/refuse_allowance.tavl)
   set_tests_properties(GN07_refuse_allowance PROPERTIES LABELS devils_engine
     PASS_REGULAR_EXPRESSION "refused: placement 'quest_n_item' needs at least 12 content on its way, the whole location allows at most 11")
 endif()
+
+target_link_libraries(GN07_location_brief PRIVATE devils_engine::playground_cli)

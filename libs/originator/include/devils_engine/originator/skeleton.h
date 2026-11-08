@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <span>
 #include <vector>
+#include "graph_walk.h"
 
 // СКЕЛЕТ — граф из точек и рёбер, заданных ЯВНЫМИ СПИСКАМИ: узел — точка в пространстве, ребро —
 // пара номеров, длина ребра — расстояние между его концами. Так описываются пещеры из ниш и ходов,
@@ -30,6 +31,7 @@ struct skeleton_graph {
 // Кратчайший путь по рёбрам от БЛИЖАЙШЕГО из источников до каждого узла; недостижимый узел — -1.
 // Ребро с концом вне списка узлов — ошибка вызывающего (utils::error), а не тихо пропущенное ребро.
 std::vector<double> skeleton_distance(const skeleton_graph& graph, std::span<const uint32_t> sources);
+std::vector<double> skeleton_distance(const skeleton_graph& graph, std::span<const uint32_t> sources, walk_workspace& workspace);
 
 // Длина замкнутого обхода: от start через все остановки и обратно, по кратчайшим путям между ними.
 // Порядок остановок — ближайший сосед, затем 2-opt до неподвижной точки: это не оптимум задачи

@@ -1,9 +1,10 @@
 #ifndef DEVILS_ENGINE_ACT_CALL_CONTEXT_H
 #define DEVILS_ENGINE_ACT_CALL_CONTEXT_H
 
+#include "devils_engine/utils/error.h"
+
 #include <array>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,7 +58,7 @@ public:
 
   void reserve(const size_t argument_count, const size_t list_count) {
     if (argument_count > max_arguments) {
-      throw std::length_error("act::call_context: too many scalar arguments");
+      utils::error{}("act call_context: requested {} scalar arguments, capacity {}", argument_count, max_arguments);
     }
     lists_.reserve(list_count);
   }
@@ -90,7 +91,7 @@ public:
       return *v;
     }
     if (argument_count_ == max_arguments) {
-      throw std::length_error("act::call_context: scalar argument stack is full");
+      utils::error{}("act call_context: cannot add argument id {}, scalar stack capacity {} exhausted", name, max_arguments);
     }
     auto& out = arguments_[argument_count_++];
     out = named_value{name, value{}};

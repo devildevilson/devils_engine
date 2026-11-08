@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_INSTANCE_LAYOUT_H
 #define DEVILS_ENGINE_SIMUL_INSTANCE_LAYOUT_H
 
+#include "devils_engine/utils/numeric.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>

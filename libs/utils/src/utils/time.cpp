@@ -1,3 +1,5 @@
+#include "devils_engine/utils/numeric.h"
+#include "devils_engine/utils/log.h"
 #include "core.h"
 #include "time-utils.hpp"
 

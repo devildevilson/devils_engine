@@ -68,6 +68,7 @@ struct queue_call {
   // предыдущий элемент ЭТОЙ ЖЕ очереди. Ёмкость — число элементов приёмника, превышение зажимается.
   field_ref count_from{};
   const tool_description* tool = nullptr;
+  generation_context* generation = nullptr;
   uint64_t seed = 0;
   size_t range_begin = 0;
   size_t range_end = 0;
@@ -83,6 +84,8 @@ struct queue_call {
   // Записи вызова не зависят от порядка — то же объявление, что у `tool_description`, и по той же
   // причине. У нативного инструмента берётся у него.
   bool order_free_writes = false;
+  size_t temporary_bytes = 0;
+  bool declared_temporary = false;
 
   size_t range_count() const noexcept;
   // Читается ли число элементов из поля, а не задано числом.

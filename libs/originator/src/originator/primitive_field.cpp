@@ -19,20 +19,6 @@
 namespace devils_engine {
 namespace originator {
 
-namespace {
-// Поля текущего исполняемого генератора: ставит сборка экземпляра (generator_chain.cpp).
-thread_local const std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>>* active_fields = nullptr;
-} // namespace
-
-namespace detail {
-const std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>>* exchange_active_fields(
-  const std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>>* fields) noexcept {
-  const auto* previous = active_fields;
-  active_fields = fields;
-  return previous;
-}
-} // namespace detail
-
 bool field_box::contains(const field_vector& p) const noexcept {
   if (!(p[0] >= low[0] && p[0] <= high[0] && p[1] >= low[1] && p[1] <= high[1] && p[2] >= low[2] && p[2] <= high[2])) {
     return false;
@@ -68,8 +54,8 @@ field_box field_box::around(const field_vector& a, const field_vector& b, const 
   return out;
 }
 
-field_point::field_point(const shape_vocabulary& vocabulary, const field_vector& position, const uint64_t seed) noexcept :
-  vocabulary_(&vocabulary), position_(position), seed_(seed) {}
+field_point::field_point(const shape_vocabulary& vocabulary, const field_vector& position, const uint64_t seed, field_frame* workspace) noexcept :
+  vocabulary_(&vocabulary), position_(position), seed_(seed), workspace_(workspace) {}
 
 const field_vector& field_point::position() const noexcept { return position_; }
 uint64_t field_point::seed() const noexcept { return seed_; }
@@ -136,7 +122,7 @@ void shape_vocabulary::add_kind_batch(std::string name, decode_function decode, 
     field_point* lane = &point;
     double result = 0.0;
     uint32_t tag = 0;
-    field_batch one{1, &p[0], &p[1], &p[2], &lane, &result, &tag};
+    field_batch one{1, &p[0], &p[1], &p[2], &lane, &result, &tag, point.workspace()};
     batch(rows, row, one);
     return shape_value{result, tag};
   };
@@ -240,8 +226,8 @@ void combine(const shape_role role, const double blend, const double value, cons
 
 } // namespace
 
-shape_value primitive_field::evaluate(std::span<const void* const> candidates, const field_vector& p) const {
-  field_point point(*vocabulary_, p, seed_);
+shape_value primitive_field::evaluate(std::span<const void* const> candidates, const field_vector& p, field_frame& workspace) const {
+  field_point point(*vocabulary_, p, seed_, &workspace);
   bool stop = false;
   shape_value best = vocabulary_->background()(point, stop);
   if (stop) return best;
@@ -258,18 +244,20 @@ shape_value primitive_field::evaluate(std::span<const void* const> candidates, c
 }
 
 // Без области — та же оценка по всем формам, чьи коробки содержат точку.
-shape_value primitive_field::value(const field_vector& p) const {
-  thread_local std::vector<const void*> all;
+shape_value primitive_field::value(const field_vector& p, field_workspace& workspace) const {
+  auto frame = workspace.acquire();
+  auto& all = frame.frame.candidates;
   all.clear();
   collect(p, p, all);
-  return evaluate(all, p);
+  return evaluate(all, p, frame.frame);
 }
 
 void primitive_field::sample_points(std::span<const field_vector> points, std::span<double> values,
-                                    std::span<uint32_t> tags, const double half) const {
+                                    std::span<uint32_t> tags, const double half, field_workspace& workspace) const {
   if (values.size() < points.size() || (!tags.empty() && tags.size() < points.size())) {
     utils::error{}("originator field: {} points need as many values and tags", points.size());
   }
+  auto scratch = workspace.acquire();
   const double side = std::max(2.0 * half, 1e-6);
   // Клетки по порядку первой точки: от разбиения зависит только цена, не ответ.
   std::vector<std::pair<std::array<int64_t, 3>, uint32_t>> keyed(points.size());
@@ -301,7 +289,7 @@ void primitive_field::sample_points(std::span<const field_vector> points, std::s
         low[a] = std::min(low[a], p[a]);
         high[a] = std::max(high[a], p[a]);
       }
-      cell_points.emplace_back(*vocabulary_, p, seed_);
+      cell_points.emplace_back(*vocabulary_, p, seed_, &scratch.frame);
     }
     const size_t n = end - begin;
     best.assign(n, 0.0);
@@ -337,7 +325,7 @@ void primitive_field::sample_points(std::span<const field_vector> points, std::s
       size_t filled = 0;
       const auto flush = [&] {
         if (filled == 0) return;
-        field_batch run{filled, x.data(), y.data(), z.data(), lane_points.data(), got.data(), got_tag.data()};
+        field_batch run{filled, x.data(), y.data(), z.data(), lane_points.data(), got.data(), got_tag.data(), &scratch.frame};
         batch(s.rows, s.row, run);
         for (size_t l = 0; l < filled; ++l) {
           combine(role, blend, got[l], got_tag[l], best[lane_of[l]], best_tag[lane_of[l]]);
@@ -374,9 +362,10 @@ primitive_field::region primitive_field::prepare(const field_vector& low, const 
   return out;
 }
 
-shape_value primitive_field::region::value(const field_vector& p) const {
-  if (!contains(p)) return field_->value(p);
-  return field_->evaluate(shapes_, p);
+shape_value primitive_field::region::value(const field_vector& p, field_workspace& workspace) const {
+  if (!contains(p)) return field_->value(p, workspace);
+  auto frame = workspace.acquire();
+  return field_->evaluate(shapes_, p, frame.frame);
 }
 
 const field_vector& primitive_field::region::low() const noexcept { return low_; }
@@ -389,12 +378,13 @@ bool primitive_field::region::contains(const field_vector& p) const noexcept {
 }
 
 primitive_field::sampler::sampler(const primitive_field& field, const double half) : field_(&field), half_(half) {}
+primitive_field::sampler::sampler(const primitive_field& field, const double half, field_workspace& workspace) : field_(&field), half_(half), external_(&workspace) {}
 
 shape_value primitive_field::sampler::sample(const field_vector& p) {
   if (!region_ || !region_->contains(p)) {
     region_ = field_->prepare({p[0] - half_, p[1] - half_, p[2] - half_}, {p[0] + half_, p[1] + half_, p[2] + half_});
   }
-  return region_->value(p);
+  return region_->value(p, external_ ? *external_ : workspace_);
 }
 
 double primitive_field::sampler::operator()(const field_vector& p) { return sample(p).value; }
@@ -423,26 +413,40 @@ double primitive_field::march(sampler& samples, const field_vector& origin, cons
   return -1.0;
 }
 
-const std::shared_ptr<const primitive_field>& current_field_handle(const std::string_view& name) {
-  if (active_fields == nullptr) {
+shape_value primitive_field::value(const field_vector& p) const {
+  field_workspace workspace;
+  return value(p, workspace);
+}
+shape_value primitive_field::region::value(const field_vector& p) const {
+  field_workspace workspace;
+  return value(p, workspace);
+}
+void primitive_field::sample_points(std::span<const field_vector> points, std::span<double> values,
+                                    std::span<uint32_t> tags, const double half) const {
+  field_workspace workspace;
+  sample_points(points, values, tags, half, workspace);
+}
+
+const std::shared_ptr<const primitive_field>& current_field_handle(const generation_context& context, const std::string_view& name) {
+  if (context.fields == nullptr) {
     utils::error{}("originator field: '{}' is asked outside a chain generator build", name);
   }
-  for (const auto& [field_name, field] : *active_fields) {
+  for (const auto& [field_name, field] : *context.fields) {
     if (field_name == name) return field;
   }
   utils::error{}("originator field: the generator being built declares no field '{}'", name);
-  return active_fields->front().second;
+  return context.fields->front().second;
 }
 
-const primitive_field& current_field(const std::string_view& name) {
-  if (active_fields == nullptr) {
+const primitive_field& current_field(const generation_context& context, const std::string_view& name) {
+  if (context.fields == nullptr) {
     utils::error{}("originator field: '{}' is asked outside a chain generator build", name);
   }
-  for (const auto& [field_name, field] : *active_fields) {
+  for (const auto& [field_name, field] : *context.fields) {
     if (field_name == name) return *field;
   }
   utils::error{}("originator field: the generator being built declares no field '{}'", name);
-  return *active_fields->front().second;
+  return *context.fields->front().second;
 }
 
 namespace {
@@ -464,7 +468,7 @@ size_t checked_count(const tool_call& call, const size_t capacity) {
 // давшей минимум (у мира — вид породы). Параметры: field — имя поля генератора, count — сколько точек
 // занято, half — полусторона подготовленной области.
 void tool_field_sample(const tool_call& call, const size_t, const size_t) {
-  const auto& field = current_field(call.params->string("field"));
+  const auto& field = current_field(call.context(), call.params->string("field"));
   const auto positions = call.input(0).read();
   auto out = call.output(0).write();
   const bool tagged = call.has_output(1);
@@ -476,7 +480,7 @@ void tool_field_sample(const tool_call& call, const size_t, const size_t) {
   for (size_t i = 0; i < count; ++i) points[i] = read_vector(positions, i);
   std::vector<double> values(count);
   std::vector<uint32_t> got_tags(tagged ? count : 0);
-  field.sample_points(points, values, got_tags, call.params->number("half", 16.0));
+  field.sample_points(points, values, got_tags, call.params->number("half", 16.0), call.context().field_scratch);
   for (size_t i = 0; i < count; ++i) {
     out.set(i, values[i]);
     if (tagged) tags.set(i, double(got_tags[i]));
@@ -487,7 +491,7 @@ void tool_field_sample(const tool_call& call, const size_t, const size_t) {
 // 1 и 2 (необязательные) — нижняя и верхняя граница фона. Ноль форм и нижняя граница выше порога
 // поверхности значат «вся коробка — порода»: такую область можно не сэмплировать вовсе.
 void tool_field_bound(const tool_call& call, const size_t, const size_t) {
-  const auto& field = current_field(call.params->string("field"));
+  const auto& field = current_field(call.context(), call.params->string("field"));
   const auto positions = call.input(0).read();
   if (positions.count() == 0) utils::error{}("originator step '{}': field_bound got no points", call.step_name);
   field_vector low = read_vector(positions, 0), high = low;
@@ -507,7 +511,7 @@ void tool_field_bound(const tool_call& call, const size_t, const size_t) {
 // Параметры: field, count, from, to, step, want = rock | water, half, refine — сколько делений пополам
 // уточняют границу после первого попадания (0 — ответ с точностью шага).
 void tool_field_march(const tool_call& call, const size_t, const size_t) {
-  const auto& field = current_field(call.params->string("field"));
+  const auto& field = current_field(call.context(), call.params->string("field"));
   const auto origin = call.input(0).read(), direction = call.input(1).read();
   auto hit = call.output(0).write();
   const size_t count = checked_count(call, std::min({origin.count(), direction.count(), hit.count()}));
@@ -523,7 +527,7 @@ void tool_field_march(const tool_call& call, const size_t, const size_t) {
     utils::error{}("originator step '{}': field_march refine {} is outside 0..64", call.step_name, refine_value);
   }
   const auto refine = uint32_t(refine_value);
-  primitive_field::sampler samples(field, call.params->number("half", 16.0));
+  primitive_field::sampler samples(field, call.params->number("half", 16.0), call.context().field_scratch);
   for (size_t i = 0; i < count; ++i) {
     hit.set(i, field.march(samples, read_vector(origin, i), read_vector(direction, i), from, to, step, want == "rock",
                            refine));

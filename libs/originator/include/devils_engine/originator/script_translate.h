@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_ORIGINATOR_SCRIPT_TRANSLATE_H
 
 #include <cstdint>
+#include <expected>
 #include <span>
 #include <string>
 #include <string_view>
@@ -61,6 +62,7 @@ namespace originator {
 struct translated_field {
   std::string name;
   field_base::values base = field_base::v;
+  uint32_t components = 1;
 };
 
 struct translation {
@@ -86,12 +88,26 @@ public:
 
 // Переводит текст программы против имён и родов привязок — тех же имён и в том же порядке, что у
 // `script_program::compile`.
+// Unsupported device constructs are ordinary refusal data; this API never catches a
+// critical engine failure to decide whether to fall back to CPU.
+std::expected<translation, std::string> try_translate_to_glsl(const std::string_view& name,
+                             const std::string_view& source,
+                             const std::span<const translated_field>& inputs,
+                             const translated_field& output,
+                             const script_program::result_kind kind,
+                             const uint32_t group_size = 64, uint32_t output_component = 0, uint32_t result_component = UINT32_MAX);
+
+// Группа scalar programs пишет все компоненты одного поля одним queue call.
+// Формы уже выданы транслятором; общий body сохраняет их локальные scopes и объединяет params.
+translated_form combine_component_forms(std::span<const translated_form> forms, bool separate_outputs = false);
+
+// Strict caller: a refusal is a critical configuration error.
 translation translate_to_glsl(const std::string_view& name,
                              const std::string_view& source,
                              const std::span<const translated_field>& inputs,
                              const translated_field& output,
                              const script_program::result_kind kind,
-                             const uint32_t group_size = 64);
+                             const uint32_t group_size = 64, uint32_t output_component = 0, uint32_t result_component = UINT32_MAX);
 
 } // namespace originator
 } // namespace devils_engine

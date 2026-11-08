@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -267,5 +268,109 @@ TEST_CASE("sound system smoke constructs on an enumerated or default playback de
     return;
   }
 
-  CHECK_NOTHROW(sound::system(devices.front(), 0.1, 512));
+  for (auto mixing : {sound::mixing_mode::owner, sound::mixing_mode::device}) {
+    sound::system_config config;
+    config.device_name = devices.front();
+    config.stream_buffer_seconds = .1;
+    config.decode_frames_per_update = 512;
+    config.mixing = mixing;
+    sound::system audio(config);
+    CHECK(audio.native_device_count() == 1);
+    CHECK(audio.resource_manager_worker_count() == 0);
+    CHECK(audio.playback_rate() > 0);
+    CHECK(audio.playback_channel_count() > 0);
+    CHECK(audio.mixing() == mixing);
+  }
+}
+
+TEST_CASE("offline audio owns no device or resource-manager worker and renders decoded sound") {
+  for (auto mixing : {sound::mixing_mode::owner, sound::mixing_mode::device})
+  for (const uint32_t rate : {44100u, 48000u, 96000u}) {
+    sound::system_config config;
+    config.offline = true;
+    config.mixing = mixing;
+    config.sample_rate = rate;
+    config.stream_buffer_seconds = 0.05;
+    sound::system audio(config);
+    REQUIRE(audio.offline());
+    CHECK(audio.playback_rate() == rate);
+    CHECK(audio.playback_channel_count() == 2);
+    CHECK(audio.resource_manager_worker_count() == 0);
+    CHECK(audio.native_device_count() == 0);
+    auto blob = std::make_shared<sound::resource_blob>();
+    blob->id = "offline/test";
+    blob->type = sound::data_type::wav;
+    blob->data = make_mono_wav();
+    sound::task task(7, sound::resource2(blob));
+    task.type = sound::type::sfx;
+    task.max_distance = 0;
+    REQUIRE(audio.setup_sound(task));
+    audio.update(0);
+    std::vector<float> samples(rate / 100 * 2);
+    audio.render(samples);
+    CHECK(std::any_of(samples.begin(), samples.end(), [](float value) { return std::abs(value) > 0.00001f; }));
+    for (size_t i = 0; i < 150; ++i) {
+      audio.update(10000);
+      audio.render(samples);
+    }
+    sound::task_status status{};
+    CHECK_FALSE(audio.stat_sound(7, status));
+  }
+}
+
+TEST_CASE("owner mixing matches direct mixing through wraparound and output underflow is silence") {
+  sound::system_config cfg;
+  cfg.offline = true;
+  cfg.mixing = sound::mixing_mode::owner;
+  cfg.output_buffer_seconds = .01;
+  cfg.stream_buffer_seconds = .1;
+  sound::system owner(cfg);
+  cfg.mixing = sound::mixing_mode::device;
+  sound::system direct(cfg);
+  auto blob = std::make_shared<sound::resource_blob>();
+  blob->id = "mix/compare";
+  blob->type = sound::data_type::pcm;
+  blob->sample_format = sound::format::f32;
+  blob->sample_rate = 48000;
+  blob->channels = 1;
+  blob->frames_count = 48000;
+  blob->data.resize(48000 * sizeof(float));
+  for (size_t i = 0; i < blob->frames_count; ++i) {
+    const float value = .1f * std::sin(double(i) * .031);
+    std::memcpy(blob->data.data() + i * sizeof(float), &value, sizeof(float));
+  }
+  sound::task task(1, sound::resource2(blob));
+  task.type = sound::type::sfx;
+  task.max_distance = 0;
+  REQUIRE(owner.setup_sound(task));
+  REQUIRE(direct.setup_sound(task));
+  size_t mismatches = 0;
+  for (size_t i = 0; i < 100; ++i) {
+    owner.update(1000);
+    direct.update(1000);
+    REQUIRE(owner.queued_output_frames() == 480);
+    const size_t frames = i % 2 ? 97 : 181;
+    std::vector<float> a(frames * 2), b(a.size());
+    owner.render(a);
+    direct.render(b);
+    for (size_t j = 0; j < a.size(); ++j) mismatches += std::abs(a[j] - b[j]) > 1e-6f;
+    CHECK(owner.queued_output_frames() == 480 - frames);
+    CHECK(direct.queued_output_frames() == 0);
+  }
+  CHECK(mismatches == 0);
+  std::vector<float> excess(2000, 1);
+  const size_t queued = owner.queued_output_frames();
+  owner.render(excess);
+  CHECK(owner.queued_output_frames() == 0);
+  CHECK(std::all_of(excess.begin() + queued * 2, excess.end(), [](float value) { return value == 0; }));
+  owner.update(1000);
+  CHECK(owner.queued_output_frames() == 480);
+  CHECK(sound::parse_mixing_mode("owner") == sound::mixing_mode::owner);
+  CHECK(sound::parse_mixing_mode("device") == sound::mixing_mode::device);
+  CHECK_THROWS_AS(sound::parse_mixing_mode("automatic"), utils::critical_error);
+  cfg.mixing = sound::mixing_mode::owner;
+  cfg.output_buffer_seconds = 0;
+  CHECK_THROWS_AS(sound::system{cfg}, utils::critical_error);
+  cfg.mixing = sound::mixing_mode::device; // buffer setting is unused here.
+  CHECK_NOTHROW(sound::system{cfg});
 }

@@ -16,11 +16,6 @@ function C.bounds(p)
          W.add(p,{x=constants.cave_system_reach,y=constants.cave_system_height,z=constants.cave_system_reach})
 end
 function C.frame(delta)
-  local W=modules.world
-  local tangent=W.normal(delta)
-  local horizontal=math.sqrt(tangent.x*tangent.x+tangent.z*tangent.z)
-  local right=horizontal<0.001 and {x=1,y=0,z=0} or {x=-tangent.z/horizontal,y=0,z=tangent.x/horizontal}
-  local up={x=-tangent.y*right.z,y=tangent.x*right.z-tangent.z*right.x,z=tangent.y*right.x}
-  return right,up,tangent
+  return originator.algorithms.frame(delta)
 end
 return C

@@ -205,13 +205,13 @@ SSAO — именно он читается как «запечённые тен
 
 ## Что из лаборатории уехало в движок
 
-- `RND-22`: directional/spot shadow maps и атласы, generic `draw_regions` с per-region viewport/scissor,
+- `RM-RND-22`: directional/spot shadow maps и атласы, generic `draw_regions` с per-region viewport/scissor,
   dynamic depth bias, индексом GPU-записи и draw-group spans;
-- `RND-26`: сравнивающие сэмплеры (`sampler.compare`) и specialization constants шага
+- `RM-RND-26`: сравнивающие сэмплеры (`sampler.compare`) и specialization constants шага
   (`step.shader_constants`) с reflection SPIR-V, формой `id_<N>` и loud error на неизвестное имя;
-- `RND-27`: atlas allocation contract (`painter::allocate_atlas_regions`) с детерминированной укладкой и
+- `RM-RND-27`: atlas allocation contract (`painter::allocate_atlas_regions`) с детерминированной укладкой и
   занятостью, покрытый `painter_atlas_layout_test`;
-- `RND-11` частично: opt-in GPU timestamp profiler по границам проходов;
+- `RM-RND-11` частично: opt-in GPU timestamp profiler по границам проходов;
 - `painter::shader_crafter::set_include_root`: локальные `#include` резолвятся относительно корня шейдеров
   и без demiurg-реестра, что и позволило иметь один файл с раскладкой данных;
 - общая playground-оболочка: детальные строки overlay, frame pacer, free camera.

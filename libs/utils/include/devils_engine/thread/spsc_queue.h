@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_THREAD_SPSC_QUEUE_H
 #define DEVILS_ENGINE_THREAD_SPSC_QUEUE_H
 
+#include "devils_engine/utils/error.h"
+
 // Fixed-capacity single-producer/single-consumer queue with caller-visible overflow.
 
 #include <algorithm>
@@ -9,7 +11,6 @@
 #include <cstdint>
 #include <new>
 #include <span>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -21,7 +22,7 @@ class spsc_queue {
 public:
   explicit spsc_queue(const size_t capacity_) : buffer(capacity_) {
     if (capacity_ == 0) {
-      throw std::invalid_argument("spsc_queue capacity must be greater than zero");
+      utils::error{}("spsc_queue: capacity {} must be greater than zero", capacity_);
     }
   }
 

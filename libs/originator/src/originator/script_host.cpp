@@ -1,3 +1,4 @@
+#include "algorithms_source.h"
 #include "devils_engine/bindings/critical_error.h"
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/generator_chain.h"
@@ -69,7 +70,7 @@ constexpr const char* safe_libraries[] = {"coroutine", "string", "table", "math"
 // в те же таблицы, поэтому инструмент с таким именем затёр бы функцию МОЛЧА — и тело шага получило
 // бы вместо очереди обычный вызов или вместо `run_script` инструмент. Кто кого затрёт, зависело бы
 // ещё и от порядка регистрации, а такую пропажу по результату генерации не видно.
-constexpr const char* reserved_api_names[] = {"run", "run_script", "tool_exists", "queue", "segment_box_distance",
+constexpr const char* reserved_api_names[] = {"algorithms", "run", "run_script", "gather_script", "tool_exists", "queue", "segment_box_distance",
                                                "exclusion_set"};
 
 struct geometry_point { double x, y, z; };
@@ -515,6 +516,7 @@ void script_host::bind_tools() {
   // Средний уровень: devils_script над плотным буфером. Форма вызова та же, что у инструмента, —
   // скрипт не выбирает ни потоки, ни апертуру.
   api.set_function("run_script", &script_host::run_program, this);
+  api.set_function("gather_script", &script_host::run_gather_program, this);
   // Существует потому, что примитивы (FastNoise2, jc_voronoi) — ОТДЕЛЬНАЯ цель сборки: скрипт может
   // законно спросить, доступен ли инструмент, и выбрать другой путь.
   api.set_function("tool_exists", &script_host::has_tool, this);
@@ -523,6 +525,13 @@ void script_host::bind_tools() {
 
   install_shortcuts(api, api["run"]);
 
+  const auto algorithms = lua_.safe_script(algorithms_source, env_, sol::script_pass_on_error, "originator/algorithms");
+  bindings::rethrow_critical_error(lua_.lua_state());
+  if (!algorithms.valid()) {
+    const sol::error err = algorithms;
+    utils::error{}("originator: could not load control algorithms: {}", err.what());
+  }
+  api["algorithms"] = algorithms.get<sol::table>();
   api["queue"] = make_queue_api();
 
   env_["originator"] = api;
@@ -617,6 +626,7 @@ sol::object script_host::run_tool(const std::string& tool_name, const sol::table
       shape.range_end = end;
       shape.step_name = current_step_;
       shape.tool_name = tool_name;
+      shape.generation = current_generation_;
       footprint = tool->footprint(shape);
       declared = true;
     }
@@ -625,17 +635,31 @@ sol::object script_host::run_tool(const std::string& tool_name, const sol::table
   };
 
   if (tool->shape == aperture::reduce) {
-    const double value = dispatch_reduce(*tool, inputs, params, seed, begin, end, current_step_, pool_);
+    const double value = dispatch_reduce(*tool, inputs, params, seed, begin, end, current_step_, pool_, current_generation_);
     measured(end > begin ? end - begin : 0);
     return sol::make_object(s, value);
   }
 
-  dispatch(*tool, inputs, outputs, params, seed, begin, end, current_step_, pool_);
+  dispatch(*tool, inputs, outputs, params, seed, begin, end, current_step_, pool_, current_generation_);
   measured(end > begin ? end - begin : 0);
   return sol::nil;
 }
 
 void script_host::run_program(const sol::table args) {
+  if (args["program"].is<sol::table>()) {
+    size_t temporary = 0;
+    auto call = make_vector_call(args, &temporary);
+    if (call.count_from.valid()) {
+      bool clamped = false;
+      call.range_end = read_count_field(call.count_from, call.outputs.front().count(), clamped);
+    }
+    const auto started = profile_ ? now_us() : 0;
+    call.body(call, current_step_, pool_);
+    if (profile_) account(call.label, uint64_t(now_us() - started), call.range_count(),
+      touched_fields(call.inputs, call.outputs), call.shape, call.device.declared() ? device_fitness::ready : device_fitness::no_body,
+      0, false, 0, temporary, call.declared_temporary, true);
+    return;
+  }
   const sol::optional<std::string> program_name = args["program"];
   if (!program_name.has_value()) {
     utils::error{}("originator step '{}': run_script needs a 'program' name", current_step_);
@@ -649,7 +673,7 @@ void script_host::run_program(const sol::table args) {
   const auto kind = predicate.value_or(false) ? script_program::result_kind::predicate
                                               : script_program::result_kind::number;
 
-  const auto& program = acquire_program(*program_name, inputs, kind);
+  const auto& program = acquire_program(*program_name, inputs, kind, SIZE_MAX, &params);
 
   const uint64_t seed = read_seed(args, current_seed_);
 
@@ -675,6 +699,7 @@ void script_host::run_program(const sol::table args) {
       signature.append(binding.field_name());
       signature.push_back(':');
       signature.append(to_string(binding.type().base));
+      signature.append(std::to_string(binding.type().components));
       signature.push_back(';');
     }
     signature.push_back(kind == script_program::result_kind::predicate ? '?' : '#');
@@ -689,9 +714,10 @@ void script_host::run_program(const sol::table args) {
   if (profile_ != nullptr) {
     // Временная память программы — контексты виртуальной машины, по одному на рабочий поток.
     const size_t workers = pool_ == nullptr ? 1 : pool_->size() + 1;
+    const auto temporary = script_footprint(program, workers);
     account(*program_name, uint64_t(now_us() - started), end > begin ? end - begin : 0,
             touched_fields(inputs, outputs), program.shape(), fitness, 0, false, translation,
-            script_footprint(program, workers), true, true);
+            temporary.value_or(0), temporary.has_value(), true);
   }
 }
 
@@ -712,6 +738,7 @@ queue_call script_host::make_tool_call(const std::string& tool_name, const sol::
   call.inputs = read_field_list(args, "inputs");
   call.outputs = read_field_list(args, "outputs");
   call.params = read_parameters(args);
+  call.generation = current_generation_;
   call.seed = read_seed(args, current_seed_);
   call.range_end = default_range_end(call.shape, call.inputs, call.outputs);
   call.count_from = read_range(args, current_step_, call.range_begin, call.range_end);
@@ -759,6 +786,7 @@ queue_call script_host::make_tool_call(const std::string& tool_name, const sol::
 }
 
 queue_call script_host::make_script_call(const sol::table& args) {
+  if (args["program"].is<sol::table>()) return make_vector_call(args);
   const sol::optional<std::string> program_name = args["program"];
   if (!program_name.has_value()) {
     utils::error{}("originator step '{}': queue.run_script needs a 'program' name", current_step_);
@@ -769,6 +797,7 @@ queue_call script_host::make_script_call(const sol::table& args) {
   call.inputs = read_field_list(args, "inputs");
   call.outputs = read_field_list(args, "outputs");
   call.params = read_parameters(args);
+  call.generation = current_generation_;
   call.seed = read_seed(args, current_seed_);
 
   const sol::optional<bool> predicate = args["predicate"];
@@ -777,7 +806,7 @@ queue_call script_host::make_script_call(const sol::table& args) {
 
   // Компиляция идёт на ОБЪЯВЛЕНИИ, то есть всё ещё до исполнения очереди: программа компилируется
   // против имён фактических привязок, и они здесь уже известны.
-  const auto& program = acquire_program(*program_name, call.inputs, kind);
+  const auto& program = acquire_program(*program_name, call.inputs, kind, SIZE_MAX, &call.params);
 
   call.shape = program.shape();
   call.range_end = default_range_end(call.shape, call.inputs, call.outputs);
@@ -803,6 +832,7 @@ queue_call script_host::make_script_call(const sol::table& args) {
       signature.append(binding.field_name());
       signature.push_back(':');
       signature.append(to_string(binding.type().base));
+      signature.append(std::to_string(binding.type().components));
       signature.push_back(';');
     }
     signature.push_back(kind == script_program::result_kind::predicate ? '?' : '#');
@@ -816,6 +846,9 @@ queue_call script_host::make_script_call(const sol::table& args) {
 
   // Ядро очереди про devils_script не знает, поэтому элемент несёт своё исполнение телом. Указатель
   // на программу стабилен: программы живут в unique_ptr, и рост кэша их не перемещает.
+  const auto temporary = script_footprint(program, pool_ ? pool_->size() + 1 : 1);
+  call.temporary_bytes = temporary.value_or(0);
+  call.declared_temporary = temporary.has_value();
   const auto* pointer = &program;
   call.body = [pointer](const queue_call& queued, const std::string_view& step_name, thread::atomic_pool* pool) {
     dispatch_script(*pointer, queued.inputs, queued.outputs, queued.params, queued.seed, queued.range_begin,
@@ -825,10 +858,195 @@ queue_call script_host::make_script_call(const sol::table& args) {
   return call;
 }
 
+queue_call script_host::make_vector_call(const sol::table& args, size_t* temporary) {
+  queue_call call;
+  call.inputs = read_field_list(args, "inputs");
+  call.outputs = read_field_list(args, "outputs");
+  call.params = read_parameters(args);
+  call.generation = current_generation_;
+  call.seed = read_seed(args, current_seed_);
+  call.shape = aperture::pointwise;
+  const sol::table names = args["program"];
+  const bool packed = call.outputs.size() == 1 && call.outputs.front().type().components == names.size();
+  const bool separate = call.outputs.size() == names.size() && std::all_of(call.outputs.begin(), call.outputs.end(),
+    [](const auto& output) { return output.type().components == 1; });
+  if (names.size() < 1 || names.size() > 4 || (!packed && !separate))
+    utils::error{}("originator step '{}': program list needs one vector or one scalar output per program", current_step_);
+  for (size_t i = 0; i < call.outputs.size(); ++i)
+    for (size_t j = 0; j < i; ++j)
+      if (call.outputs[i].same_field_as(call.outputs[j]))
+        utils::error{}("originator step '{}': program group outputs must be distinct", current_step_);
+  if (packed) for (const auto& input : call.inputs)
+    if (input.same_field_as(call.outputs.front()))
+      utils::error{}("originator step '{}': component programs need a distinct vector destination", current_step_);
+  call.range_end = default_range_end(call.shape, call.inputs, call.outputs);
+  call.count_from = read_range(args, current_step_, call.range_begin, call.range_end);
+  const auto end = call.count_from.valid() ? call.outputs.front().count() : call.range_end;
+  std::vector<const script_program*> programs;
+  std::vector<translated_form> forms;
+  call.declared_temporary = true;
+  std::string signature;
+  for (const auto& input : call.inputs)
+    signature += std::string(input.field_name()) + std::string(to_string(input.type().base)) + std::to_string(input.type().components) + ";";
+  for (const auto& output : call.outputs) signature += std::string(to_string(output.type().base)) + std::to_string(output.type().components);
+  for (uint32_t component = 0; component < names.size(); ++component) {
+    const std::string name = names[component + 1];
+    const auto& program = acquire_program(name, call.inputs, script_program::result_kind::number, SIZE_MAX, &call.params);
+    const auto destination = packed ? std::span<const field_ref>(call.outputs) : std::span<const field_ref>(call.outputs).subspan(component, 1);
+    const auto check = check_script_dispatch(program, call.inputs, destination, call.params,
+      call.range_begin, end, current_step_, packed ? component : 0);
+    if (!check.allowed) utils::error{}("originator {}", check.message);
+    programs.push_back(&program);
+    const auto scratch = script_footprint(program, pool_ ? pool_->size() + 1 : 1);
+    call.declared_temporary = call.declared_temporary && scratch.has_value();
+    call.temporary_bytes = std::max(call.temporary_bytes, scratch.value_or(0));
+    if (temporary) *temporary = call.temporary_bytes;
+    if (!call.label.empty()) call.label += ",";
+    call.label += name;
+    forms.push_back(acquire_device_form(name, signature, call.inputs, destination.front(),
+      script_program::result_kind::number, packed ? component : 0, component));
+  }
+  call.device = combine_component_forms(forms, !packed);
+  call.body = [programs = std::move(programs), packed](const queue_call& queued, const std::string_view& step, thread::atomic_pool* pool) {
+    for (uint32_t component = 0; component < programs.size(); ++component) {
+      const auto destination = packed ? std::span<const field_ref>(queued.outputs) : std::span<const field_ref>(queued.outputs).subspan(component, 1);
+      dispatch_script(*programs[component], queued.inputs, destination, queued.params, queued.seed,
+        queued.range_begin, queued.range_end, step, pool, packed ? component : 0, component);
+    }
+  };
+  return call;
+}
+
+queue_call script_host::make_gather_call(const sol::table& args) {
+  queue_call call;
+  call.inputs = read_field_list(args, "inputs");
+  const auto own_count = call.inputs.size();
+  const auto other = read_field_list(args, "other_inputs");
+  call.inputs.insert(call.inputs.end(), other.begin(), other.end());
+  const auto domain_count = call.inputs.size();
+  const auto neighbours = read_field_list(args, "neighbours");
+  if (neighbours.size() != 0 && neighbours.size() != 2)
+    utils::error{}("originator step '{}': gather neighbours need CSR offsets and arcs", current_step_);
+  call.inputs.insert(call.inputs.end(), neighbours.begin(), neighbours.end());
+  call.outputs = read_field_list(args, "outputs");
+  for (const auto& output : call.outputs) for (const auto& topology : neighbours)
+    if (output.same_field_as(topology)) utils::error{}("originator step '{}': gather cannot overwrite its topology", current_step_);
+  call.params = read_parameters(args);
+  call.seed = read_seed(args, current_seed_);
+  call.generation = current_generation_;
+  call.shape = aperture::gather;
+  const std::string name = args["program"];
+  call.label = name;
+  if (other.empty() || call.outputs.empty() || call.outputs.size() > 4)
+    utils::error{}("originator step '{}': gather needs other_inputs and 1..4 outputs", current_step_);
+  const sol::optional<int64_t> requested = args["other_count"];
+  const auto other_count = requested.value_or(int64_t(other.front().count()));
+  if (other_count < 0 || size_t(other_count) > other.front().count())
+    utils::error{}("originator step '{}': gather other_count is outside its domain", current_step_);
+  std::vector<std::string> binding_names;
+  const sol::optional<sol::table> aliases = args["aliases"];
+  for (size_t i = 0; i < domain_count; ++i) {
+    std::string field(call.inputs[i].field_name());
+    if (aliases) {
+      const sol::optional<std::string> alias = (*aliases)[field];
+      if (alias) field = *alias;
+    }
+    binding_names.push_back((i < own_count ? std::string{} : std::string{"other_"}) + field);
+  }
+  const auto& program = acquire_program(name, std::span(call.inputs).first(domain_count), script_program::result_kind::number, own_count, &call.params, binding_names);
+  const sol::optional<int> validity = args["valid_component"];
+  const sol::optional<std::string> empty = args["empty"];
+  if (validity.value_or(-1) < -1 || validity.value_or(-1) > 3 ||
+      (empty && *empty != "zero" && *empty != "self"))
+    utils::error{}("originator step '{}': invalid gather validity/empty policy", current_step_);
+  std::vector<script_reduction> reductions;
+  for (size_t c = 0; c < call.outputs.size(); ++c) {
+    const sol::object reduce_arg = args["reduce"];
+    const sol::object selected = reduce_arg.is<sol::table>() ? reduce_arg.as<sol::table>().get<sol::object>(c + 1) : reduce_arg;
+    if (!selected.is<std::string>()) utils::error{}("originator step '{}': gather output {} needs a named reduction", current_step_, c);
+    const auto operation = selected.as<std::string>();
+    script_reduction rule;
+    using kind = script_reduction::kind;
+    if (operation == "max") rule.operation = kind::maximum;
+    else if (operation == "min") rule.operation = kind::minimum;
+    else if (operation == "max_abs") rule.operation = kind::maximum_absolute;
+    else if (operation == "sum") rule.operation = kind::sum;
+    else if (operation == "argmin") rule.operation = kind::argmin;
+    else if (operation == "argmax") rule.operation = kind::argmax;
+    else utils::error{}("originator step '{}': unknown gather reduction '{}'", current_step_, operation);
+    rule.initial = rule.operation == kind::minimum || rule.operation == kind::argmin ? INFINITY :
+      rule.operation == kind::maximum_absolute ? -1.0 : 0.0;
+    const sol::optional<sol::table> scores = args["score_components"];
+    rule.score_component = scores ? (*scores).get<uint32_t>(c + 1) : uint32_t(c);
+    const sol::object initial = args["initial"];
+    if (initial.is<sol::table>()) rule.initial = initial.as<sol::table>().get<double>(c + 1);
+    else if (initial.is<double>()) rule.initial = initial.as<double>();
+    reductions.push_back(rule);
+  }
+  call.range_end = call.outputs.front().count();
+  call.count_from = read_range(args, current_step_, call.range_begin, call.range_end);
+  const auto make_shape = [own_count, domain_count, other_count, reductions = std::move(reductions),
+                           validity = validity.value_or(-1), empty_self = empty.value_or("zero") == "self", pointer = &program]
+    (const queue_call& queued, std::optional<neighbourhood>& around) {
+    if (queued.inputs.size() > domain_count) {
+      around = csr_neighbourhood{queued.inputs[domain_count].read(), queued.inputs[domain_count + 1].read(), {}, size_t(other_count)};
+    }
+    script_gather_call shape;
+    shape.program = pointer;
+    shape.inputs = std::span(queued.inputs).first(domain_count);
+    shape.own_inputs = own_count;
+    shape.outputs = queued.outputs;
+    shape.params = &queued.params;
+    shape.around = around ? &*around : nullptr;
+    shape.other_count = size_t(other_count);
+    shape.reductions = reductions;
+    shape.validity_component = validity;
+    shape.empty_self = empty_self;
+    shape.seed = queued.seed;
+    shape.begin = queued.range_begin;
+    shape.end = queued.range_end;
+    shape.step = queued.label;
+    return shape;
+  };
+  std::optional<neighbourhood> around;
+  auto checked = make_shape(call, around);
+  if (call.count_from.valid()) checked.end = call.outputs.front().count();
+  check_gather_program(checked);
+  const auto temporary = script_footprint(program, pool_ ? pool_->size() + 1 : 1);
+  call.temporary_bytes = temporary.value_or(0);
+  call.declared_temporary = temporary.has_value();
+  call.device = translated_form::refused("scripted neighbour reductions have no shader form");
+  call.body = [make_shape](const queue_call& queued, const std::string_view&, thread::atomic_pool* pool) {
+    std::optional<neighbourhood> around;
+    const auto shape = make_shape(queued, around);
+    dispatch_gather_program(shape, pool);
+  };
+  return call;
+}
+
+void script_host::run_gather_program(const sol::table args) {
+  auto call = make_gather_call(args);
+  if (call.count_from.valid()) {
+    bool clamped = false;
+    call.range_end = read_count_field(call.count_from, call.outputs.front().count(), clamped);
+  }
+  const auto started = profile_ ? now_us() : 0;
+  call.body(call, current_step_, pool_);
+  if (profile_) account(call.label, uint64_t(now_us() - started), call.range_count(), touched_fields(call.inputs, call.outputs),
+    call.shape, device_fitness::no_body, 0, false, 0, call.temporary_bytes, call.declared_temporary, true);
+}
+
+queue_call script_host::declare_gather_program(const sol::table args) {
+  auto call = make_gather_call(args);
+  ++queue_records_;
+  return call;
+}
+
 sol::table script_host::make_queue_api() {
   sol::table api(lua_, sol::create);
   api.set_function("run", &script_host::declare_tool, this);
   api.set_function("run_script", &script_host::declare_program, this);
+  api.set_function("gather_script", &script_host::declare_gather_program, this);
 
   // Ярлыки те же, что у немедленного вызова, и это важнее краткости: одна и та же строка аргументов
   // читается одинаково в обоих неймспейсах, а отличие ровно одно — когда работа исполняется.
@@ -937,6 +1155,10 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
       fitness = std::max(fitness, call_fitness);
       by_fitness[call_fitness] += 1;
       elements += call.range_count();
+      if (!call.tool) {
+        declared_footprint = declared_footprint && call.declared_temporary;
+        footprint = std::max(footprint, call.temporary_bytes);
+      }
       if (call.tool != nullptr) {
         if (call.tool->footprint == nullptr) {
           declared_footprint = false;
@@ -950,6 +1172,7 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
           shape.range_end = call.range_end;
           shape.step_name = current_step_;
           shape.tool_name = call.label;
+          shape.generation = call.generation;
           footprint = std::max(footprint, call.tool->footprint(shape));
         }
       }
@@ -1162,9 +1385,10 @@ const translated_form& script_host::acquire_device_form(const std::string_view& 
                                                        const std::string_view& signature,
                                                        const std::span<const field_ref>& inputs,
                                                        const field_ref& output,
-                                                       const script_program::result_kind kind) {
+                                                       const script_program::result_kind kind, const uint32_t output_component, const uint32_t result_component) {
+  const std::string component_signature = std::string(signature) + "@" + std::to_string(output_component) + "#" + std::to_string(result_component);
   for (const auto& entry : device_forms_) {
-    if (entry.name == program_name && entry.signature == signature) {
+    if (entry.name == program_name && entry.signature == component_signature) {
       return entry.form;
     }
   }
@@ -1188,7 +1412,7 @@ const translated_form& script_host::acquire_device_form(const std::string_view& 
     const field_ref single[] = {output};
     if (!device_representable(inputs, single)) {
       device_forms_.push_back(device_form_entry{
-        std::string(program_name), std::string(signature),
+        std::string(program_name), component_signature,
         translated_form::refused(std::format(
           "field kinds outside the 32-bit set (v, ui, i) have no shader type: '{}' is '{}'",
           output.field_name(), to_string(output.type().base)))});
@@ -1199,40 +1423,44 @@ const translated_form& script_host::acquire_device_form(const std::string_view& 
   std::vector<translated_field> fields;
   fields.reserve(inputs.size());
   for (const auto& binding : inputs) {
-    fields.push_back(translated_field{std::string(binding.field_name()), binding.type().base});
+    fields.push_back(translated_field{std::string(binding.field_name()), binding.type().base, binding.type().components});
   }
-  const translated_field target{std::string(output.field_name()), output.type().base};
+  const translated_field target{std::string(output.field_name()), output.type().base, output.type().components};
 
-  translated_form form;
-  try {
-    form = translate_to_glsl(program_name, source->source, fields, target, kind).form;
-  } catch (const std::exception& error) {
-    // Перевод падает на том, чего он ещё не умеет (случайность, списки, `ctx_save`). Это законный
-    // ответ, а не дефект: очередь считается на CPU, а причина едет дальше вместе с объявлением.
-    form = translated_form::refused(error.what());
-  }
+  auto translated = try_translate_to_glsl(program_name, source->source, fields, target, kind, 64, output_component, result_component);
+  auto form = translated ? std::move(translated->form) : translated_form::refused(translated.error());
 
-  device_forms_.push_back(device_form_entry{std::string(program_name), std::string(signature), std::move(form)});
+  device_forms_.push_back(device_form_entry{std::string(program_name), component_signature, std::move(form)});
   return device_forms_.back().form;
 }
 
 const script_program& script_host::acquire_program(const std::string_view& program_name,
                                                    const std::span<const field_ref>& inputs,
-                                                   const script_program::result_kind kind) {
+                                                   const script_program::result_kind kind, const size_t own_inputs, const parameters* params, const std::span<const std::string> explicit_names) {
   // Имена входов берутся у самих привязок: поле зовётся в скрипте ровно так же, как в конфиге, и
   // второго списка имён, который мог бы разъехаться с первым, не существует.
   std::vector<std::string> names;
   names.reserve(inputs.size());
+  std::vector<field_type> types;
   std::string signature;
   for (const auto& binding : inputs) {
     if (!binding.valid()) {
       utils::error{}("originator step '{}': program '{}' got an invalid input", current_step_, program_name);
     }
-    names.emplace_back(binding.field_name());
+    const auto index = names.size();
+    names.emplace_back(explicit_names.empty() ?
+      (index < own_inputs ? std::string{} : std::string{"other_"}) + std::string(binding.field_name()) : explicit_names[index]);
+    types.push_back(binding.type());
     signature.append(names.back());
+    signature.append(std::to_string(binding.type().components));
     signature.push_back(kind == script_program::result_kind::predicate ? '?' : '#');
   }
 
+  std::vector<std::string> parameter_names;
+  if (params) for (size_t i = 0; i < params->size(); ++i)
+    if (!params->is_string_at(i)) parameter_names.emplace_back(params->name_at(i));
+  std::sort(parameter_names.begin(), parameter_names.end());
+  for (const auto& name : parameter_names) signature += "@" + name;
   for (const auto& entry : programs_) {
     if (entry.name == program_name && entry.signature == signature) {
       return *entry.program;
@@ -1250,7 +1478,7 @@ const script_program& script_host::acquire_program(const std::string_view& progr
     utils::error{}("originator step '{}': no devils_script program named '{}'", current_step_, program_name);
   }
 
-  auto compiled = script_program::compile(program_name, source->source, names, kind);
+  auto compiled = script_program::compile(program_name, source->source, names, kind, types, parameter_names);
   programs_.push_back(program_entry{std::string(program_name), std::move(signature), std::move(compiled)});
   return *programs_.back().program;
 }
@@ -1344,6 +1572,12 @@ sol::table script_host::make_step_table(const step_context& context) {
 
 step_invoker script_host::invoker() {
   return [this](const step_context& context) {
+    struct context_scope {
+      generation_context*& target;
+      generation_context* previous;
+      ~context_scope() { target = previous; }
+    } active{current_generation_, std::exchange(current_generation_, context.generation)};
+
     const auto* entry = find_body(context.name);
     if (entry == nullptr) {
       utils::error{}("originator step '{}': no body was loaded", context.name);
@@ -1418,36 +1652,34 @@ step_invoker script_host::invoker() {
 namespace {
 
 struct chain_hosts_state {
-  uint64_t id = 0;
   const generator_chain* chain = nullptr;
   std::function<void(tool_registry&)> add_tools;
   thread::atomic_pool* pool = nullptr;
 };
 
-struct thread_host {
+struct context_host {
+  std::shared_ptr<chain_hosts_state> owner;
   tool_registry tools;
   std::unique_ptr<script_host> host;
   bool busy = false;
 };
 
-std::atomic<uint64_t> next_chain_hosts_id{1};
+
 
 } // namespace
 
 invoker_source make_chain_invokers(const generator_chain& chain, std::function<void(tool_registry&)> add_tools,
                                    thread::atomic_pool* pool) {
   auto state = std::make_shared<chain_hosts_state>();
-  // Номер, а не адрес цепочки: адрес освобождённой цепочки может достаться новой, и поток взял бы
-  // хост со старыми телами.
-  state->id = next_chain_hosts_id.fetch_add(1);
   state->chain = &chain;
   state->add_tools = std::move(add_tools);
   state->pool = pool;
-  return [state](const chain_generator& generator) -> step_invoker {
-    thread_local std::map<std::pair<uint64_t, std::string>, std::unique_ptr<thread_host>> hosts;
-    auto& slot = hosts[{state->id, generator.name}];
+  return [state](const chain_generator& generator, generation_context& context) -> step_invoker {
+    auto& erased = context.hosts[{state.get(), generator.name}];
+    auto slot = std::static_pointer_cast<context_host>(erased);
     if (slot == nullptr) {
-      slot = std::make_unique<thread_host>();
+      slot = std::make_shared<context_host>();
+      slot->owner = state;
       if (state->add_tools) state->add_tools(slot->tools);
       slot->host = std::make_unique<script_host>(slot->tools, state->pool);
       slot->host->set_constants(state->chain->constants());
@@ -1462,10 +1694,12 @@ invoker_source make_chain_invokers(const generator_chain& chain, std::function<v
           slot->host->load_body(script.name, script.text, script.id);
         }
       }
+      // Publish only a complete host: a failed load must be retryable in this context.
+      erased = slot;
     }
-    thread_host* host = slot.get();
+    context_host* host = slot.get();
     auto inner = host->host->invoker();
-    return [host, inner = std::move(inner), name = generator.name](const step_context& context) {
+    return [slot, host, inner = std::move(inner), name = generator.name](const step_context& context) {
       // Связи разрешаются ДО шагов, поэтому повторный вход в тот же хост означает, что шаг сам
       // попросил экземпляр того же генератора — у однопоточного lua это порча состояния, а не рекурсия.
       if (host->busy) {
@@ -1473,7 +1707,7 @@ invoker_source make_chain_invokers(const generator_chain& chain, std::function<v
       }
       host->busy = true;
       struct release {
-        thread_host* h;
+        context_host* h;
         ~release() { h->busy = false; }
       } released{host};
       inner(context);

@@ -100,7 +100,7 @@ using neighbourhood = std::variant<csr_neighbourhood, stencil_neighbourhood>;
 // `stencil` (cross | box), `radius`, `wrap`. Растр без объявленной формы — громкий отказ: соседей у
 // линейного буфера нет.
 neighbourhood resolve_neighbourhood(const tool_call& call, const size_t offsets_input, const field_ref& shaped,
-                                    const size_t count);
+                                    const size_t count, bool weighted = true);
 
 // ЯДРА — одно на понятие, над любой формой соседства. Старые инструменты (`graph_blur`, `box_blur`,
 // `graph_flood`, `graph_frontier`, `graph_slope`, `graph_vote`) зовут ровно их, поэтому их результат не изменился ни в одном бите.
@@ -125,6 +125,14 @@ void slope_range(const neighbourhood& around, const const_field_accessor& values
 void vote_range(const neighbourhood& around, const const_field_accessor& labels, const const_field_accessor& weights,
                 const const_field_accessor& mask, const field_accessor& target, const size_t begin, const size_t end,
                 const double threshold);
+// Связные компоненты маски. Existing сохраняет уже назначенные labels; новые начинаются
+// после label_base. Число записанных новых компонент возвращается вызывающему.
+size_t components_whole(const neighbourhood& around, const const_field_accessor& mask,
+                        const const_field_accessor& existing, const field_accessor& target,
+                        size_t count, size_t minimum, uint32_t label_base);
+// Верхняя оценка числа дуг без разворачивания трафарета в CSR.
+size_t neighbourhood_arc_bound(const neighbourhood& around, size_t count);
+size_t flood_footprint(const neighbourhood& around, size_t count);
 // Заливка от затравок (метка > 0) по проходимым элементам: шаг в соседа стоит cost[сосед] плюс вес
 // дуги, если соседство взвешено. Очередь упорядочена по (расстояние, метка, элемент), capacity > 0 —
 // предел элементов на метку. Пишет метку (0 — не достигнут) и расстояние (unreached).

@@ -1,6 +1,9 @@
 #ifndef DEVILS_ENGINE_PAINTER_GRAPHICS_BASE_H
 #define DEVILS_ENGINE_PAINTER_GRAPHICS_BASE_H
 
+#include "memory_statistics.h"
+#include "devils_engine/utils/type_traits.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -63,6 +66,7 @@ struct graphics_base {
 
   // аллокаторы
   VmaAllocator allocator;
+  gpu_memory_statistics memory_statistics() const;
 
   std::vector<constant_value> constant_values;
   std::vector<counter> counters;

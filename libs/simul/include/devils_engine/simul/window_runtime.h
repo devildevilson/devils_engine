@@ -1,6 +1,9 @@
 #ifndef DEVILS_ENGINE_SIMUL_WINDOW_RUNTIME_H
 #define DEVILS_ENGINE_SIMUL_WINDOW_RUNTIME_H
 
+#include "devils_engine/utils/log.h"
+#include "devils_engine/utils/numeric.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>

@@ -305,3 +305,10 @@ defaults <- project file <- user settings file <- CLI overrides
 4. Переносить `sound_system` почти целиком в `libs/simul`, затем `assets_system`, затем общий базовый render слой.
 
 Важно: настройки окна, keymapping, graphics profile и sound device скорее относятся не к "engine config", а к runtime/game settings, потому что они должны уметь дампиться, перегружаться и применять изменения через стандартные сообщения системам.
+
+## Engine/project/debug settings
+
+Bundled `engine.tavl`, `project.tavl`, `debug.tavl` читаются отдельно и составляют runtime view.
+Player-facing `settings.tavl` сохраняется отдельно от пользовательского debug-файла;
+logging/metrics из прежнего combined файла мигрируют один раз. Режим mixing принадлежит engine.
+Карта полей, migration и `sound_mixing = owner|device`: [CONFIGURATION.md](CONFIGURATION.md).

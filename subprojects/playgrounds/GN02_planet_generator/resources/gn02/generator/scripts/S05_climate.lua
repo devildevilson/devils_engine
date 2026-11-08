@@ -33,12 +33,13 @@ return function(step)
   -- ячейка Хэдли разрезается на несколько, и это одно из двух мест, где вращение влияет на климат.
   -- Второе — соотношение зональной и меридиональной составляющей: чем сильнее Кориолис, тем более
   -- широтным становится приземный ветер.
-  originator.wind_field{
+  originator.run_script{
+    program = {step.programs.wind, step.programs.wind, step.programs.wind},
     inputs = { position, lat_sin },
     outputs = { wind },
     params = {
-      axis = p.axis,
-      bands = p.wind_bands,
+      axis = math.max(0, math.min(2, math.floor(p.axis))),
+      bands = math.max(1, math.min(9, math.floor(p.wind_bands))),
       speed = p.wind_speed,
       meridional = p.wind_meridional,
       rotation = p.rotation,
@@ -47,12 +48,12 @@ return function(step)
 
   -- 2. Годовая температура. Нужна раньше влаги, потому что ёмкость воздуха зависит от температуры:
   -- полярная пустыня существует именно поэтому — океан рядом, а испарять нечем.
-  originator.insolation{
+  originator.run_script{
+    program = step.programs.insolation,
     inputs = { lat_sin, height, cells:field("ocean_distance") },
     outputs = { temperature },
     params = {
-      season = 0.0,
-      tilt = p.axial_tilt,
+      declination = 0.0,
       equator_temperature = p.equator_temperature,
       pole_temperature = p.pole_temperature,
       exponent = p.insolation_exponent,
@@ -61,6 +62,16 @@ return function(step)
       ocean_reference = p.ocean_reference / spacing,
     },
   }
+
+  local transport_buffer = step.writes.transport
+  local upwind = transport_buffer:field("upwind")
+  local upwind_moisture = transport_buffer:field("upwind_moisture")
+  local upwind_height = transport_buffer:field("upwind_height")
+  originator.gather_script{
+    program = step.programs.upwind, inputs = {position, wind}, other_inputs = {position},
+    neighbours = {offsets, arcs}, outputs = {upwind}, reduce = "argmin", initial = 0, empty = "self",
+  }
+  originator.lookup{inputs = {upwind, height}, outputs = {upwind_height}}
 
   -- 3. Перенос влаги. Начинается с нуля: накопленный дождь обязан быть результатом переноса, а не
   -- остатком предыдущего прогона.
@@ -98,22 +109,20 @@ return function(step)
   -- тот же вызов с переставленными местами источником и приёмником. Подграф существовал и раньше —
   -- у него не было имени, и потому его нельзя было ни померить как одну вещь, ни перенести целиком.
   --
-  -- Заполнение нулями осталось СНАРУЖИ намеренно. `moisture_step` НАКАПЛИВАЕТ дождь в своём
-  -- элементе `rain`, но объявляет его только выходом — а очередь видит объявления, не тела. Внутри
-  -- очереди `fill{rain}` выглядел бы как проход, чей результат следующий элемент затирает не читая,
-  -- то есть как мёртвая работа, и отказ был бы честным по объявлению и неверным по делу.
+  -- Rain читается как СВОЁ значение: соседям оно недоступно. Очередь видит это чтение,
+  -- а общий gather проверяет, что neighbour inputs остаются неизменными до конца прохода.
   local transport_queue = {}
   for _ = 1, pairs_count do
-    transport_queue[#transport_queue + 1] = originator.queue.moisture_step{
-      inputs = { offsets, arcs, position, wind, moisture, land, temperature, height },
-      outputs = { moisture_next, rain },
-      params = transport,
-    }
-    transport_queue[#transport_queue + 1] = originator.queue.moisture_step{
-      inputs = { offsets, arcs, position, wind, moisture_next, land, temperature, height },
-      outputs = { moisture, rain },
-      params = transport,
-    }
+    for _, pair in ipairs({{moisture, moisture_next}, {moisture_next, moisture}}) do
+      transport_queue[#transport_queue + 1] = originator.queue.lookup{
+        inputs = {upwind, pair[1]}, outputs = {upwind_moisture},
+      }
+      transport_queue[#transport_queue + 1] = originator.queue.run_script{
+        program = {step.programs.moisture, step.programs.moisture},
+        inputs = {upwind_moisture, upwind_height, land, temperature, height, rain},
+        outputs = {pair[2], rain}, params = transport,
+      }
+    end
   end
 
   -- ГРАНИЦА ПЕРЕДАЧИ: что читают ПОСЛЕ очереди. `moisture_next` в неё не входит — он живёт ровно

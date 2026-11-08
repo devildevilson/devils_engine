@@ -70,6 +70,7 @@ producer-side pin. Handle остаётся identity/diagnostic fallback; playbac
 - `ma_context`;
 - `ma_device`;
 - `ma_engine`;
+- явным `ma_resource_manager` без job threads;
 - пулом mono voice instances;
 - пулом stereo voice instances;
 - списком активных `sound_task`;
@@ -78,7 +79,17 @@ producer-side pin. Handle остаётся identity/diagnostic fallback; playbac
 
 Устройство можно выбрать по имени. Если запрошенное устройство не найдено, система логирует предупреждение и создает default playback device. Список устройств доступен через `system::playback_devices()`.
 
-Playback callback у miniaudio вызывает `ma_engine_read_pcm_frames()`. Сами звуки подключены к engine как `ma_sound` поверх кастомного data source.
+У engine нет второго default device: он получает выбранный system-owned `ma_device` и его реальные
+rate/channels. Устройство запускается после инициализации engine/voices. Resource manager использует
+0 job threads / NO_THREADING: данные декодируют собственные memory decoders; async native file API
+не выставлен. Shutdown останавливает callback до уничтожения voices, engine, manager, device/context.
+
+`system_config{.offline = true}` создаёт тот же mixer без device/context. Owner последовательно
+вызывает `update(...)` и `render(span<float>)`; output format задают sample_rate/channels config.
+В owner mode render потребляет уже подготовленный PCM, в device mode вызывает native graph.
+Это путь для CPU probes/export, не подмена device callback игровым 60 Hz циклом.
+
+В default owner mode `update()` вызывает `ma_engine_read_pcm_frames()` и кладёт готовый PCM в output ring; callback только копирует PCM. В явном device mode graph вызывается из callback. Сами звуки подключены к engine как `ma_sound` поверх кастомного data source.
 
 ## Voice Instances И Data Source
 
@@ -103,7 +114,7 @@ default stereo endpoint использует `SIDE_LEFT`/`SIDE_RIGHT` directions
 очень мягкую miniaudio-native coloration для источников сзади/сверху/снизу; полноценный HRTF
 отложен до pre-release spatial pass проекта `submarine_coop`.
 
-`AUD-17` реализует этот experiment как optional post-spatialization high shelf только на mono
+`ULT-AUD-17` реализует этот experiment как optional post-spatialization high shelf только на mono
 voices. Listener-relative response не использует distance/radius: front нейтрален, зафиксированный
 профиль — behind `-2.25 dB`, above `+0.65 dB`, below `-0.85 dB` на `2.5 kHz`. Общий `strength`
 в `[0,2]` масштабирует весь cue; итог всё равно ограничен `[-3,+1] dB`. Коэффициент плавно движется к
@@ -207,7 +218,7 @@ Main сразу возвращает UI opaque handle на основе task id,
 
 ## Техдолг И Направления
 
-- `AUD-17` закрыт: optional bounded shelf оставлен как дешёвый прежде всего front/back cue; ручная
+- `ULT-AUD-17` закрыт: optional bounded shelf оставлен как дешёвый прежде всего front/back cue; ручная
   проверка показала, что elevation он надёжно не кодирует. Для height/front-back качества нужен HRTF,
   а не дальнейшее усиление shelf.
 - Steam Audio/HRTF оценивать ближе к релизу `submarine_coop`, когда появятся реальные требования к elevation/front-back, voice budget и целевым платформам.
@@ -223,3 +234,13 @@ Main сразу возвращает UI opaque handle на основе task id,
 - Добавить тип звука в broker-команду play. Сейчас `tile_frontier` стадийно отправляет все как `sfx`.
 - Доделать `set_source_volume()` и общую модель групп громкости: master/music/sfx/ui/dialogue.
 - Добавить тесты на progress с `start > 0`, `after` sequencing, underrun accounting, device fallback и snapshot state.
+
+## Измерение CPU
+
+Несколько нагрузок 16/64/128/320 voices, PCM/WAV/MP3, update и mixing отдельно:
+[методика и результаты](../../docs/review/audio_cpu/README.md). Лимит проекта пока не выбран.
+Cold startup измеряется отдельно: PCM decoder копирует source на каждый voice, ring refill
+декодирует вперёд. Из p95 warm cost нельзя выводить гарантию кадра при массовом запуске.
+
+Режимы и отдельные engine/project/debug файлы: [simul/CONFIGURATION.md](../simul/CONFIGURATION.md).
+Текущая небольшая нагрузка: [1/5 voices](../../docs/review/audio_cpu/SMALL_LOADS.md).

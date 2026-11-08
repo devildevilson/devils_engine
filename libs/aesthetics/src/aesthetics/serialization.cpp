@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include <algorithm>
 
 #include "devils_engine/aesthetics/serialization.h"

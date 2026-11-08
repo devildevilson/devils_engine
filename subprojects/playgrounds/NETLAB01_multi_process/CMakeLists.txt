@@ -70,7 +70,7 @@ if (UNIX AND NOT APPLE AND CMAKE_OBJCOPY)
 endif()
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME NETLAB01_multi_process_verify
+  devils_add_test(NAME NETLAB01_multi_process_verify
     COMMAND NETLAB01_multi_process --verify --quiet)
   set_tests_properties(NETLAB01_multi_process_verify PROPERTIES LABELS devils_engine)
 endif()

@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "devils_engine/demiurg/module_interface.h"
 #include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/flow/animation_resource.h"

@@ -1,3 +1,8 @@
+#include <exception>
+#include <iostream>
+#include "devils_engine/playground/generator_resources.h"
+#include "devils_engine/playground/cli.h"
+#include "devils_engine/utils/log.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -27,10 +32,10 @@
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
 
-#include "memory.h"
+#include "devils_engine/playground/world_memory.h"
 #include "skeleton.h"
-#include "streaming.h"
-#include "viewer.h"
+#include "devils_engine/playground/chunk_streaming.h"
+#include "devils_engine/playground/chunk_viewer.h"
 
 // GN03 — потоковая генерация окружающей геометрии.
 //
@@ -104,19 +109,15 @@ fs::path resource_root() {
 // Генератор приезжает через demiurg — тем же путём, каким приехал бы из мода игрока. Хост знает
 // ровно ОДНО имя, `generator/volume`; всё остальное называет сама точка входа.
 struct generator_registry {
-  demiurg::module_system modules;
-  demiurg::resource_system resources;
+  playground::generator_resources source;
   originator::generator_config config;
   // ДВА ГЕНЕРАТОРА, а не один с ветвлением: грубый проход и чанковый — разные пайплайны с разными
   // буферами и разной ценой, и объединять их значило бы держать в одном описании два масштаба.
   originator::generator_config skeleton_config;
 
-  generator_registry() : modules(resource_root().generic_string() + "/") {
-    modules.load_modules({demiurg::module_system::list_entry{"gn03/", "", ""}});
-    originator::register_generator_resources(resources);
-    resources.parse_resources(&modules);
-    config = originator::load_generator(resources, "generator/volume");
-    skeleton_config = originator::load_generator(resources, "generator/skeleton");
+  generator_registry() : source(resource_root(), {{"gn03/", "", ""}}) {
+    config = originator::load_generator(source.resources(), "generator/volume");
+    skeleton_config = originator::load_generator(source.resources(), "generator/skeleton");
   }
 };
 
@@ -125,101 +126,45 @@ const generator_registry& generator() {
   return registry;
 }
 
-bool starts_with(const std::string_view& text, const std::string_view& prefix) {
-  return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
-}
 
-options parse_options(const int argc, const char** argv) {
-  options result;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view argument(argv[i]);
-    const auto value_of = [&](const std::string_view prefix) { return std::string(argument.substr(prefix.size())); };
 
-    if (argument == "--profile") {
-      result.profile = true;
-    } else if (argument == "--verify") {
-      result.verify = true;
-    } else if (argument == "--validation") {
-      result.validation = true;
-    } else if (argument == "--uncapped") {
-      result.uncapped = true;
-    } else if (starts_with(argument, "--seed=")) {
-      result.seed = std::stoull(value_of("--seed="));
-    } else if (starts_with(argument, "--radius=")) {
-      result.radius = std::stoll(value_of("--radius="));
-    } else if (starts_with(argument, "--vertical=")) {
-      // РАДИУС в чанках, а не пара границ. Мир генерируется в любом направлении от наблюдателя:
-      // выше уровня земли он не кончается (там висят острова), ниже идут пещеры. Отдельный радиус
-      // от горизонтального — не принцип, а цена: слой вверх стоит столько же, сколько кольцо в
-      // стороны, а смотрят чаще вдоль, чем вверх.
-      result.vertical_radius = std::stoll(value_of("--vertical="));
-    } else if (starts_with(argument, "--threads=")) {
-      result.threads = size_t(std::stoull(value_of("--threads=")));
-    } else if (starts_with(argument, "--arena=")) {
-      result.arena_vertices = size_t(std::stoull(value_of("--arena=")));
-    } else if (starts_with(argument, "--width=")) {
-      result.width = uint32_t(std::stoul(value_of("--width=")));
-    } else if (starts_with(argument, "--height=")) {
-      result.height = uint32_t(std::stoul(value_of("--height=")));
-    } else if (starts_with(argument, "--frames=")) {
-      result.frames = uint32_t(std::stoul(value_of("--frames=")));
-    } else if (argument == "--grid") {
-      result.grid = true;
-    } else if (starts_with(argument, "--view=")) {
-      // Режим представления ключом, а не только кнопкой: снимок отладочного вида нужен и в
-      // автоматическом прогоне, где кнопку нажать некому.
-      result.view_mode = size_t(std::stoull(value_of("--view=")));
-    } else if (starts_with(argument, "--start=")) {
-      const std::string text = value_of("--start=");
-      const auto first = text.find(':');
-      const auto second = text.rfind(':');
-      if (first == std::string::npos || first == second) {
-        utils::error{}("GN03: --start expects x:y:z, got '{}'", text);
-      }
-      result.start.x = std::stoll(text.substr(0, first));
-      result.start.y = std::stoll(text.substr(first + 1, second - first - 1));
-      result.start.z = std::stoll(text.substr(second + 1));
-    } else if (starts_with(argument, "--probe=")) {
-      const std::string text = value_of("--probe=");
-      const auto first = text.find(':');
-      const auto second = text.rfind(':');
-      if (first == std::string::npos || first == second) {
-        utils::error{}("GN03: --probe expects x:y:z, got '{}'", text);
-      }
-      result.probe.x = std::stoll(text.substr(0, first));
-      result.probe.y = std::stoll(text.substr(first + 1, second - first - 1));
-      result.probe.z = std::stoll(text.substr(second + 1));
-    } else if (argument == "--on-route") {
-      result.on_route = true;
-    } else if (starts_with(argument, "--on-route=")) {
-      result.on_route = true;
-      result.route_index = size_t(std::stoull(value_of("--on-route=")));
-    } else if (starts_with(argument, "--skeleton=")) {
-      result.skeleton_path = value_of("--skeleton=");
-    } else if (starts_with(argument, "--memory=")) {
-      result.memory_path = value_of("--memory=");
-    } else if (starts_with(argument, "--scrub=")) {
-      result.scrub_budget = size_t(std::stoull(value_of("--scrub=")));
-    } else if (argument == "--cull") {
-      result.cull = true;
-    } else if (starts_with(argument, "--flight=")) {
-      result.flight_speed = std::stod(value_of("--flight="));
-    } else if (starts_with(argument, "--dump=")) {
-      result.dump_path = value_of("--dump=");
-    } else if (starts_with(argument, "--set=")) {
-      // Значение генератора из командной строки: имя=число. Границы всё равно проверит диапазон из
-      // конфига, поэтому окно и ключ не могут задать разное.
-      const std::string text = value_of("--set=");
-      const auto equals = text.find('=');
-      if (equals == std::string::npos) {
-        utils::error{}("GN03: --set expects name=value, got '{}'", text);
-      }
-      result.overrides.emplace_back(text.substr(0, equals), std::stod(text.substr(equals + 1)));
-    } else {
-      utils::error{}("GN03: unknown argument '{}'", argument);
-    }
-  }
-  return result;
+std::optional<int> parse_options(const int argc, const char* const* argv, options& result) {
+  CLI::App app{"GN03_streaming_volume"};
+  app.option_defaults()->always_capture_default();
+  app.add_flag("--profile", result.profile, "profile");
+  app.add_flag("--verify", result.verify, "verify");
+  app.add_flag("--validation", result.validation, "validation");
+  app.add_flag("--uncapped", result.uncapped, "uncapped");
+  app.add_flag("--grid", result.grid, "grid");
+  app.add_flag("--cull", result.cull, "cull");
+  app.add_option("--seed", result.seed, "World seed");
+  app.add_option("--radius", result.radius, "Horizontal radius")->check(CLI::NonNegativeNumber);
+  app.add_option("--vertical", result.vertical_radius, "Vertical radius")->check(CLI::NonNegativeNumber);
+  app.add_option("--threads", result.threads, "Workers (0 = hardware minus one)");
+  app.add_option("--arena", result.arena_vertices, "Vertex arena")->check(CLI::PositiveNumber);
+  app.add_option("--width", result.width, "Viewer width")->check(CLI::PositiveNumber);
+  app.add_option("--height", result.height, "Viewer height")->check(CLI::PositiveNumber);
+  app.add_option("--frames", result.frames, "Frame limit");
+  app.add_option("--view", result.view_mode, "Viewer mode");
+  app.add_option("--skeleton", result.skeleton_path, "Skeleton package");
+  app.add_option("--memory", result.memory_path, "World memory");
+  app.add_option("--scrub", result.scrub_budget, "Scrub budget (0 = whole arena)");
+  app.add_option("--flight", result.flight_speed, "Recorded flight speed")->check(playground::finite_number)->check(CLI::NonNegativeNumber);
+  app.add_option("--dump", result.dump_path, "Frame output");
+  std::array<int64_t, 3> start{result.start.x, result.start.y, result.start.z};
+  std::array<int64_t, 3> probe{result.probe.x, result.probe.y, result.probe.z};
+  playground::add_tuple(app, "--start", start, ':');
+  playground::add_tuple(app, "--probe", probe, ':');
+  app.add_option("--on-route", result.route_index, "Start at route point (no value = 0)")->expected(0, 1)->default_str("0");
+  std::vector<std::string> overrides;
+  playground::add_overrides(app, overrides);
+
+  if (auto code = playground::parse_cli(app, argc, argv)) return code;
+  result.start = {start[0], start[1], start[2]};
+  result.probe = {probe[0], probe[1], probe[2]};
+  result.on_route = app.count("--on-route") != 0;
+  result.overrides = playground::numeric_overrides(overrides);
+  return std::nullopt;
 }
 
 size_t worker_count(const options& opts) {
@@ -1992,8 +1937,9 @@ int main_verify(const options& opts) {
 
 } // namespace
 
-int main(const int argc, const char** argv) {
-  const auto opts = parse_options(argc, argv);
+int main(const int argc, const char** argv) try {
+  options opts;
+  if (auto code = parse_options(argc, argv, opts)) return *code;
 
   if (opts.verify) {
     return main_verify(opts);
@@ -2137,4 +2083,7 @@ int main(const int argc, const char** argv) {
     }
   }
   return code;
+} catch (const std::exception& error) {
+  std::cerr << "GN03: " << error.what() << '\n';
+  return 1;
 }

@@ -88,7 +88,7 @@ device_fitness::values fitness_of(const tool_description& tool,
   if (!device_representable(inputs, outputs)) {
     return device_fitness::narrow;
   }
-  if (tool.device_body.empty()) {
+  if (tool.device_body.empty() || inputs.size() < tool.device_min_inputs) {
     return device_fitness::no_body;
   }
   // ТЕЛО ЕСТЬ, НО НЕ ДЛЯ ЭТОГО РОДА: написанное против `float`, оно годится над узким целым (оно

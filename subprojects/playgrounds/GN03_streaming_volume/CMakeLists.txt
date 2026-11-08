@@ -7,16 +7,15 @@ project(GN03_streaming_volume VERSION 0.1.0 LANGUAGES CXX)
 # генератор: разнести их значило бы дважды собирать пайплайн и однажды собрать его по-разному.
 add_executable(GN03_streaming_volume
   src/main.cpp
-  src/memory.cpp src/memory.h
   src/skeleton.cpp src/skeleton.h
-  src/streaming.cpp src/streaming.h
-  src/viewer.cpp src/viewer.h)
+)
 
 target_compile_definitions(GN03_streaming_volume PRIVATE
   GN03_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources"
-  PLAYGROUND_COMMON_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../common/resources")
+)
 
 target_link_libraries(GN03_streaming_volume PRIVATE
+  devils_engine::playground_chunk_viewer
   devils_engine::originator
   devils_engine::originator_config
   devils_engine::originator_lua
@@ -39,6 +38,8 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   # Проверка идёт на РАЗРЕШЕНИИ ПО УМОЛЧАНИЮ: чанк — единица генерации, и мельчить его в проверке
   # значило бы проверять другую геометрию. Считается при этом не мир, а десятка чанков, поэтому
   # проверка укладывается в секунды.
-  add_test(NAME GN03_streaming_volume_verify COMMAND GN03_streaming_volume --verify)
+  devils_add_test(NAME GN03_streaming_volume_verify COMMAND GN03_streaming_volume --verify)
   set_tests_properties(GN03_streaming_volume_verify PROPERTIES LABELS devils_engine)
 endif()
+
+target_link_libraries(GN03_streaming_volume PRIVATE devils_engine::playground_cli devils_engine::playground_generator)

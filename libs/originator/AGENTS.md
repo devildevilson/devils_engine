@@ -279,5 +279,49 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
 8 аппаратных потоков — минимум машины, а не верхний предел потоков процесса. Cache capacity/trim/footprint по отдельности не ограничивают весь heap.
 F-02 исправлен: script_host устанавливает critical-error policy и проверяет latch после
 защищённых вызовов. utils::critical_error доходит до host даже через pcall/xpcall/coroutine.
-TLS hosts по chain id требуют lifetime audit. Allocation admission принадлежит host; не вводить
+Lua hosts и scratch принадлежат явным contexts. Allocation admission принадлежит host; не вводить
 новый scheduler поверх tools/chain. См. TECHNICAL_AUDIT.md и TECH-02/03/11.
+
+## Владение execution state
+
+Production TLS отсутствует. `generation_context` передаётся chain get/resolve/build и step/tool
+calls; native nested вызов передаёт `run.context()`. Один context эксклюзивен, его можно передать
+другому worker только между вызовами. Root overloads без context берут chain-owned slot;
+`release_contexts()` после drain уничтожает slots, а не кэш результатов.
+Lua hosts принадлежат context, не OS thread. Внешний context освобождать до удаления chain,
+поскольку consumer tools могут захватывать chain по ссылке. `context.release()` уничтожает hosts
+и scratch при живых workers. Parallel native tool jobs получают свой context с отдельным scratch.
+`column_program::run` требует `column_workspace&`, `run_once` — одноразовый вариант.
+Повторные point queries используют `field_workspace&` либо sampler; default overload создаёт
+временный scratch. Вложенный query получает стабильный frame, не перезаписывает scratch parent.
+Не двигать/не release активный workspace. Карта и проверки —
+[review](../../docs/review/LIFETIME_AND_RESOURCES.md).
+
+## Аудит инструментария GN
+
+[Карта algorithms/adapters и gaps](../../docs/review/GN_ORIGINATOR_TOOLS.md),
+`python3 scripts/inventory_originator_tools.py --check` — lexical inventory, не runtime trace.
+Перед новым тематическим tool проверить выразимость через component/lookup/neighbourhood
+и существующие kernels. Разные имена могут делить одно ядро: collapse уже так устроен;
+общие CPU neighbourhood kernels ещё не означают общую device eligibility. Source-находки
+по sparse labels/stencil footprint flood относятся к открытому TECH-03.
+
+## Общая механика GN (P2)
+
+- `graph_walk.h`: общий CSR builder, weighted walk, FIFO BFS/predecessors; caller-owned scratch.
+  Порядок BFS — порядок adapter arcs, weighted ties — distance/label/node/previous.
+- `components` сохраняет existing labels; CSR offsets покрывают execution range, не всю
+  spare capacity values. Не возвращать зависимость scratch от raw sparse label.
+- Generic CSR blur/frontier/slope/vote и graph_* используют один GLSL emitter.
+  `device_min_inputs` запрещает применять CSR форму к stencil варианту; stencil пока CPU.
+- `run_script` умеет component inputs, program groups, param_*; `gather_script` — отдельная
+  read-only own/other регистрация. Не разрешать output alias neighbour inputs/topology.
+- Pure DS получает column form; refusal из try_compile — данные, critical error не fallback.
+  VM-vs-column tests компилируют независимый VM через script_backend::virtual_machine.
+  Saved slots/lists принадлежат элементу/кандидату, не chunk: clear перед каждым evaluation.
+  script_footprint возвращает optional bytes; dynamic lists → nullopt/unknown, не нулевой scratch.
+- Small-set Lua algorithms встроены из `src/originator/algorithms.lua` при CMake configure;
+  доступны как originator.algorithms. Rules/profile/bounds остаются у consumer.
+  Никаких тайных heaps на OS thread; propagate требует явный visit budget.
+- [Контракты и evidence](../../docs/review/P2_ORIGINATOR_MIGRATION.md). Проверять native formula
+  oracle, queue refusals, GLSL compile без GPU и GN package bytes отдельно от campaigns.

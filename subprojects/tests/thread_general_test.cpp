@@ -75,7 +75,7 @@ TEST_CASE("queue1 preserves FIFO order and reports full or empty states [thread:
 }
 
 TEST_CASE("spsc_queue preserves FIFO order and reuses fixed storage [thread::spsc_queue]") {
-  CHECK_THROWS_AS(thread::spsc_queue<int>(0), std::invalid_argument);
+  CHECK_THROWS_AS(thread::spsc_queue<int>(0), devils_engine::utils::critical_error);
 
   thread::spsc_queue<int> queue(3);
   int out = -1;

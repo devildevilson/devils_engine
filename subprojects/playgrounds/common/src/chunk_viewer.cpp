@@ -1,4 +1,6 @@
-#include "viewer.h"
+#include "devils_engine/utils/log.h"
+#include "devils_engine/utils/platform.h"
+#include "devils_engine/playground/chunk_viewer.h"
 
 #include <algorithm>
 #include <array>
@@ -466,7 +468,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     base.create_command_pool(queues.graphics);
     base.create_descriptor_pool();
 
-    const std::string resource_root = std::string(GN03_RESOURCE_ROOT) + "/";
+    const std::string resource_root = std::string(PLAYGROUND_CHUNK_VIEWER_RESOURCE_ROOT) + "/";
     const std::string cache_path = utils::cache_folder() + "gn03_streaming_volume.pipeline_cache";
     base.get_or_create_pipeline_cache(cache_path);
     base.set_shader_source_filesystem(resource_root + "shaders/");

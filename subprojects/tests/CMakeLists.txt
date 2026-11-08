@@ -53,7 +53,7 @@ devils_add_doctest(gameplay_timeline_test gameplay_timeline_test.cpp)
 target_link_libraries(gameplay_timeline_test PRIVATE devils_engine::simul)
 
 devils_add_doctest(tile_frontier_config_test tile_frontier_config_test.cpp ../tile_frontier/src/core/config.cpp)
-target_link_libraries(tile_frontier_config_test PRIVATE devils_engine::utils devils_engine::input tavl)
+target_link_libraries(tile_frontier_config_test PRIVATE devils_engine::utils devils_engine::input devils_engine::simul tavl)
 target_include_directories(tile_frontier_config_test PRIVATE
   "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include"
   "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include/core"
@@ -123,7 +123,7 @@ if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)
   if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
     set(DEVILS_NETWORK_NATIVE_FLOAT_ARCH_FLAG "-mavx")
   endif()
-  add_test(NAME network_native_float_cross_compiler_probe
+  devils_add_test(NAME network_native_float_cross_compiler_probe
     COMMAND ${CMAKE_COMMAND}
       -DPROBE_SOURCE=${CMAKE_CURRENT_LIST_DIR}/network_native_float_corpus.cpp
       -DPROBE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/network_native_float_probe
@@ -134,7 +134,7 @@ if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)
   )
   set_tests_properties(network_native_float_cross_compiler_probe PROPERTIES LABELS devils_engine)
 
-  add_test(NAME utils_deterministic_cross_compiler_probe
+  devils_add_test(NAME utils_deterministic_cross_compiler_probe
     COMMAND ${CMAKE_COMMAND}
       -DPROBE_SOURCE=${CMAKE_CURRENT_LIST_DIR}/utils_deterministic_corpus.cpp
       -DPROBE_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/libs/utils/include
@@ -336,6 +336,10 @@ target_link_libraries(originator_config_test PRIVATE devils_engine::originator d
 
 devils_add_doctest(originator_script_test originator_script_test.cpp)
 target_link_libraries(originator_script_test PRIVATE devils_engine::originator devils_engine::originator_script devils_engine::utils)
+devils_add_doctest(gn02_formula_test gn02_formula_test.cpp fixtures/gn02_reference_tools.cpp)
+target_link_libraries(gn02_formula_test PRIVATE devils_engine::originator_script)
+target_compile_definitions(gn02_formula_test PRIVATE
+  GN02_FORMULA_ROOT="${CMAKE_SOURCE_DIR}/subprojects/playgrounds/GN02_planet_generator/resources/gn02/generator/scripts")
 
 # Транслятор ds -> GLSL и сверка двух путей. Линкует и скриптовый слой, и painter: одна программа,
 # два исполнения. Часть с устройством ОХРАНЯЕМАЯ.
@@ -391,7 +395,101 @@ target_link_libraries(demiurg_profile_test PRIVATE devils_engine::demiurg minizi
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if (Python3_Interpreter_FOUND)
-  add_test(NAME module_profile_migration
+  devils_add_test(NAME module_profile_migration
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/test_convert_module_profile.py)
   set_tests_properties(module_profile_migration PROPERTIES LABELS devils_engine)
+endif()
+
+# Narrow utility headers are intentional standalone entry points after core.h split.
+devils_add_doctest(utils_core_headers_test utils_core_headers_test.cpp)
+target_link_libraries(utils_core_headers_test PRIVATE devils_engine::utils)
+
+foreach(header IN ITEMS core error log print trace numeric platform unicode crc32c)
+  add_library(utils_${header}_header_compile OBJECT utils_header_compile.cpp)
+  target_link_libraries(utils_${header}_header_compile PRIVATE devils_engine::utils devils_engine::options)
+  target_compile_definitions(utils_${header}_header_compile PRIVATE
+    DEVILS_UTILS_HEADER_UNDER_TEST="devils_engine/utils/${header}.h")
+  add_dependencies(utils_core_headers_test utils_${header}_header_compile)
+endforeach()
+
+devils_add_doctest(painter_memory_statistics_test painter_memory_statistics_test.cpp)
+target_link_libraries(painter_memory_statistics_test PRIVATE devils_engine::painter devils_engine::utils)
+
+if (UNIX AND NOT APPLE)
+  # Explicit profiling tool, never an automatic performance acceptance test.
+  add_executable(sound_cpu_probe sound_cpu_probe.cpp)
+  target_link_libraries(sound_cpu_probe PRIVATE devils_engine::sound devils_engine::utils devils_engine::options)
+  target_compile_definitions(sound_cpu_probe PRIVATE
+    SOUND_PROBE_MP3="${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/resources/modules/core/sounds/ambient/soundreality-ambient-spring-forest-323801.mp3")
+  set_target_properties(sound_cpu_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
+endif()
+
+# Real bundled resources and one-time user debug migration across the standard bootstrap.
+devils_add_doctest(simul_configuration_layers_test simul_configuration_layers_test.cpp
+  ../tile_frontier/src/core/app_config_resource.cpp)
+target_link_libraries(simul_configuration_layers_test PRIVATE devils_engine::simul)
+target_include_directories(simul_configuration_layers_test PRIVATE
+  "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include"
+  "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include/core")
+target_compile_definitions(simul_configuration_layers_test PRIVATE
+  ENGINE_CONFIG_TEST_ROOT="${CMAKE_SOURCE_DIR}/resources/")
+
+# Public usage requirements: no options/aggregate target is added by these consumers.
+add_custom_target(devils_public_headers)
+foreach(library IN ITEMS demiurg input sound visage)
+  file(GLOB public_headers CONFIGURE_DEPENDS RELATIVE "${CMAKE_SOURCE_DIR}/libs/${library}/include/"
+    "${CMAKE_SOURCE_DIR}/libs/${library}/include/devils_engine/${library}/*.h")
+  foreach(header IN LISTS public_headers)
+    get_filename_component(header_name "${header}" NAME_WE)
+    set(check_target "public_header_${library}_${header_name}")
+    add_library(${check_target} OBJECT EXCLUDE_FROM_ALL public_header_compile.cpp)
+    target_link_libraries(${check_target} PRIVATE devils_engine::${library})
+    target_compile_definitions(${check_target} PRIVATE DEVILS_PUBLIC_HEADER="${header}")
+    add_dependencies(devils_public_headers ${check_target})
+  endforeach()
+  add_executable(public_link_${library} public_link_${library}.cpp)
+  target_link_libraries(public_link_${library} PRIVATE devils_engine::${library})
+  if(WIN32)
+    add_custom_command(TARGET public_link_${library} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_RUNTIME_DLLS:public_link_${library}>
+        $<TARGET_FILE_DIR:public_link_${library}>
+      COMMAND_EXPAND_LISTS)
+  endif()
+  set_target_properties(public_link_${library} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
+  devils_add_test(NAME public_link_${library} COMMAND public_link_${library})
+  set_tests_properties(public_link_${library} PROPERTIES LABELS devils_engine)
+  add_dependencies(devils_public_headers public_link_${library})
+endforeach()
+
+# Проверки узких границ нового generation API; каждый header виден через своего владельца.
+foreach(header IN ITEMS graph_walk neighbourhood skeleton script_program script_column script_translate)
+  set(check_target "public_header_originator_${header}")
+  add_library(${check_target} OBJECT EXCLUDE_FROM_ALL public_header_compile.cpp)
+  if(header MATCHES "^script_")
+    target_link_libraries(${check_target} PRIVATE devils_engine::originator_script)
+  else()
+    target_link_libraries(${check_target} PRIVATE devils_engine::originator)
+  endif()
+  target_compile_definitions(${check_target} PRIVATE DEVILS_PUBLIC_HEADER="devils_engine/originator/${header}.h")
+  add_dependencies(devils_public_headers ${check_target})
+endforeach()
+foreach(header IN ITEMS chunk_streaming world_memory)
+  set(check_target "public_header_playground_${header}")
+  add_library(${check_target} OBJECT EXCLUDE_FROM_ALL public_header_compile.cpp)
+  target_link_libraries(${check_target} PRIVATE devils_engine::playground_streaming)
+  target_compile_definitions(${check_target} PRIVATE DEVILS_PUBLIC_HEADER="devils_engine/playground/${header}.h")
+  add_dependencies(devils_public_headers ${check_target})
+endforeach()
+
+if(Python3_Interpreter_FOUND)
+  devils_add_test(NAME test_build_dependencies_contract
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_test_build_dependencies.py ${CMAKE_BINARY_DIR})
+  set_tests_properties(test_build_dependencies_contract PROPERTIES LABELS devils_engine)
+endif()
+
+if(Python3_Interpreter_FOUND)
+  devils_add_test(NAME project_task_ids_contract
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/inventory_project_tasks.py --check)
+  set_tests_properties(project_task_ids_contract PROPERTIES LABELS devils_engine)
 endif()

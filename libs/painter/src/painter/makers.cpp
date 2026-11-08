@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "makers.h"
 
 namespace devils_engine {
@@ -1163,8 +1164,6 @@ device_maker::device_maker(vk::Instance inst) : printExtensionInfo(false), inst(
   info.flags = {};
   info.queueCreateInfoCount = 0;
   info.pQueueCreateInfos = nullptr;
-  info.enabledLayerCount = 0;
-  info.ppEnabledLayerNames = nullptr;
   info.enabledExtensionCount = 0;
   info.ppEnabledExtensionNames = nullptr;
   info.pEnabledFeatures = nullptr;
@@ -1253,17 +1252,12 @@ device_maker& device_maker::setExtensions(const std::vector<const char*>& extens
   return *this;
 }
 
-vk::Device device_maker::create(const std::vector<const char*>& layers, const std::string& name) {
-  // я бы мог проверить слои, но не проверяю
-
-  //std::vector<const char*> lay(layers);
-  //required_validation_layers(lay);
-  //const auto &ext = required_device_extensions(phys, lay, extensions);
+vk::Device device_maker::create(const std::vector<const char*>&, const std::string& name) {
+  // Device layers игнорируются Vulkan; слои включаются у instance. Параметр оставлен
+  // для совместимости вызовов, поля enabledLayerCount/ppEnabledLayerNames остаются нулевыми.
 
   info.queueCreateInfoCount = queueInfos.size();
   info.pQueueCreateInfos = queueInfos.data();
-  info.enabledLayerCount = layers.size();
-  info.ppEnabledLayerNames = layers.data();
   info.enabledExtensionCount = extensions.size();
   info.ppEnabledExtensionNames = extensions.data();
   info.pEnabledFeatures = &f;

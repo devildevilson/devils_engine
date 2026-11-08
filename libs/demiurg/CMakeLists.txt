@@ -32,7 +32,7 @@ set(HDR_LIST
   "include/devils_engine/demiurg/resource_loader.h")
 
 add_library(devils_demiurg ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_demiurg PUBLIC devils_engine::options devils_engine::utils PRIVATE devils_engine::catalogue minizip tavl)
+target_link_libraries(devils_demiurg PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue PRIVATE minizip tavl)
 target_include_directories(devils_demiurg PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_demiurg PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/demiurg>")
 

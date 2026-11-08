@@ -1,6 +1,7 @@
 #ifndef DEVILS_ENGINE_VISAGE_FONT_H
 #define DEVILS_ENGINE_VISAGE_FONT_H
 
+#include <string_view>
 #include <cstddef>
 #include <cstdint>
 #include <memory>

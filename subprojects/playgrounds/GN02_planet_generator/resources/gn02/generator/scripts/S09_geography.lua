@@ -92,33 +92,13 @@ return function(step)
   -- голосование не достанут, и правильный ответ «дать ей свою область», а не тянуть к ней границу
   -- через море. Отдельный остров и есть отдельная область, а держава на нём — независимая держава.
   --
-  -- Обход идёт в lua по тому же CSR, а не отдельным инструментом: узлов здесь тысячи, а не сотни
-  -- тысяч, и заводить ради этого проход нативным инструментом незачем.
-  local function label_leftover_groups(csr_offsets, csr_arcs, label_field, mask_field, members, placed)
-    local stack = {}
-    for _, node in ipairs(members) do
-      if mask_field:get(node) > 0.5 and (math.tointeger(label_field:get(node)) or 0) == 0 then
-        placed = placed + 1
-        label_field:set(node, placed)
-        stack[1] = node
-        local top = 1
-        while top > 0 do
-          local current = stack[top]
-          top = top - 1
-          local first = math.tointeger(csr_offsets:get(current))
-          local last = math.tointeger(csr_offsets:get(current + 1))
-          for k = first, last - 1 do
-            local other = math.tointeger(csr_arcs:get(k))
-            if mask_field:get(other) > 0.5 and (math.tointeger(label_field:get(other)) or 0) == 0 then
-              label_field:set(other, placed)
-              top = top + 1
-              stack[top] = other
-            end
-          end
-        end
-      end
-    end
-    return placed
+  -- Общая разметка компонент сохраняет уже занятые labels и продолжает нумерацию.
+  local function label_leftover_groups(csr_offsets, csr_arcs, label_field, mask_field, placed, node_limit)
+    originator.components{
+      inputs = {mask_field, csr_offsets, csr_arcs, label_field}, outputs = {label_field},
+      params = {label_base = placed}, range = {0, node_limit},
+    }
+    return math.tointeger(originator.reduce_max{inputs = {label_field}, range = {0, node_limit}}) or placed
   end
 
   -- Рост уровня: затравки по площади под маской, заливка по графу областей, добор непокрытых групп.
@@ -128,9 +108,7 @@ return function(step)
   -- это ЁМКОСТЬ буфера областей, а не их число. Доля вышла бы вчетверо меньше настоящей, и затравок
   -- стало бы вдвое больше, чем просили.
   --
-  -- Добор идёт в lua и обходом того же CSR, а не отдельным инструментом: непокрытая группа — это
-  -- связный кусок графа областей, узлов в нём тысячи, а не сотни тысяч, и заводить ради этого ещё
-  -- один проход нативным инструментом незачем.
+  -- Добор использует общий components; предметное правило уровня остаётся здесь.
   local function grow_level(csr_offsets, csr_arcs, centers, sizes, seed_field, label_field, distance_field,
                             mask_field, members, wanted, node_limit)
     -- Обход идёт по СПИСКУ УЗЛОВ уровня, а не по всему буферу: список приходит готовым, а буфер
@@ -157,8 +135,8 @@ return function(step)
     -- Диапазон задан явно: у буфера записей областей на один элемент больше, чем строк у CSR
     -- соседства, и заливка обязана идти по строкам CSR, иначе последняя строка прочитала бы
     -- смещение за концом буфера.
-    originator.graph_flood{
-      inputs = { csr_offsets, csr_arcs, seed_field, sizes, mask_field },
+    originator.flood{
+      inputs = { seed_field, sizes, mask_field, csr_offsets, csr_arcs },
       outputs = { label_field, distance_field },
       params = { unreached = -1 },
       range = { 0, node_limit },
@@ -173,7 +151,7 @@ return function(step)
         placed = label
       end
     end
-    return label_leftover_groups(csr_offsets, csr_arcs, label_field, mask_field, members, placed)
+    return label_leftover_groups(csr_offsets, csr_arcs, label_field, mask_field, placed, node_limit)
   end
 
   -- Уровень растится ВНУТРИ КАЖДОГО РОДИТЕЛЯ ОТДЕЛЬНО, а не по всему множеству сразу, и это не
@@ -486,8 +464,8 @@ return function(step)
   -- незанятых провинций не осталось. Предел стоит на случай изолированной провинции, до которой не
   -- дотянется никто — тогда цикл обязан кончиться, а не крутиться до конца времён.
   for _ = 1, 512 do
-    originator.graph_vote{
-      inputs = { pn_offsets, pn_arcs, pr_realm, pr_population, pr_mask },
+    originator.vote{
+      inputs = { pr_realm, pr_population, pr_mask, pn_offsets, pn_arcs },
       outputs = { pr_realm_next },
       range = { 0, province_limit },
     }
@@ -514,14 +492,8 @@ return function(step)
   -- Провинции, до которых голосование не дотянулось: остров без соседей по графу переголосовать
   -- некому. Измерено 43 таких графства из 450 — каждое получает свою державу, и это верно по смыслу:
   -- остров, который никто не завоевал, независим.
-  local realm_members = {}
-  for node = 1, province_count do
-    if pr_mask:get(node) > 0.5 then
-      realm_members[#realm_members + 1] = node
-    end
-  end
-  local realm_count = label_leftover_groups(pn_offsets, pn_arcs, pr_realm, pr_mask, realm_members,
-                                            math.tointeger(originator.reduce_max{ inputs = { pr_realm } }) or 0)
+  local realm_count = label_leftover_groups(pn_offsets, pn_arcs, pr_realm, pr_mask,
+                                            math.tointeger(originator.reduce_max{ inputs = { pr_realm } }) or 0, province_limit)
 
   -- ------------------------------------------------------------------ баронства
   --

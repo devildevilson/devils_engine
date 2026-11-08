@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_RENDER_RUNTIME_H
 #define DEVILS_ENGINE_SIMUL_RENDER_RUNTIME_H
 
+#include "devils_engine/utils/log.h"
+
 // Reusable renderer bootstrap and frame helpers for the standard render system.
 
 #include <algorithm>

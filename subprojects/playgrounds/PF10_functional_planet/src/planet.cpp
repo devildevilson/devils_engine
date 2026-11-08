@@ -78,7 +78,7 @@ struct ocean_query {
 };
 
 ocean_query sample_oceans(const glm::vec3 direction) noexcept {
-  constexpr std::array<glm::vec4, 4> oceans{
+  static const std::array<glm::vec4, 4> oceans{
     glm::vec4{0.781f, 0.120f, 0.613f, 0.675f}, glm::vec4{-0.704f, 0.151f, 0.694f, 0.715f},
     glm::vec4{0.050f, -0.249f, -0.967f, 0.700f}, glm::vec4{-0.252f, 0.504f, -0.826f, 0.775f}};
 
@@ -116,7 +116,7 @@ ridge_query sample_ridges(const glm::vec3 direction) noexcept {
   // Temporary geography, deliberately expressed as spherical polylines. Province ownership samples this
   // same field at each Voronoi feature point, so a ridge claims whole cells instead of secretly cutting one
   // navigation node into disconnected halves.
-  constexpr std::array<std::array<glm::vec3, 4>, 3> chains{{
+  static const std::array<std::array<glm::vec3, 4>, 3> chains{{
     {{{-0.48f, -0.35f, 0.82f}, {-0.22f, -0.12f, 0.97f}, {0.05f, 0.13f, 0.99f}, {0.27f, 0.34f, 0.90f}}},
     {{{0.79f, -0.42f, -0.45f}, {0.91f, -0.14f, -0.25f}, {0.94f, 0.17f, 0.20f}, {0.73f, 0.46f, 0.51f}}},
     {{{-0.84f, -0.33f, -0.43f}, {-0.94f, -0.05f, -0.24f}, {-0.91f, 0.25f, 0.32f}, {-0.66f, 0.50f, 0.57f}}}

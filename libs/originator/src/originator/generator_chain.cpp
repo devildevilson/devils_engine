@@ -159,11 +159,6 @@ std::pair<std::string_view, std::string_view> split_field(const std::string_view
   return {reference.substr(0, dot), reference.substr(dot + 1)};
 }
 
-thread_local std::vector<std::tuple<const void*, uint64_t, instance_key>> building;
-// Глубина исполнения шагов (lua, исполнитель, нативное тело) на этом потоке: внутри шага поток не
-// помогает чужим сборкам — его lua-хост занят, а вложенный вызов того же хоста испортил бы шаг.
-thread_local int step_depth = 0;
-
 } // namespace
 
 struct generator_chain::build_node {
@@ -182,10 +177,80 @@ struct generator_chain::pending_build {
   std::atomic<bool> started{false};
 };
 
-namespace {
-// Путь зависимостей текущей сборки этого потока: по нему помощник узнаёт поддерево того, кого ждёт.
-thread_local std::shared_ptr<const void> current_node_holder;
-} // namespace
+void generation_context::release() {
+  if (!building.empty() || step_depth != 0 || fields != nullptr) utils::error{}("originator: cannot release an active generation context");
+  hosts.clear();
+  decltype(building)().swap(building);
+  current_node.reset();
+  field_scratch.release();
+}
+generation_context generation_context::fork_task() const {
+  generation_context child;
+  child.building = building;
+  child.step_depth = step_depth;
+  child.current_node = current_node;
+  child.fields = fields;
+  return child;
+}
+struct generator_chain::context_slot {
+  generation_context context;
+  bool busy = false;
+  std::thread::id owner;
+};
+struct generator_chain::context_lease {
+  const generator_chain* chain;
+  context_slot* slot;
+  context_lease(const generator_chain* chain_, context_slot* slot_) : chain(chain_), slot(slot_) {}
+  context_lease(const context_lease&) = delete;
+  ~context_lease() {
+    std::lock_guard lock(chain->contexts_lock_);
+    slot->busy = false;
+    slot->owner = {};
+  }
+};
+generator_chain::~generator_chain() {
+  // Lua finalizers and captured tools must die while the chain's other members still exist.
+  release_contexts();
+}
+generator_chain::context_lease generator_chain::acquire_context() const {
+  std::lock_guard lock(contexts_lock_);
+  const auto caller = std::this_thread::get_id();
+  context_slot* free = nullptr;
+  for (const auto& slot : contexts_) {
+    if (slot->busy && slot->owner == caller) utils::error{}("originator: nested chain call must pass run.context() explicitly");
+    if (!slot->busy) free = slot.get();
+  }
+  if (!free) { contexts_.push_back(std::make_unique<context_slot>()); free = contexts_.back().get(); }
+  free->busy = true;
+  free->owner = caller;
+  return context_lease(this, free);
+}
+void generator_chain::release_contexts() const {
+  std::lock_guard lock(contexts_lock_);
+  for (const auto& slot : contexts_) if (slot->busy) utils::error{}("originator: cannot release active chain contexts");
+  contexts_.clear();
+}
+size_t generator_chain::context_count() const {
+  std::lock_guard lock(contexts_lock_);
+  return contexts_.size();
+}
+result_ptr generator_chain::get(const std::string_view& name, uint64_t seed, const instance_key& key) const {
+  auto lease = acquire_context();
+  return get(lease.slot->context, name, seed, key);
+}
+void generator_chain::prefetch(const std::string_view& name, uint64_t seed, const instance_key& key) const {
+  auto lease = acquire_context();
+  prefetch(lease.slot->context, name, seed, key);
+}
+std::string generator_chain::verify(const std::string_view& name, uint64_t seed, const instance_key& key) const {
+  auto lease = acquire_context();
+  return verify(lease.slot->context, name, seed, key);
+}
+std::shared_ptr<const primitive_field> generator_chain::field(const std::string_view& name, uint64_t seed,
+                                                            const instance_key& key, const std::string_view& field_name) const {
+  auto lease = acquire_context();
+  return field(lease.slot->context, name, seed, key, field_name);
+}
 
 uint64_t read_key_word(const const_field_accessor& field, const size_t element, const uint32_t word) {
   if (!is_wide_integer(field.type().base) || field.type().components <= word) {
@@ -395,11 +460,6 @@ std::string generator_result::compare(const generator_result& other) const {
   return {};
 }
 
-namespace detail {
-const std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>>* exchange_active_fields(
-  const std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>>* fields) noexcept;
-} // namespace detail
-
 generator_run::generator_run() = default;
 generator_run::~generator_run() = default;
 
@@ -445,7 +505,7 @@ void generator_run::run_steps() {
   if (!chain_->invokers_) {
     utils::error{}("originator generator '{}': the chain has no invoker source for pipeline steps", generator_->name);
   }
-  line_->run(chain_->invokers_(*generator_));
+  line_->run(chain_->invokers_(*generator_, *context_));
 }
 
 buffer& generator_run::output(const std::string_view& buffer_name) {
@@ -682,8 +742,13 @@ void generator_chain::set_executor(const std::string_view& name, generator_execu
 }
 
 void generator_chain::set_invoker_source(invoker_source source) {
+  release_contexts();
   invokers_ = std::move(source);
 }
+void generator_chain::set_invoker_source(std::function<step_invoker(const chain_generator&)> source) {
+  set_invoker_source(invoker_source([source = std::move(source)](const chain_generator& generator, generation_context&) { return source(generator); }));
+}
+
 
 uint64_t generator_chain::fingerprint(const std::string_view& name) const { return find_slot(name).fingerprint; }
 
@@ -733,7 +798,7 @@ void generator_chain::reset_stats() const {
   }
 }
 
-result_ptr generator_chain::get(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const {
+result_ptr generator_chain::get(generation_context& context, const std::string_view& name, const uint64_t world_seed, const instance_key& key) const {
   const slot& at = find_slot(name);
   for (uint32_t w = at.description.key_words; w < max_key_words; ++w) {
     if (key.words[w] != 0) {
@@ -742,20 +807,20 @@ result_ptr generator_chain::get(const std::string_view& name, const uint64_t wor
                      at.description.key_words, w);
     }
   }
-  for (const auto& [who, seed, k] : building) {
+  for (const auto& [who, seed, k] : context.building) {
     if (who == &at && seed == world_seed && k == key) {
       utils::error{}("originator chain generator '{}': instance {:x}/{:x}/{:x} links back to itself while being built",
                      name, key.words[0], key.words[1], key.words[2]);
     }
   }
 
-  const auto made = claim(at, world_seed, key);
-  if (made.job) run_claim(*made.job);
-  wait_helping(at, world_seed, key, made.future);
+  const auto made = claim(context, at, world_seed, key);
+  if (made.job) run_claim(context, *made.job);
+  wait_helping(context, at, world_seed, key, made.future);
   return made.future.get();
 }
 
-generator_chain::claimed generator_chain::claim(const slot& at, const uint64_t world_seed, const instance_key& key) const {
+generator_chain::claimed generator_chain::claim(generation_context& context, const slot& at, const uint64_t world_seed, const instance_key& key) const {
   claimed out;
   const auto cache_key = std::make_pair(world_seed, key);
   std::lock_guard guard(at.lock);
@@ -781,14 +846,14 @@ generator_chain::claimed generator_chain::claim(const slot& at, const uint64_t w
   out.job->at = &at;
   out.job->seed = world_seed;
   out.job->key = key;
-  out.job->parent = std::static_pointer_cast<const build_node>(current_node_holder);
+  out.job->parent = std::static_pointer_cast<const build_node>(context.current_node);
   out.future = out.job->promise.get_future().share();
   at.cache.emplace(cache_key, entry{out.future, ++at.tick});
   ++at.stats.builds;
   return out;
 }
 
-void generator_chain::run_claim(pending_build& job) const {
+void generator_chain::run_claim(generation_context& context, pending_build& job) const {
   if (job.started.exchange(true)) return;
   const slot& at = *job.at;
   auto node = std::make_shared<build_node>();
@@ -798,13 +863,14 @@ void generator_chain::run_claim(pending_build& job) const {
   node->parent = job.parent;
   struct node_scope {
     std::shared_ptr<const void> previous;
-    ~node_scope() { current_node_holder = std::move(previous); }
-  } scope{std::exchange(current_node_holder, std::shared_ptr<const void>(node))};
-  building.emplace_back(&at, job.seed, job.key);
+    ~node_scope() { context.current_node = std::move(previous); }
+    generation_context& context;
+  } scope{std::exchange(context.current_node, std::shared_ptr<const void>(node)), context};
+  context.building.emplace_back(&at, job.seed, job.key);
   try {
-    job.promise.set_value(build(at, job.seed, job.key));
+    job.promise.set_value(build(context, at, job.seed, job.key));
   } catch (...) {
-    building.pop_back();
+    context.building.pop_back();
     // Неудачная сборка не остаётся в кэше: ждущие получат исключение из своей копии будущего, а
     // следующий запрос попробует снова, а не получит то же исключение навсегда.
     {
@@ -814,17 +880,17 @@ void generator_chain::run_claim(pending_build& job) const {
     job.promise.set_exception(std::current_exception());
     return;
   }
-  building.pop_back();
+  context.building.pop_back();
 }
 
-void generator_chain::wait_helping(const slot& at, const uint64_t world_seed, const instance_key& key,
+void generator_chain::wait_helping(generation_context& context, const slot& at, const uint64_t world_seed, const instance_key& key,
                                    const std::shared_future<result_ptr>& future) const {
   if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) return;
   // Пока экземпляр строит другой поток, этот берёт захваченные сборки из ЕГО поддерева: они нужны
   // тому, кого ждём, и не могут зависеть ни от чего на стеке этого потока (иначе в графе был бы цикл).
   // Брать можно: сам ожидаемый экземпляр, его поддерево и поддерево собственной текущей сборки этого
   // потока — всё это нужно тем, кто на стеке, и ни от чего на стеке зависеть не может.
-  const auto own = std::static_pointer_cast<const build_node>(current_node_holder);
+  const auto own = std::static_pointer_cast<const build_node>(context.current_node);
   const auto under_awaited = [&](const pending_build& job) {
     if (job.at == &at && job.seed == world_seed && job.key == key) return true;
     for (auto node = job.parent; node != nullptr; node = node->parent) {
@@ -843,14 +909,14 @@ void generator_chain::wait_helping(const slot& at, const uint64_t world_seed, co
       std::erase_if(pending_, [](const auto& p) { return p->started.load(); });
       for (const auto& p : pending_) {
         const bool itself = p->at == &at && p->seed == world_seed && p->key == key;
-        if (step_depth == 0 ? under_awaited(*p) : itself) {
+        if (context.step_depth == 0 ? under_awaited(*p) : itself) {
           job = p;
           break;
         }
       }
     }
     if (job) {
-      run_claim(*job);
+      run_claim(context, *job);
       continue;
     }
     const auto started = std::chrono::steady_clock::now();
@@ -863,8 +929,8 @@ void generator_chain::wait_helping(const slot& at, const uint64_t world_seed, co
       std::fprintf(stderr, "HANG thread %zu waits %s %llx/%llx/%llx step_depth %d; stack:",
                    std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000, at.description.name.c_str(),
                    (unsigned long long)key.words[0], (unsigned long long)key.words[1], (unsigned long long)key.words[2],
-                   step_depth);
-      for (const auto& [who, seed, k] : building) {
+                   context.step_depth);
+      for (const auto& [who, seed, k] : context.building) {
         std::fprintf(stderr, " %s:%llx", name_of(who).c_str(), (unsigned long long)k.words[2]);
       }
       std::fprintf(stderr, "\n");
@@ -885,32 +951,32 @@ void generator_chain::wait_helping(const slot& at, const uint64_t world_seed, co
   ++at.stats.waits;
 }
 
-void generator_chain::prefetch(const std::string_view& name, const uint64_t world_seed, const instance_key& key) const {
+void generator_chain::prefetch(generation_context& context, const std::string_view& name, const uint64_t world_seed, const instance_key& key) const {
   const slot& at = find_slot(name);
   {
     std::lock_guard guard(at.lock);
     if (at.cache.contains(std::make_pair(world_seed, key))) return;
   }
-  (void)resolve(at, world_seed, key);
+  (void)resolve(context, at, world_seed, key);
 }
 
-std::string generator_chain::verify(const std::string_view& name, const uint64_t world_seed,
+std::string generator_chain::verify(generation_context& context, const std::string_view& name, const uint64_t world_seed,
                                     const instance_key& key) const {
-  const auto cached = get(name, world_seed, key);
+  const auto cached = get(context, name, world_seed, key);
   const slot& at = find_slot(name);
-  building.emplace_back(&at, world_seed, key);
+  context.building.emplace_back(&at, world_seed, key);
   result_ptr fresh;
   try {
-    fresh = build(at, world_seed, key);
+    fresh = build(context, at, world_seed, key);
   } catch (...) {
-    building.pop_back();
+    context.building.pop_back();
     throw;
   }
-  building.pop_back();
+  context.building.pop_back();
   return cached->compare(*fresh);
 }
 
-std::vector<resolved_link> generator_chain::resolve(const slot& at, const uint64_t world_seed,
+std::vector<resolved_link> generator_chain::resolve(generation_context& context, const slot& at, const uint64_t world_seed,
                                                     const instance_key& key) const {
   std::vector<resolved_link> out;
   const auto& g = at.description;
@@ -965,16 +1031,16 @@ std::vector<resolved_link> generator_chain::resolve(const slot& at, const uint64
     resolved.name = link.name;
     switch (link.type) {
       case chain_link::kind::same:
-        resolved.results.push_back(get(link.from, world_seed, key));
+        resolved.results.push_back(get(context, link.from, world_seed, key));
         break;
       case chain_link::kind::project: {
         instance_key produced{};
         for (size_t i = 0; i < link.project.size(); ++i) produced.words[i] = key.words[link.project[i]];
-        resolved.results.push_back(get(link.from, world_seed, produced));
+        resolved.results.push_back(get(context, link.from, world_seed, produced));
         break;
       }
       case chain_link::kind::from_data:
-        resolved.results.push_back(get(link.from, world_seed, key_at(link, 0, from.description.key_words)));
+        resolved.results.push_back(get(context, link.from, world_seed, key_at(link, 0, from.description.key_words)));
         break;
       case chain_link::kind::fan_in: {
         const auto count_field = field_of(link.count, link.name);
@@ -1009,13 +1075,13 @@ std::vector<resolved_link> generator_chain::resolve(const slot& at, const uint64
         } guard{this, &items};
         for (size_t e = 0; e < size_t(count); ++e) {
           const instance_key produced = key_at(link, e, from.description.key_words);
-          for (const auto& [who, seed, k] : building) {
+          for (const auto& [who, seed, k] : context.building) {
             if (who == &from && seed == world_seed && k == produced) {
               utils::error{}("originator chain generator '{}': instance {:x}/{:x}/{:x} links back to itself while "
                              "being built", link.from, produced.words[0], produced.words[1], produced.words[2]);
             }
           }
-          items.push_back(claim(from, world_seed, produced));
+          items.push_back(claim(context, from, world_seed, produced));
           keys.push_back(produced);
         }
         {
@@ -1023,8 +1089,8 @@ std::vector<resolved_link> generator_chain::resolve(const slot& at, const uint64
           for (const auto& item : items) if (item.job) pending_.push_back(item.job);
         }
         for (size_t e = 0; e < items.size(); ++e) {
-          if (items[e].job) run_claim(*items[e].job);
-          wait_helping(from, world_seed, keys[e], items[e].future);
+          if (items[e].job) run_claim(context, *items[e].job);
+          wait_helping(context, from, world_seed, keys[e], items[e].future);
           resolved.results.push_back(items[e].future.get());
         }
         guard.done = true;
@@ -1051,13 +1117,13 @@ void generator_chain::trim_outputs(const chain_generator& g, generator_result& r
   }
 }
 
-std::shared_ptr<const primitive_field> generator_chain::field(const std::string_view& name, const uint64_t world_seed,
+std::shared_ptr<const primitive_field> generator_chain::field(generation_context& context, const std::string_view& name, const uint64_t world_seed,
                                                              const instance_key& key,
                                                              const std::string_view& field_name) const {
   const slot& at = find_slot(name);
   for (const auto& declared : at.description.fields) {
     if (declared.name != field_name) continue;
-    const std::vector<resolved_link> links = resolve(at, world_seed, key);
+    const std::vector<resolved_link> links = resolve(context, at, world_seed, key);
     std::vector<field_term_source> terms;
     for (const auto& term : declared.terms) {
       const auto found = std::find_if(links.begin(), links.end(), [&](const resolved_link& l) { return l.name == term.link; });
@@ -1070,8 +1136,9 @@ std::shared_ptr<const primitive_field> generator_chain::field(const std::string_
   return nullptr;
 }
 
-result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, const instance_key& key) const {
+result_ptr generator_chain::build(generation_context& context, const slot& at, const uint64_t world_seed, const instance_key& key) const {
   generator_run run;
+  run.context_ = &context;
   run.chain_ = this;
   run.generator_ = &at.description;
   run.world_seed_ = world_seed;
@@ -1079,7 +1146,7 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
   run.seed_ = utils::mix(world_seed, at.name_hash, key.words[0], key.words[1], key.words[2]);
   run.values_ = &at.values;
   const auto started = std::chrono::steady_clock::now();
-  run.links_ = resolve(at, world_seed, key);
+  run.links_ = resolve(context, at, world_seed, key);
   const auto linked_at = std::chrono::steady_clock::now();
   struct timing {
     const slot& at;
@@ -1100,8 +1167,9 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
   // уже разрешены, поэтому вложенных сборок дальше нет.
   struct fields_scope {
     const std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>>* previous;
-    ~fields_scope() { detail::exchange_active_fields(previous); }
-  } scope{detail::exchange_active_fields(&run.fields_)};
+    ~fields_scope() { context.fields = previous; }
+    generation_context& context;
+  } scope{std::exchange(context.fields, &run.fields_), context};
 
   run.result_ = std::make_shared<generator_result>();
   run.result_->generator_ = at.description.name;
@@ -1134,10 +1202,11 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
       step_links.push_back(std::move(visible));
     }
     run.line_ = std::make_unique<pipeline>(at.merged, setup_.sizes, run.seed_, linked);
+    run.line_->set_context(&context);
     run.line_->set_links(std::move(step_links));
     run.line_->set_instance(key.words, world_seed);
-    ++step_depth;
-    struct depth_scope { ~depth_scope() { --step_depth; } } depth;
+    ++context.step_depth;
+    struct depth_scope { generation_context& context; ~depth_scope() { --context.step_depth; } } depth{context};
     if (at.executor) {
       at.executor(run);
     } else {
@@ -1165,8 +1234,8 @@ result_ptr generator_chain::build(const slot& at, const uint64_t world_seed, con
           declaration.name, declaration.layout, setup_.sizes.get(declaration.size_name, declaration.name)));
       }
     }
-    ++step_depth;
-    struct depth_scope { ~depth_scope() { --step_depth; } } depth;
+    ++context.step_depth;
+    struct depth_scope { generation_context& context; ~depth_scope() { --context.step_depth; } } depth{context};
     at.native(run);
     for (const auto& output : at.description.outputs) {
       for (auto& candidate : run.native_buffers_) {

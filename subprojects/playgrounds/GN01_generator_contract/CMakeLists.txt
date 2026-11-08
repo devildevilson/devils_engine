@@ -22,9 +22,9 @@ set_target_properties(GN01_generator_contract PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/playgrounds/GN01_generator_contract/bin")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME GN01_generator_contract_verify
+  devils_add_test(NAME GN01_generator_contract_verify
     COMMAND GN01_generator_contract --verify --size=256 --sites=64)
-  add_test(NAME GN01_generator_contract_chunked
+  devils_add_test(NAME GN01_generator_contract_chunked
     COMMAND GN01_generator_contract --chunked=4 --size=256 --sites=64)
   set_tests_properties(
     GN01_generator_contract_verify

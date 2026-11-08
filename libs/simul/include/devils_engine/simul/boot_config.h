@@ -13,7 +13,10 @@ struct engine_boot_config {
   std::string app_name = "devils_app";
   std::string resource_root = "resources/";
   std::string engine_module = "engine";
-  std::string app_config_id = "config/app";
+  std::string engine_config_id = "config/engine";
+  std::string project_config_id = "config/project";
+  std::string debug_config_id = "config/debug";
+  std::string debug_settings_file = "debug.tavl";
   std::string settings_file = "settings.tavl";
   // Historical spelling is kept intentionally: this is the user-visible filename requested by
   // tile_frontier and changing it would silently strand existing per-machine bindings.
@@ -31,6 +34,8 @@ struct engine_boot_config {
   uint32_t max_simulation_steps_per_frame = 8;
   uint32_t render_fps = 60;
   uint32_t sound_fps = 60;
+  std::string sound_mixing = "owner";
+  uint32_t sound_output_buffer_ms = 50;
   uint32_t assets_fps = 60;
 
   uint32_t worker_threads_reserved = 4;

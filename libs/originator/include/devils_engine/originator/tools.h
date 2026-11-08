@@ -112,6 +112,8 @@ private:
 };
 
 // Что инструмент получает в теле.
+struct generation_context;
+
 struct tool_call {
   std::span<const field_ref> inputs;
   std::span<const field_ref> outputs;
@@ -130,6 +132,8 @@ struct tool_call {
   // корректное разбиение зависит от алгоритма, и они организуют свои фазы сами.
   thread::atomic_pool* pool = nullptr;
 
+  generation_context* generation = nullptr;
+  generation_context& context() const;
   size_t range_count() const noexcept;
   const field_ref& input(const size_t index) const;
   const field_ref& output(const size_t index) const;
@@ -250,6 +254,9 @@ struct tool_description {
   // выражение (шум — это хеш решётки, интерполяция и октавы), они необходимы.
   std::string device_prelude{};
   std::vector<device_param> device_params{};
+  // Нативная форма может покрывать только вариант с optional inputs (например CSR,
+  // но не stencil). Ноль — все разрешённые варианты; отказ происходит до устройства.
+  uint32_t device_min_inputs = 0;
 
   // Номера входов (по позиции в привязках), которые устройственная форма читает ФИЛЬТРОМ — то есть
   // между элементами. Единственное, из чего выводится род ресурса: поле, которое кто-то читает так,
@@ -377,7 +384,7 @@ public:
                 const size_t range_begin,
                 const size_t range_end,
                 const std::string_view& step_name,
-                thread::atomic_pool* pool);
+                thread::atomic_pool* pool, generation_context* generation = nullptr);
 
   // Тело над поддиапазоном. Границы обязаны лежать внутри объявленного диапазона.
   void run(const size_t begin, const size_t end) const;
@@ -423,7 +430,7 @@ void dispatch(const tool_description& tool,
               const size_t range_begin,
               const size_t range_end,
               const std::string_view& step_name,
-              thread::atomic_pool* pool);
+              thread::atomic_pool* pool, generation_context* generation = nullptr);
 
 // Свёртка. Возвращает значение, одинаковое при любом числе потоков и при pool == nullptr.
 double dispatch_reduce(const tool_description& tool,
@@ -433,7 +440,7 @@ double dispatch_reduce(const tool_description& tool,
                        const size_t range_begin,
                        const size_t range_end,
                        const std::string_view& step_name,
-                       thread::atomic_pool* pool);
+                       thread::atomic_pool* pool, generation_context* generation = nullptr);
 
 } // namespace originator
 } // namespace devils_engine

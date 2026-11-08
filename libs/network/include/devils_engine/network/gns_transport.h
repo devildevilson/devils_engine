@@ -144,6 +144,7 @@ class gns_transport;
 // One dispatcher per borrowed GNS interface, shared by all endpoint transports.
 // Single owner thread; ALL RunCallbacks calls for this interface must go through
 // pump(), including after an endpoint is destroyed (old callbacks can be queued).
+// Adapter pumps are serialized process-wide; callbacks use a scoped static pointer.
 // Must outlive registered transports; no Init/Kill, worker or global callback
 // replacement. Registration storage is allocated once. Native callbacks retain
 // only a static function, never an object pointer or callback-time user data.
@@ -160,7 +161,7 @@ private:
   friend class gns_transport;
   struct impl;
   std::unique_ptr<impl> impl_;
-  static thread_local gns_dispatcher* active_;
+  static gns_dispatcher* active_;
   static void on_connection(SteamNetConnectionStatusChangedCallback_t* event);
 };
 

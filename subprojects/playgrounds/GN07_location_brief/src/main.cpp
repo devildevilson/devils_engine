@@ -1,3 +1,4 @@
+#include "devils_engine/playground/cli.h"
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
@@ -34,57 +35,22 @@ struct options {
   std::string svg_path;
 };
 
-bool read_number(const std::string_view text, uint64_t& out) {
-  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), out);
-  return error == std::errc() && end == text.data() + text.size();
-}
 
-void print_help() {
-  std::cout <<
-    "GN07_location_brief [options]\n"
-    "  --brief=PATH     brief file (default: resources/gn07/briefs/first_mine.tavl)\n"
-    "  --world=PATH     world fragment (default: resources/gn07/world/fragment.tavl)\n"
-    "  --seed=N         location seed (default 0)\n"
-    "  --attempts=N     graphs tried per seed before refusing (default 64)\n"
-    "  --verify         solve seeds 0..N-1, check every result independently and repeat each\n"
-    "  --seeds=N        seed count for --verify (default 128)\n"
-    "  --no-map         do not print the lattice map\n"
-    "  --svg=PATH       write the plan of the location as SVG\n";
-}
 
-bool parse_options(const int argc, char** argv, options& opt) {
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto value = [&](const std::string_view prefix) -> std::string_view {
-      return arg.starts_with(prefix) ? arg.substr(prefix.size()) : std::string_view{};
-    };
-    uint64_t number = 0;
-    if (arg == "--help") {
-      print_help();
-      return false;
-    } else if (arg == "--verify") {
-      opt.verify = true;
-    } else if (arg == "--no-map") {
-      opt.map = false;
-    } else if (arg.starts_with("--brief=")) {
-      opt.brief_path = std::string(value("--brief="));
-    } else if (arg.starts_with("--svg=")) {
-      opt.svg_path = std::string(value("--svg="));
-    } else if (arg.starts_with("--world=")) {
-      opt.world_path = std::string(value("--world="));
-    } else if (arg.starts_with("--seed=") && read_number(value("--seed="), number)) {
-      opt.seed = number;
-    } else if (arg.starts_with("--attempts=") && read_number(value("--attempts="), number) && number > 0) {
-      opt.attempts = uint32_t(number);
-    } else if (arg.starts_with("--seeds=") && read_number(value("--seeds="), number) && number > 0) {
-      opt.seeds = uint32_t(number);
-    } else {
-      std::cerr << "unknown or malformed option: " << arg << "\n";
-      print_help();
-      return false;
-    }
-  }
-  return true;
+
+
+std::optional<int> parse_options(const int argc, char** argv, options& opt) {
+  CLI::App app{"GN07 location brief"};
+  app.option_defaults()->always_capture_default();
+  app.add_option("--brief", opt.brief_path, "Brief file");
+  app.add_option("--world", opt.world_path, "World fragment");
+  app.add_option("--seed", opt.seed, "Location seed");
+  app.add_option("--attempts", opt.attempts, "Attempts per seed")->check(CLI::PositiveNumber);
+  app.add_option("--seeds", opt.seeds, "Verification seed count")->check(CLI::PositiveNumber);
+  app.add_flag("--verify", opt.verify, "Verify contracts");
+  app.add_flag("!--no-map", opt.map, "Hide lattice map");
+  app.add_option("--svg", opt.svg_path, "Output SVG");
+  return devils_engine::playground::parse_cli(app, argc, argv);
 }
 
 // Всё, что решатель получает для одной локации.
@@ -425,9 +391,7 @@ int run_verify(const options& opt, const setup& st, const script_env& env) {
 
 int main(const int argc, char** argv) {
   options opt;
-  if (!parse_options(argc, argv, opt)) {
-    return 2;
-  }
+  if (auto code = parse_options(argc, argv, opt)) return *code;
   try {
     const script_env env;
     setup st;
