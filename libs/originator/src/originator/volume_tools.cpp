@@ -637,7 +637,8 @@ void tool_marching_cubes(const tool_call& call, const size_t, const size_t) {
 // полосой `border` узлов с каждой стороны (не меньше одного: у КАЖДОГО угла клетки градиент —
 // центральная разность, и нормаль на шве совпадает точно). «Внутри» — значение СТРОГО меньше `iso`.
 // Нормаль вершины — нормированный градиент (смотрит в сторону роста значения), смешанный вдоль ребра;
-// где градиент равен нулю, нормаль — ось +Y: нулевая нормаль дала бы чёрное пятно.
+// где градиент равен нулю, нормаль — ось +Y: нулевая нормаль дала бы чёрное пятно. Обход треугольника
+// (против часовой стрелки, если смотреть навстречу нормали) согласован с нормалями его вершин.
 //
 // Выходы: 0 — позиция вершины, 1 — нормаль, 2 — номер середины её клетки, 3 — середина поверхности
 // клетки (среднее вершин клетки; суммируется относительно первого внутреннего узла, чтобы не терять
@@ -740,7 +741,10 @@ void tool_marching_tetrahedra(const tool_call& call, const size_t, const size_t)
         }
         const size_t first = vertices;
         vec sum{};
-        const auto emit = [&](int a, int b) {
+        struct crossing {
+          vec point, normal;
+        };
+        const auto cross_edge = [&](int a, int b) {
           const vec& pa0 = world[a];
           const vec& pb0 = world[b];
           if (pa0[0] > pb0[0] || (pa0[0] == pb0[0] && pa0[1] > pb0[1]) ||
@@ -751,19 +755,39 @@ void tool_marching_tetrahedra(const tool_call& call, const size_t, const size_t)
             point[axis] = world[a][axis] + (world[b][axis] - world[a][axis]) * t;
             blend[axis] = normal[a][axis] * (1.0 - t) + normal[b][axis] * t;
           }
+          return crossing{point, normalized(blend)};
+        };
+        const auto write = [&](const crossing& c) {
           if (vertices >= vertex_capacity) {
             utils::error{}("originator step '{}': marching_tetrahedra needs more than {} vertices in '{}' — raise "
                            "the declared capacity; a truncated surface reads as a hole in the world",
                            call.step_name, vertex_capacity, call.output(0).buffer_name());
           }
-          const vec n = normalized(blend);
           for (uint32_t axis = 0; axis < 3; ++axis) {
-            out_position.set(vertices, point[axis], axis);
-            out_normal.set(vertices, n[axis], axis);
-            sum[axis] += point[axis] - origin[axis];
+            out_position.set(vertices, c.point[axis], axis);
+            out_normal.set(vertices, c.normal[axis], axis);
+            sum[axis] += c.point[axis] - origin[axis];
           }
           out_cell.set(vertices, double(middles));
           ++vertices;
+        };
+        // Обход треугольника согласуется с нормалями его вершин (градиент — в сторону роста значения):
+        // геометрическая нормаль против их суммы — второй и третий меняются местами. Решение зависит
+        // только от трёх вершин, поэтому на шве двух чанков оно одно и то же.
+        const auto triangle = [&](const crossing& a, const crossing& b, const crossing& c) {
+          vec u{}, v{};
+          for (uint32_t axis = 0; axis < 3; ++axis) {
+            u[axis] = b.point[axis] - a.point[axis];
+            v[axis] = c.point[axis] - a.point[axis];
+          }
+          const vec face{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+          double facing = 0.0;
+          for (uint32_t axis = 0; axis < 3; ++axis) {
+            facing += face[axis] * (a.normal[axis] + b.normal[axis] + c.normal[axis]);
+          }
+          write(a);
+          write(facing < 0.0 ? c : b);
+          write(facing < 0.0 ? b : c);
         };
         for (const auto& tet : tetrahedra) {
           std::array<int, 4> inside{}, outside{};
@@ -773,12 +797,14 @@ void tool_marching_tetrahedra(const tool_call& call, const size_t, const size_t)
             else outside[out_count++] = corner;
           }
           if (in_count == 1) {
-            emit(inside[0], outside[0]); emit(inside[0], outside[1]); emit(inside[0], outside[2]);
+            triangle(cross_edge(inside[0], outside[0]), cross_edge(inside[0], outside[1]), cross_edge(inside[0], outside[2]));
           } else if (in_count == 3) {
-            emit(outside[0], inside[0]); emit(outside[0], inside[2]); emit(outside[0], inside[1]);
+            triangle(cross_edge(outside[0], inside[0]), cross_edge(outside[0], inside[2]), cross_edge(outside[0], inside[1]));
           } else if (in_count == 2) {
-            emit(inside[0], outside[0]); emit(inside[0], outside[1]); emit(inside[1], outside[0]);
-            emit(inside[0], outside[1]); emit(inside[1], outside[1]); emit(inside[1], outside[0]);
+            const auto a0 = cross_edge(inside[0], outside[0]), a1 = cross_edge(inside[0], outside[1]);
+            const auto b0 = cross_edge(inside[1], outside[0]), b1 = cross_edge(inside[1], outside[1]);
+            triangle(a0, a1, b0);
+            triangle(a1, b1, b0);
           }
         }
         if (vertices == first) continue;

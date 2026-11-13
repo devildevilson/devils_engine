@@ -90,6 +90,8 @@ struct compiler {
   std::span<const std::string> scalars;
   std::vector<std::pair<std::string, uint16_t>> saved;
   uint32_t branch_depth = 0;
+  // Программа-условие: блоки и `sequence` накапливают И, а не сумму (см. try_compile).
+  bool predicate = false;
   std::string refusal;
   static constexpr uint16_t none = UINT16_MAX;
 
@@ -192,7 +194,7 @@ struct compiler {
       if (std::find(skip.begin(), skip.end(), pair_name(child)) != skip.end()) continue;
       const uint16_t part = value(child);
       if (part == none) continue;
-      sum = sum == none ? part : emit(op_code::add, sum, part);
+      sum = sum == none ? part : emit(predicate ? op_code::land : op_code::add, sum, part);
     }
     if (sum == none) return refuse(node.root().token, "a block of statements alone computes nothing");
     return sum;
@@ -268,10 +270,13 @@ struct compiler {
       --branch_depth;
       clauses.emplace_back(taken_if, taken);
     }
-    const uint16_t zero = constant(0.0);
-    uint16_t result = zero;
+    // Первое ложное условие обрывает цепочку, и остаётся накопленное: единица накопителя — 0 для
+    // суммы и «истина» для И, как у `ds`.
+    const uint16_t identity = constant(predicate ? 1.0 : 0.0);
+    const op_code combine = predicate ? op_code::land : op_code::add;
+    uint16_t result = identity;
     for (auto it = clauses.rbegin(); it != clauses.rend(); ++it) {
-      result = emit(op_code::choose, it->first, emit(op_code::add, it->second, result), zero);
+      result = emit(op_code::choose, it->first, emit(combine, it->second, result), identity);
     }
     return result;
   }
@@ -433,7 +438,8 @@ size_t column_program::workspace_bytes() const noexcept {
 
 std::expected<std::unique_ptr<column_program>, std::string> column_program::try_compile(const std::string_view& name, const std::string_view& source,
                                                         const std::span<const std::string> columns,
-                                                        const std::span<const std::string> scalars) {
+                                                        const std::span<const std::string> scalars,
+                                                        const bool predicate) {
   // Парсер настраивает сама система ds: приоритеты операторов объявлены в ней.
   ds::system system;
   system.init_basic_functions();
@@ -455,14 +461,16 @@ std::expected<std::unique_ptr<column_program>, std::string> column_program::try_
   c.out = state.get();
   c.columns = columns;
   c.scalars = scalars;
+  c.predicate = predicate;
   state->result = c.required(tavl::node_view{nodes}, "the program");
   if (!c.refusal.empty()) return std::unexpected(std::move(c.refusal));
   return std::unique_ptr<column_program>(new column_program(std::move(state)));
 }
 
 std::unique_ptr<column_program> column_program::compile(const std::string_view& name, const std::string_view& source,
-                                                       std::span<const std::string> columns, std::span<const std::string> scalars) {
-  auto compiled = try_compile(name, source, columns, scalars);
+                                                       std::span<const std::string> columns, std::span<const std::string> scalars,
+                                                       const bool predicate) {
+  auto compiled = try_compile(name, source, columns, scalars, predicate);
   if (!compiled) utils::error{}("{}", compiled.error());
   return std::move(*compiled);
 }

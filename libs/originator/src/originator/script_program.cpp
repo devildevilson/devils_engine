@@ -249,7 +249,7 @@ std::unique_ptr<script_program> script_program::compile(const std::string_view& 
   for (const auto& argument : impl.arguments) scalars.push_back("ctx:arg:" + argument.name);
   scalars.push_back("result_component");
   if (backend == script_backend::automatic) {
-    auto column = column_program::try_compile(name, source, columns, scalars);
+    auto column = column_program::try_compile(name, source, columns, scalars, kind == result_kind::predicate);
     if (column) impl.column = std::move(*column);
   }
   return program;

@@ -67,6 +67,43 @@ TEST_CASE("column program computes what the ds virtual machine computes") {
   CHECK(differ == 0);
 }
 
+// Условие считается как ds с ожидаемым bool: блок и `sequence` накапливают И с единицей «истина».
+// Прежде столбцы складывали их с нулём, и `sequence` предиката давал 2 там, где ВМ давала 1, и 0
+// там, где первое условие ложно, а ВМ — «истину».
+TEST_CASE("column predicates combine blocks and sequences as the ds virtual machine does") {
+  const std::vector<field_pair> fields = {{"a", "d1"}, {"b", "d1"}, {"out", "d1"}};
+  constexpr size_t n = 64;
+  originator::buffer cells("cells", originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells"), n);
+  std::vector<double> a(n), b(n);
+  for (size_t i = 0; i < n; ++i) {
+    a[i] = double(i % 4);
+    b[i] = double((i / 4) % 5);
+    cells.field(0).set(i, a[i]);
+    cells.field(1).set(i, b[i]);
+  }
+  const std::vector<std::string> names = {"a", "b"};
+  const std::vector<originator::field_ref> inputs{{&cells, nullptr, 0}, {&cells, nullptr, 1}};
+  const std::vector<originator::field_ref> outputs{{&cells, &cells, 2}};
+  for (const std::string_view predicate : {
+         std::string_view{"{ sequence = { { condition = a < 2, b < 3 }, { condition = b < 4, a < 2 } } }"},
+         std::string_view{"{ a < 3, b > 1 }"},
+         std::string_view{"{ select = { { condition = a < 1, b > 2 }, { b < 2, a > 1 } } }"},
+         std::string_view{"{ sequence = { { condition = a > 0, b > 1, a < 3 }, { condition = b > 2, a < 3 } } }"}}) {
+    CAPTURE(predicate);
+    const auto vm = originator::script_program::compile("vm", predicate, names, originator::script_program::result_kind::predicate,
+      {}, {}, originator::script_backend::virtual_machine);
+    originator::dispatch_script(*vm, inputs, outputs, originator::parameters{}, 1, 0, n, "predicate", nullptr);
+    const auto column = originator::column_program::compile("column", predicate, names, {}, true);
+    std::vector<double> got(n);
+    originator::column_workspace workspace;
+    const std::array<const double*, 2> pointers{a.data(), b.data()};
+    column->run(n, pointers, {}, got.data(), workspace);
+    size_t differ = 0;
+    for (size_t i = 0; i < n; ++i) differ += got[i] != cells.field(2).get(i);
+    CHECK(differ == 0);
+  }
+}
+
 TEST_CASE("column program refuses what it cannot compute") {
   const std::vector<std::string> columns = {"a"};
   const std::vector<std::string> none;

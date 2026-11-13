@@ -41,13 +41,18 @@ public:
   column_program& operator=(const column_program&) = delete;
 
   // Компилирует текст против имён столбцов и скаляров. Неизвестное имя — отказ.
+  // predicate — программа-условие, как `ds` с ожидаемым bool: блок из нескольких выражений и
+  // `sequence` накапливают И с единицей «истина», а не сумму с нулём. Род один на всю программу,
+  // как у перевода в GLSL; числа в блоках условия `ds` и так не принимает.
   static std::expected<std::unique_ptr<column_program>, std::string> try_compile(
                                                  const std::string_view& name, const std::string_view& source,
                                                  const std::span<const std::string> columns,
-                                                 const std::span<const std::string> scalars);
+                                                 const std::span<const std::string> scalars,
+                                                 const bool predicate = false);
   static std::unique_ptr<column_program> compile(const std::string_view& name, const std::string_view& source,
                                                  const std::span<const std::string> columns,
-                                                 const std::span<const std::string> scalars);
+                                                 const std::span<const std::string> scalars,
+                                                 const bool predicate = false);
 
   const std::string& name() const noexcept;
   // Какие столбцы программа читает: остальные вызывающий может не готовить.

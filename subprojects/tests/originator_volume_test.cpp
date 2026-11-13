@@ -611,3 +611,270 @@ TEST_CASE("marching_cubes refuses a grid that disagrees with its buffer") {
   CHECK_THROWS_AS(originator::dispatch(*tool, inputs, outputs, params, 1, 0, 1000, "surface", nullptr),
                   std::runtime_error);
 }
+
+// marching_tetrahedra: куб клетки — шесть тетраэдров вокруг главной диагонали. «Внутри» — значение
+// СТРОГО меньше iso, нормаль — нормированный градиент (в сторону роста значения). Таблицы случаев
+// у тетраэдра нет, но те же свойства проверяются тем же способом: замкнутость, положение вершин на
+// уровне, нормали, сложение чанков бит в бит и громкие отказы.
+namespace {
+struct tetra_result {
+  std::vector<vertex_key> positions;
+  std::vector<std::array<double, 3>> normals;
+  std::vector<size_t> cells;
+  std::vector<std::array<double, 3>> middles;
+};
+
+// Поле со знаком «внутри отрицательно», как у поля `solid` GN09 для воды.
+double sphere_distance(const double x, const double y, const double z) {
+  return std::sqrt(x * x + y * y + z * z) - 3.4;
+}
+
+tetra_result run_marching_tetrahedra(const originator::tool_registry& registry, const grid_description& grid,
+                                     const density_field field, const double iso = 0.0,
+                                     const size_t capacity = 1u << 20, const size_t middle_capacity = 1u << 16,
+                                     const double border = -1) {
+  const auto* tool = registry.find("marching_tetrahedra");
+  REQUIRE(tool != nullptr);
+
+  // Двойная точность во всех буферах: сверки ниже точные, а `v3` хранил бы float.
+  const size_t sample_count = grid.size[0] * grid.size[1] * grid.size[2];
+  const std::vector<field_pair> sample_fields = {{"position", "d3"}, {"density", "d1"}};
+  originator::buffer samples("samples", originator::make_buffer_layout(originator::storage_kind::soa, sample_fields, "samples"),
+                             sample_count);
+  const std::vector<field_pair> vertex_fields = {{"position", "d3"}, {"normal", "d3"}, {"cell", "ui1"}};
+  originator::buffer vertices("vertices", originator::make_buffer_layout(originator::storage_kind::soa, vertex_fields, "vertices"),
+                              capacity);
+  const std::vector<field_pair> middle_fields = {{"centre", "d3"}};
+  originator::buffer middles("middles", originator::make_buffer_layout(originator::storage_kind::soa, middle_fields, "middles"),
+                             middle_capacity);
+  const std::vector<field_pair> state_fields = {{"vertices", "ui1"}, {"middles", "ui1"}};
+  originator::buffer state("state", originator::make_buffer_layout(originator::storage_kind::soa, state_fields, "state"), 1);
+
+  auto position = samples.field(samples.find_field("position"));
+  auto density = samples.field(samples.find_field("density"));
+  for (size_t i = 0; i < sample_count; ++i) {
+    const size_t at[3]{i % grid.size[0], (i / grid.size[0]) % grid.size[1], i / (grid.size[0] * grid.size[1])};
+    double world[3]{};
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      world[axis] = double(grid.first[axis] + int64_t(at[axis])) * grid.cell;
+      position.set(i, world[axis], axis);
+    }
+    density.set(i, field(world[0], world[1], world[2]));
+  }
+
+  originator::parameters params;
+  params.set_number("size_x", double(grid.size[0]));
+  params.set_number("size_y", double(grid.size[1]));
+  params.set_number("size_z", double(grid.size[2]));
+  params.set_number("border", border >= 0 ? border : double(grid.border));
+  params.set_number("iso", iso);
+
+  const std::vector<originator::field_ref> inputs{readable(samples, "density"), readable(samples, "position")};
+  const std::vector<originator::field_ref> outputs{writable(vertices, "position"), writable(vertices, "normal"),
+                                                   writable(vertices, "cell"),     writable(middles, "centre"),
+                                                   writable(state, "vertices"),    writable(state, "middles")};
+  originator::dispatch(*tool, inputs, outputs, params, 1, 0, sample_count, "tetrahedra", nullptr);
+
+  tetra_result result;
+  const size_t vertex_count = size_t(state.field(0).get(0));
+  const size_t middle_count = size_t(state.field(1).get(0));
+  const auto out_position = vertices.field(0), out_normal = vertices.field(1), out_cell = vertices.field(2);
+  for (size_t i = 0; i < vertex_count; ++i) {
+    result.positions.push_back({out_position.get(i, 0), out_position.get(i, 1), out_position.get(i, 2)});
+    result.normals.push_back({out_normal.get(i, 0), out_normal.get(i, 1), out_normal.get(i, 2)});
+    result.cells.push_back(size_t(out_cell.get(i)));
+  }
+  const auto out_middle = middles.field(0);
+  for (size_t i = 0; i < middle_count; ++i) {
+    result.middles.push_back({out_middle.get(i, 0), out_middle.get(i, 1), out_middle.get(i, 2)});
+  }
+  return result;
+}
+
+// Неориентированное ребро треугольника — сколько треугольников его делят. У тетраэдров нет
+// неоднозначных граней, поэтому у замкнутой поверхности каждое невырожденное ребро ровно у двух.
+std::map<std::pair<vertex_key, vertex_key>, int> undirected_edges(const std::vector<vertex_key>& positions) {
+  std::map<std::pair<vertex_key, vertex_key>, int> usage;
+  for (size_t i = 0; i + 2 < positions.size(); i += 3) {
+    for (size_t k = 0; k < 3; ++k) {
+      const auto from = positions[i + k];
+      const auto to = positions[i + (k + 1) % 3];
+      if (from == to) continue;
+      ++usage[from < to ? std::pair{from, to} : std::pair{to, from}];
+    }
+  }
+  return usage;
+}
+
+grid_description sphere_grid() {
+  grid_description grid;
+  grid.size[0] = grid.size[1] = grid.size[2] = 20;
+  grid.first[0] = grid.first[1] = grid.first[2] = -10;
+  grid.cell = 0.5;
+  return grid;
+}
+} // namespace
+
+TEST_CASE("marching_tetrahedra closes a sphere on its level with outward normals") {
+  const auto registry = make_registry();
+  const auto* tool = registry.find("marching_tetrahedra");
+  REQUIRE(tool != nullptr);
+  CHECK(tool->shape == originator::aperture::sequential);
+
+  const auto surface = run_marching_tetrahedra(registry, sphere_grid(), &sphere_distance);
+  REQUIRE(!surface.positions.empty());
+  CHECK(surface.positions.size() % 3 == 0);
+
+  size_t open_edges = 0;
+  for (const auto& [edge, count] : undirected_edges(surface.positions)) open_edges += size_t(count != 2);
+  CHECK(open_edges == 0);
+
+  // Вершина — линейная интерполяция по ребру, а самое длинное ребро тетраэдра — диагональ клетки
+  // (0,5·√3 м). Хорда такой длины отходит от сферы радиуса 3,4 не дальше L²/(8r) ≈ 0,028 м. Нормаль —
+  // градиент расстояния, то есть радиус наружу.
+  double worst_level = 0;
+  size_t wrong_normals = 0;
+  for (size_t i = 0; i < surface.positions.size(); ++i) {
+    const auto& p = surface.positions[i];
+    const auto& n = surface.normals[i];
+    worst_level = std::max(worst_level, std::abs(sphere_distance(p[0], p[1], p[2])));
+    const double radius = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    const double length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    const double radial = (p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) / radius;
+    if (std::abs(length - 1.0) > 1e-12 || radial < 0.97) ++wrong_normals;
+  }
+  CHECK(worst_level < 0.75 / (8 * 3.4));
+  CHECK(wrong_normals == 0);
+
+  // Обход вершин согласован с нормалью: поверхность можно рисовать с отсечением задних граней. До
+  // согласования против нормали смотрели 46% треугольников: порядок углов в тетраэдре его не задаёт.
+  size_t agree = 0, disagree = 0;
+  for (size_t i = 0; i + 2 < surface.positions.size(); i += 3) {
+    const auto& a = surface.positions[i];
+    const auto& b = surface.positions[i + 1];
+    const auto& c = surface.positions[i + 2];
+    const std::array<double, 3> u{b[0] - a[0], b[1] - a[1], b[2] - a[2]}, v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+    const std::array<double, 3> cross{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    const auto& n = surface.normals[i];
+    const double d = cross[0] * n[0] + cross[1] * n[1] + cross[2] * n[2];
+    if (d > 0) ++agree;
+    if (d < 0) ++disagree;
+  }
+  CHECK(agree > 0);
+  CHECK(disagree == 0);
+}
+
+TEST_CASE("marching_tetrahedra cell middles are the means of their cell's vertices") {
+  const auto registry = make_registry();
+  const auto surface = run_marching_tetrahedra(registry, sphere_grid(), &sphere_distance);
+  REQUIRE(!surface.middles.empty());
+
+  // Вершины одной клетки идут подряд, и номер середины не убывает: середина заводится только у клетки
+  // с поверхностью, и её номер — следующий по порядку.
+  std::vector<std::array<double, 3>> sums(surface.middles.size());
+  std::vector<size_t> counts(surface.middles.size());
+  size_t backwards = 0;
+  for (size_t i = 0; i < surface.cells.size(); ++i) {
+    const size_t cell = surface.cells[i];
+    REQUIRE(cell < surface.middles.size());
+    if (i > 0 && cell < surface.cells[i - 1]) ++backwards;
+    for (uint32_t axis = 0; axis < 3; ++axis) sums[cell][axis] += surface.positions[i][axis];
+    ++counts[cell];
+  }
+  CHECK(backwards == 0);
+  double worst = 0;
+  for (size_t m = 0; m < surface.middles.size(); ++m) {
+    REQUIRE(counts[m] > 0);
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      worst = std::max(worst, std::abs(sums[m][axis] / double(counts[m]) - surface.middles[m][axis]));
+    }
+  }
+  CHECK(worst < 1e-12);
+}
+
+TEST_CASE("marching_tetrahedra chunks add up to the whole volume bit for bit") {
+  const auto registry = make_registry();
+  constexpr int64_t cells = 8;
+
+  grid_description whole;
+  whole.size[0] = size_t(2 * cells + 3);
+  whole.size[1] = whole.size[2] = size_t(cells + 3);
+  whole.first[0] = whole.first[1] = whole.first[2] = -1;
+  whole.cell = 0.4;
+
+  grid_description left = whole;
+  left.size[0] = size_t(cells + 3);
+  grid_description right = left;
+  right.first[0] = cells - 1;
+
+  const auto full = run_marching_tetrahedra(registry, whole, &lumpy_field);
+  const auto first_chunk = run_marching_tetrahedra(registry, left, &lumpy_field);
+  const auto second_chunk = run_marching_tetrahedra(registry, right, &lumpy_field);
+  REQUIRE(!full.positions.empty());
+  CHECK(first_chunk.positions.size() + second_chunk.positions.size() == full.positions.size());
+
+  // Вершина общего ребра считается от концов в каноническом порядке, а нормаль — центральной
+  // разностью по полосе, которая есть у обоих чанков: совпадать обязаны точно, не «примерно».
+  std::vector<std::array<double, 6>> whole_vertices, chunked_vertices;
+  const auto append = [](std::vector<std::array<double, 6>>& out, const tetra_result& source) {
+    for (size_t i = 0; i < source.positions.size(); ++i) {
+      out.push_back({source.positions[i][0], source.positions[i][1], source.positions[i][2], source.normals[i][0],
+                     source.normals[i][1], source.normals[i][2]});
+    }
+  };
+  append(whole_vertices, full);
+  append(chunked_vertices, first_chunk);
+  append(chunked_vertices, second_chunk);
+  std::sort(whole_vertices.begin(), whole_vertices.end());
+  std::sort(chunked_vertices.begin(), chunked_vertices.end());
+  CHECK(whole_vertices == chunked_vertices);
+
+  // Шов: каждое ребро, которое у одного чанка открыто на общей грани, закрывает другой.
+  std::vector<vertex_key> joined = first_chunk.positions;
+  joined.insert(joined.end(), second_chunk.positions.begin(), second_chunk.positions.end());
+  const auto whole_edges = undirected_edges(full.positions);
+  CHECK(undirected_edges(joined) == whole_edges);
+}
+
+TEST_CASE("marching_tetrahedra follows iso and survives nodes exactly on the level") {
+  const auto registry = make_registry();
+
+  // Плоскость y = 1 на целой решётке: целый слой узлов ровно на уровне. Он «снаружи» (строго меньше —
+  // внутри), поэтому деление на разность уровней ни разу не нулевое и чисел-нечисел нет.
+  grid_description grid;
+  grid.size[0] = grid.size[1] = grid.size[2] = 8;
+  grid.first[0] = grid.first[1] = grid.first[2] = -3;
+  const auto plane = [](const double, const double y, const double) { return y - 1.0; };
+  const auto on_level = run_marching_tetrahedra(registry, grid, plane);
+  REQUIRE(!on_level.positions.empty());
+  size_t bad = 0;
+  for (size_t i = 0; i < on_level.positions.size(); ++i) {
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      bad += size_t(!std::isfinite(on_level.positions[i][axis]) || !std::isfinite(on_level.normals[i][axis]));
+    }
+    bad += size_t(std::abs(on_level.positions[i][1] - 1.0) > 1e-12 || std::abs(on_level.normals[i][1] - 1.0) > 1e-12);
+  }
+  CHECK(bad == 0);
+
+  // iso сдвигает уровень: поверхность y - 1 = 0,25 лежит на y = 1,25.
+  const auto shifted = run_marching_tetrahedra(registry, grid, plane, 0.25);
+  REQUIRE(!shifted.positions.empty());
+  double worst = 0;
+  for (const auto& p : shifted.positions) worst = std::max(worst, std::abs(p[1] - 1.25));
+  CHECK(worst < 1e-12);
+}
+
+TEST_CASE("marching_tetrahedra refuses overflow and malformed grids loudly") {
+  const auto registry = make_registry();
+  const auto grid = sphere_grid();
+  // Обрезанная поверхность выглядит как дырка в мире, поэтому переполнение — отказ самого инструмента.
+  // Ёмкость не меньше числа узлов (меньшую отвергает ещё `dispatch`), а вершин у сферы вдвое больше.
+  const size_t nodes = grid.size[0] * grid.size[1] * grid.size[2];
+  REQUIRE(run_marching_tetrahedra(registry, grid, &sphere_distance).positions.size() > nodes);
+  CHECK_THROWS_AS(run_marching_tetrahedra(registry, grid, &sphere_distance, 0.0, nodes), std::runtime_error);
+  CHECK_THROWS_AS(run_marching_tetrahedra(registry, grid, &sphere_distance, 0.0, 1u << 20, 4), std::runtime_error);
+  // Без полосы у угла клетки нет центральной разности, и нормаль на шве разошлась бы.
+  CHECK_THROWS_AS(run_marching_tetrahedra(registry, grid, &sphere_distance, 0.0, 1u << 20, 1u << 16, 0), std::runtime_error);
+  // Полоса шире, чем позволяет решётка.
+  CHECK_THROWS_AS(run_marching_tetrahedra(registry, grid, &sphere_distance, 0.0, 1u << 20, 1u << 16, 10), std::runtime_error);
+}

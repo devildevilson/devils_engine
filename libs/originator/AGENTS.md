@@ -194,7 +194,7 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
 | цепочка генераторов, связанные буферы пайплайна, `step.links`/`step.key` | `originator_chain_test`, GN09 `--verify` |
 | поле из примитивов, `field_sample`/`field_march` | `originator_field_test`, GN09 `--verify` и `--verify-caves` |
 | соседство, общие ядра, `edge_csr`, `slope`/`vote` | `originator_neighbourhood_test`; дампы GN02 (`--dump`) побайтно до/после |
-| `marching_tetrahedra` | прямого теста нет, потребителя тоже (GN09 перешла на `field_surface` 2026-11-13) — сначала завести тест |
+| `marching_tetrahedra` | `originator_volume_test` (замкнутость, уровень, нормали и обход, середины, чанки бит в бит, отказы); потребителя на площадках нет |
 | объём | `originator_volume_test` |
 | локально уточнённая поверхность поля | `originator_surface_test`, GN09 `--verify`, `--verify-caves` и отпечаток `--bench` |
 | решатель | `originator_collapse_test` |

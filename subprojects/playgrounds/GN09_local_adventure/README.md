@@ -195,8 +195,9 @@ Release, машина разработки (12 потоков), `surface_kuhn = 
 
 **8. Без потребителя после удаления прежнего генератора (оставлено).** На площадках больше не
 вызываются инструменты `originator` `exclusion_set`, `propagate`, `quarter_voxel_mesh`,
-`segment_box_distance`, `tree_distance`, `skeleton_distance`, `skeleton_tour` и `marching_tetrahedra`;
-у последнего нет и прямого теста. В `common/chunk_viewer` отладочные линии (`line_provider`) никто не
+`segment_box_distance`, `tree_distance`, `skeleton_distance`, `skeleton_tour` и `marching_tetrahedra`.
+У последнего не было и прямого теста; после закрытия он появился в `originator_volume_test` и сразу
+нашёл несогласованный обход треугольников (исправлен в библиотеке). В `common/chunk_viewer` отладочные линии (`line_provider`) никто не
 передаёт. Удалять или покрывать тестами — решение по библиотеке и общему просмотрщику; инвентаризация
 (`scripts/inventory_originator_tools.py`) обновлена.
 
@@ -211,10 +212,11 @@ Release, машина разработки (12 потоков), `surface_kuhn = 
 Проверки при закрытии (Release, 2026-11-13):
 
 - `GN09_next_verify` — seed 0–19 пройдены за 225 с;
-- CTest `^(GN|playground|originator)` без кампаний — 298 из 299; падает давний
-  `originator_translate_test` «branch blocks agree…» (GPU-перевод на этом драйвере, падает и до
-  изменений). В числе прошедших — `GN09_next_smoke`, `GN09_next_caves_smoke` и
-  `playground_cli_migration_contract` (оба исполняемых файла GN09);
+- CTest `^(GN|playground|originator)` без кампаний — все проходят, включая `GN09_next_smoke`,
+  `GN09_next_caves_smoke` и `playground_cli_migration_contract` (оба исполняемых файла GN09). Давний
+  провал `originator_translate_test` «branch blocks agree…» оказался не драйвером, а дефектом
+  столбцового пути `ds`: условие из нескольких выражений и `sequence` в предикате складывались, а не
+  объединялись через И; исправлено в `column_program`;
 - `GN09_next --flight=48 --seconds=20 --workers=6` — 0 / 1199 кадров с неготовым ближним кубом;
 - `--bench` до и после уборки — `385282cbb3275818`;
 - просмотрщик: кадры `--view=station-dock`, `--natural --view=hall` и `--natural --view=gallery
