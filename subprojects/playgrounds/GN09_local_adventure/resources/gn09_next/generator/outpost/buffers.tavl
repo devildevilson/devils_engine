@@ -1,14 +1,32 @@
-{ name = station_cut, size = room_capacity, format = [ centre = d3, local_centre = d3, half = d3, yaw_c = d1, yaw_s = d1, tag = ui1 ] }
-{ name = station_rooms, size = room_capacity, format = [ centre = d3, local_centre = d3, half = d3, label = ui1, parent = i1, open_axis = ui1, open_sign = i1 ] }
-{ name = station_walls, size = wall_capacity, format = [ centre = d3, local_centre = d3, normal = d3, half = d3, hole_centre = d3, hole_half = d3, exposure = d1, first_probe = ui1, probes_a = ui1, probes_b = ui1, room = ui1, other = i1, axis = ui1, sign = i1, outside = ui1, opening = ui1 ] }
-{ name = station_openings, size = station_opening_capacity, format = [ centre = d3, local_centre = d3, half = d3, wall = ui1, kind = ui1 ] }
+{ name = station_cut, size = room_capacity, format = [ centre = d3, local_centre = d3, half = d3, yaw_c = d1,
+  yaw_s = d1, tag = ui1 ] }
+{ name = station_rooms, size = room_capacity, format = [ centre = d3, local_centre = d3, half = d3,
+  label = ui1, parent = i1, open_axis = ui1, open_sign = i1 ] }
+{ name = station_walls, size = wall_capacity, format = [ centre = d3, local_centre = d3, normal = d3,
+  half = d3, hole_centre = d3, hole_half = d3, exposure = d1, first_probe = ui1, probes_a = ui1,
+  probes_b = ui1, room = ui1, other = i1, axis = ui1, sign = i1, outside = ui1, opening = ui1 ] }
+{ name = station_openings, size = station_opening_capacity, format = [ centre = d3, local_centre = d3,
+  half = d3, wall = ui1, kind = ui1 ] }
 { name = station_details, size = station_detail_capacity, format = [ low = d3, high = d3 ] }
 { name = station_mesh, size = station_triangle_capacity, format = [ a = d3, b = d3, c = d3, normal = d3, shade = ui1 ] }
-{ name = station_meta, size = one, format = [ low = d3, high = d3, origin = d3, yaw_c = d1, yaw_s = d1, built = ui1, cuts = ui1, rooms = ui1, walls = ui1, triangles = ui1, details = ui1, floors = ui1, entry_room = ui1, dock = d3, hatch = d3, entry = d3, trunk_length = d1, pose = ui1, transition = ui1, openings = ui1, windows = ui1, hatches = ui1, beacon = d3, beacon_kind = ui1, detail_low = d3, detail_high = d3 ] }
+{ name = station_meta, size = one, format = [ low = d3, high = d3, origin = d3, yaw_c = d1, yaw_s = d1,
+  built = ui1, cuts = ui1, rooms = ui1, walls = ui1, triangles = ui1, details = ui1, floors = ui1,
+  entry_room = ui1, dock = d3, hatch = d3, entry = d3, trunk_length = d1, pose = ui1, transition = ui1,
+  openings = ui1, windows = ui1, hatches = ui1, beacon = d3, beacon_kind = ui1, detail_low = d3,
+  detail_high = d3 ] }
 
-{ name = outpost_frame, size = one, format = [ origin = d3, yaw_c = d1, yaw_s = d1, dock = d3, hatch = d3, front = d3, pose = ui1 ] }
-{ name = outpost_rays, size = outpost_ray_capacity, format = [ origin = d3, direction = d3, distance = d1, first_probe = ui1, sweep_probes = ui1 ] }
-{ name = outpost_docks, size = outpost_dock_capacity, format = [ dock = d3, hatch = d3, yaw_c = d1, yaw_s = d1, standoff = d1, ray = ui1, rotation = ui1, first_probe = ui1, refusal = ui1 ] }
-{ name = outpost_bodies, size = outpost_body_capacity, format = [ origin = d3, front = d3, yaw_c = d1, yaw_s = d1, depth = d1, distance = d1, ray = ui1, rotation = ui1, pose = ui1, first_probe = ui1, refusal = ui1 ] }
+{ name = outpost_frame, size = one, format = [ origin = d3, yaw_c = d1, yaw_s = d1, dock = d3, hatch = d3,
+  front = d3, pose = ui1 ] }
+{ name = outpost_rays, size = outpost_ray_capacity, format = [ origin = d3, direction = d3, distance = d1,
+  first_probe = ui1, sweep_probes = ui1 ] }
+{ name = outpost_docks, size = outpost_dock_capacity, format = [ dock = d3, hatch = d3, yaw_c = d1,
+  yaw_s = d1, standoff = d1, ray = ui1, rotation = ui1, first_probe = ui1, refusal = ui1 ] }
+{ name = outpost_bodies, size = outpost_body_capacity, format = [ origin = d3, front = d3, yaw_c = d1,
+  yaw_s = d1, depth = d1, distance = d1, ray = ui1, rotation = ui1, pose = ui1, first_probe = ui1,
+  refusal = ui1 ] }
 { name = outpost_probes, size = outpost_probe_capacity, format = [ position = d3, value = d1, clearance = d1 ] }
-{ name = outpost_meta, size = one, format = [ rays = ui1, docks = ui1, bodies = ui1, proposals = ui1, probes = ui1, chosen_dock = i1, chosen_body = i1, standoff = d1, occupancy = d1, floors = ui1, refused_approach = ui1, refused_dock = ui1, refused_water = ui1, refused_protected = ui1, tower_candidates = ui1, tower_valid = ui1, tower_buried = ui1, tower_floating = ui1, tower_protected = ui1, core_rooms = ui1, core_water = ui1, core_protected = ui1, core_overlap = ui1 ] }
+{ name = outpost_meta, size = one, format = [ rays = ui1, docks = ui1, bodies = ui1, proposals = ui1,
+  probes = ui1, chosen_dock = i1, chosen_body = i1, standoff = d1, occupancy = d1, floors = ui1,
+  refused_approach = ui1, refused_dock = ui1, refused_water = ui1, refused_protected = ui1,
+  tower_candidates = ui1, tower_valid = ui1, tower_buried = ui1, tower_floating = ui1, tower_protected = ui1,
+  core_rooms = ui1, core_water = ui1, core_protected = ui1, core_overlap = ui1 ] }

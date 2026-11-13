@@ -1,30 +1,17 @@
-// Решётка узлов чанка с полосой и значения поля в мировых метрах (`d`, double).
-// Если над решёткой нет ни одной формы, а фон выше нуля, чанк — сплошная порода: сэмплы не считаются
-// (surface_counts.sampled = 0) и поверхности нет. У генератора со связями уточнения (landscape) поверхность
-// строится по своей сетке тетраэдров, и `samples` не заполняется.
+// Решётка узлов чанка с полосой в мировых метрах (`d`, double). Если над решёткой нет ни одной формы,
+// а фон выше нуля, чанк — сплошная порода: surface_counts.sampled = 0, поверхности нет. Саму
+// поверхность field_surface строит по своей сетке тетраэдров.
 {
   name = lattice
   format = [ position = d3 ]
   extent = [ chunk_padded, chunk_padded, chunk_padded ]
 }
 
-{
-  name = samples
-  format = [ value = d1 ]
-  extent = [ chunk_padded, chunk_padded, chunk_padded ]
-}
-
-// Поверхность чанка: мировые позиции, нормаль, номер середины клетки и порода клетки.
+// Поверхность чанка: мировые позиции, нормаль и порода (метка поля `solid`).
 {
   name = surface
-  format = [ position = d3, normal = d3, cell = ui1, shade = ui1 ]
+  format = [ position = d3, normal = d3, shade = ui1 ]
   size = surface_capacity
-}
-
-{
-  name = middles
-  format = [ centre = d3, value = d1, tag = ui1 ]
-  size = middle_capacity
 }
 
 // Треугольники аванпостов, обрезанные по чанку (мировые позиции, нормаль грани, материал).
@@ -36,11 +23,11 @@
 
 {
   name = surface_counts
-  format = [ vertices = ui1, middles = ui1, structure = ui1, props = ui1, sampled = ui1, shapes = ui1 ]
+  format = [ vertices = ui1, structure = ui1, props = ui1, sampled = ui1, shapes = ui1 ]
   size = one
 }
 
-// Формат предметов для хоста. В текущем срезе геометрии буфер всегда пуст.
+// Формат предметов для хоста. Генератор предметов не ставит: буфер всегда пуст.
 {
   name = props
   format = [ position = d3, kind = ui1, node = ul1, index = ui1 ]

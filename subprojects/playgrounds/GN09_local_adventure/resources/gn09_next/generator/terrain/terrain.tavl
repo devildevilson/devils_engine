@@ -1,4 +1,5 @@
 name = terrain
 buffers = ./buffers.tavl
 shared_buffers = [ ../shared_geometry/passages.tavl ]
-steps = [ { name = galleries, body = ./01_galleries.lua, reads = [ network_node, network_nodes, network_edges, network_paths ], writes = [ passages, shelters, ribs, collapse_voids, terrain_meta ] } ]
+steps = [
+  { name = galleries, body = ./01_galleries.lua, reads = [ network_node, network_nodes, network_edges, network_paths ], writes = [ passages, shelters, ribs, collapse_voids, terrain_meta ] } ]

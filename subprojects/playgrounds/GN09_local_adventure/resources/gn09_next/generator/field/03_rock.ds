@@ -1,4 +1,0 @@
-{
- ctx_save = { qx = (x-centre_x)/half_x, qy = (y-centre_y)/half_y, qz = (z-centre_z)/half_z }
- (1-sqrt(ctx:saved:qx*ctx:saved:qx+ctx:saved:qy*ctx:saved:qy+ctx:saved:qz*ctx:saved:qz))*min(half_x,min(half_y,half_z))
-}

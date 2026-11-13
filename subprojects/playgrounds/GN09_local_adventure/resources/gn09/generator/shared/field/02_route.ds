@@ -1,8 +1,0 @@
-// Сметённый объём корпуса лодки по ребру (между центрами узлов): капсула радиуса route_radius (корпус плюс
-// охранный слой), неровность только наружу. Строка — элемент буфера `galleries`.
-{
-  ctx_save = { bx = ends_b_x - ends_a_x, by = ends_b_y - ends_a_y, bz = ends_b_z - ends_a_z, px = x - ends_a_x, py = y - ends_a_y, pz = z - ends_a_z }
-  ctx_save = { t = clamp((ctx:saved:px * ctx:saved:bx + ctx:saved:py * ctx:saved:by + ctx:saved:pz * ctx:saved:bz) / (ctx:saved:bx * ctx:saved:bx + ctx:saved:by * ctx:saved:by + ctx:saved:bz * ctx:saved:bz), 0, 1) }
-  ctx_save = { dx = ctx:saved:px - ctx:saved:bx * ctx:saved:t, dy = ctx:saved:py - ctx:saved:by * ctx:saved:t, dz = ctx:saved:pz - ctx:saved:bz * ctx:saved:t }
-  sqrt(ctx:saved:dx * ctx:saved:dx + ctx:saved:dy * ctx:saved:dy + ctx:saved:dz * ctx:saved:dz) - route_radius - 1.5 * (1 - broad)
-}

@@ -1,8 +1,0 @@
-// Комнаты места базы: 0 — док у узла, дальше модули (центр — центр узла, радиус 0: это назначения, а не
-// полости). purpose — номер в словаре `purposes`.
-{
-  name = base_rooms
-  format = [ centre = d3, radius = d1, purpose = ui1 ]
-  size = base_room_capacity
-}
-{ name = base_counts, format = [ rooms = ui1 ], size = one }

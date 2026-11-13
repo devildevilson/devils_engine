@@ -1,8 +1,12 @@
-{ name = caverns, size = shape_capacity, format = [ centre = d3, half = d3, relief = d1, phase = d1, first_clip = ui1, clip_count = ui1, tag = ui1 ] }
-{ name = buttresses, size = shape_capacity, format = [ a = d3, b = d3, radius = d1, start = d1, finish = d1, chain = ul1, class = ui1, scar = d3, tag = ui1 ] }
-{ name = cavern_meta, size = one, format = [ feature_key = ul3, feature_low = d3, feature_high = d3, caverns = ui1, ocean = ui1, buttresses = ui1, clips = ui1, cells = ui1 ] }
+{ name = caverns, size = shape_capacity, format = [ centre = d3, half = d3, relief = d1, phase = d1,
+  first_clip = ui1, clip_count = ui1, tag = ui1 ] }
+{ name = buttresses, size = shape_capacity, format = [ a = d3, b = d3, radius = d1, start = d1, finish = d1,
+  chain = ul1, class = ui1, scar = d3, tag = ui1 ] }
+{ name = cavern_meta, size = one, format = [ feature_key = ul3, feature_low = d3, feature_high = d3,
+  caverns = ui1, ocean = ui1, buttresses = ui1, clips = ui1, cells = ui1 ] }
 
-{ name = biome_clips, size = shape_capacity, format = [ low = d3, high = d3, owner = d2, other = d2, phase_a = d1, phase_b = d1, span = d1, warp = d1, margin = d1 ] }
+{ name = biome_clips, size = shape_capacity, format = [ low = d3, high = d3, owner = d2, other = d2,
+  phase_a = d1, phase_b = d1, span = d1, warp = d1, margin = d1 ] }
 
 { name = biome_cell, size = one, format = [ low = d3, high = d3, first_clip = ui1, clip_count = ui1 ] }
 

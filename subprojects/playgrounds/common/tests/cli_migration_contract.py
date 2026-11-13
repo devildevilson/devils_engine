@@ -13,7 +13,7 @@ def run(binary, args, expected):
 
 def main():
     binaries = [Path(s).resolve() for s in sys.argv[1:]]
-    assert len(binaries) == 9
+    assert len(binaries) == 7
     for binary in binaries:
         for flag in ('--help', '-h'):
             result = run(binary, [flag], 0)
@@ -27,11 +27,10 @@ def main():
         for text in ('x', '=1', 'x=nan', 'x=1junk', 'x=1=2'):
             run(binary, ['--set', text], 2)
     malformed = {1: ('--probe', '1:2:3:4'), 3: ('--window','1,2,3,4,5'),
-                 5: ('--sector','1,2,3'), 6: ('--start-sector','1junk,2'),
-                 7: ('--sector','1,2,3'), 8: ('--position','1,2,3junk')}
+                 5: ('--sector','1,2,3'), 6: ('--position','1,2,3junk')}
     for index, (flag, value) in malformed.items():
         run(binaries[index], [flag, value], 2)
-    for index, flag in ((0,'--distance'),(1,'--flight'),(5,'--radius'),(6,'--fog'),(7,'--flight'),(8,'--speed')):
+    for index, flag in ((0,'--distance'),(1,'--flight'),(5,'--flight'),(6,'--speed')):
         run(binaries[index], [flag, 'nan'], 2)
     seed = '18446744073709551615'
     with tempfile.TemporaryDirectory(prefix='devils_cli_migration_') as folder:
@@ -39,18 +38,13 @@ def main():
         for index, common, flag, suffix in [
                 (3, ['--mode','building'], '--dump', '.ppm'),
                 (4, ['--no-map'], '--svg', '.svg'),
-                (7, ['--sector=-2,1'], '--map', '.svg')]:
+                (5, ['--sector=-2,1'], '--map', '.svg')]:
             a, b = folder/f'{index}a{suffix}', folder/f'{index}b{suffix}'
             run(binaries[index], [*common, f'--seed={seed}', f'{flag}={a}'], 0)
             run(binaries[index], [*common, '--seed', seed, flag, str(b)], 0)
             assert a.read_bytes() == b.read_bytes(), binaries[index].name
-        # GN09's world/SVG equivalence is a separate baseline capture, not a parser load test.
-        result = run(binaries[5], ['--seed',seed,'--sector=-2,1','--mods=missing_cli_test_mod'], 1)
-        assert 'missing_cli_test_mod' in result.stdout + result.stderr
         # Viewer arguments reach deterministic pre-window paths, without requiring GPU/display.
-        result = run(binaries[6], ['--seed',seed,'--start-sector=-2,1','--mods=missing_cli_test_mod'], 1)
-        assert 'missing_cli_test_mod' in result.stdout + result.stderr
-        result = run(binaries[8], ['--seed',seed,'--position=-1.5,2,-3','--module=missing_cli_test_module'], 1)
+        result = run(binaries[6], ['--seed',seed,'--position=-1.5,2,-3','--module=missing_cli_test_module'], 1)
         assert 'missing_cli_test_module' in result.stdout + result.stderr
     # Help shows real defaults, rather than the old handwritten GN02 values.
     assert '262144' in run(binaries[0], ['--help'], 0).stdout

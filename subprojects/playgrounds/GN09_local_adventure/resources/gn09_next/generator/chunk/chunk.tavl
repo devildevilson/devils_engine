@@ -1,7 +1,7 @@
 name = landscape
 buffers = ./buffers.tavl
 steps = [
- { name = sample, body = ./01_sample.lua, writes = [ lattice, samples, surface_counts, chunk_meta, structure_surface, props ] },
- { name = surface, body = ./02_surface.lua, reads = [ lattice, samples ], writes = [ surface, middles, surface_counts, detail_boxes ] },
+ { name = sample, body = ./01_sample.lua, writes = [ lattice, surface_counts, chunk_meta, structure_surface, props ] },
+ { name = surface, body = ./02_surface.lua, writes = [ surface, surface_counts, detail_boxes ] },
  { name = structures, body = ./03_structures.lua, writes = [ structure_surface, surface_counts ] }
 ]

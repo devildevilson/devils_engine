@@ -41,7 +41,7 @@
 | `GN05` | `GN05_constraint_collapse` | constraint fixture, обслуживается | declared/learned/graph; общий CLI/resources |
 | `GN06` | `GN06_dungeon_layout` | граница среза описана в локальном AUDIT | structure, motifs, site layout |
 | `GN07` | `GN07_location_brief` | самостоятельный brief/graph/plan fixture | без зависимости от originator |
-| `GN09` | `GN09_local_adventure` | legacy world + NEXT, геометрия NEXT ждёт визуальной оценки | потоковый мир из макрографа, залов, пещер мест, станций и туннелей; лодка 34×12 м, генерация через originator/Lua/ds и окно GN03 |
+| `GN09` | `GN09_local_adventure` | закрыта | потоковый подводный мир: биомы, сеть главных узлов, рельеф с опорами, аванпосты в породе, экспедиционные пещеры; лодка 34×12 м, все правила в originator TAVL/Lua/DS, окно GN03 |
 | `NET06` | `NET06_in_memory_transport` | закрыта | детерминированные delay/loss/reorder/duplicate/bandwidth/reconnect без сокетов |
 | `NET07` | `NET07_replication_baselines` | закрыта | explicit baseline/delta replication поверх fault laboratory |
 | `PHY01` | `PHY01_jolt_basics` | активна | Jolt runtime/world ownership, rigid bodies, queries, jobs и deterministic math probe |

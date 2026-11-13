@@ -1,2 +1,0 @@
-// found = 0 — пары нет (своя станция не построена или рядом нет станции).
-{ name = tunnel_partner, format = [ found = ui1, station = ul3, anchor = ul1, centre = d3 ], size = one }

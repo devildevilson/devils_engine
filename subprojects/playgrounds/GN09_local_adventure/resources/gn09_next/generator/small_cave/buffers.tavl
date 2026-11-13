@@ -1,6 +1,10 @@
-{ name = cave_nodes, size = cave_node_capacity, format = [ centre = d3, heading = d3, half = d3, kind = ui1, roll = d1, parent = i1, degree = ui1 ] }
+{ name = cave_nodes, size = cave_node_capacity, format = [ centre = d3, heading = d3, half = d3, kind = ui1,
+  roll = d1, parent = i1, degree = ui1 ] }
 { name = cave_edges, size = cave_edge_capacity, format = [ a = ui1, b = ui1, kind = ui1, loop = ui1 ] }
-{ name = cave_meta, size = one, format = [ origin = d3, centre = d3, entry = d3, direction = d3, has_entry = ui1, site_quality = d1, low = d3, high = d3, nodes = ui1, edges = ui1, loops = ui1, passages = ui1, chambers = ui1, slits = ui1, halls = ui1 ] }
-{ name = cave_chambers, size = cave_chamber_capacity, format = [ centre = d3, half = d3, right = d3, up = d3, forward = d3, kind = ui1, relief = d1, phase = d1, tag = ui1 ] }
+{ name = cave_meta, size = one, format = [ origin = d3, centre = d3, entry = d3, direction = d3,
+  has_entry = ui1, site_quality = d1, low = d3, high = d3, nodes = ui1, edges = ui1, loops = ui1,
+  passages = ui1, chambers = ui1, slits = ui1, halls = ui1 ] }
+{ name = cave_chambers, size = cave_chamber_capacity, format = [ centre = d3, half = d3, right = d3, up = d3,
+  forward = d3, kind = ui1, relief = d1, phase = d1, tag = ui1 ] }
 { name = cave_details, size = cave_passage_capacity, format = [ low = d3, high = d3 ] }
 { name = cave_detail_meta, size = one, format = [ count = ui1, low = d3, high = d3 ] }

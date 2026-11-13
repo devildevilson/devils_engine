@@ -1,2 +1,0 @@
-{ name = chunk_tunnels, format = [ tunnel = ul3 ], size = chunk_anchor_capacity }
-{ name = tunnel_counts, format = [ tunnels = ui1 ], size = one }

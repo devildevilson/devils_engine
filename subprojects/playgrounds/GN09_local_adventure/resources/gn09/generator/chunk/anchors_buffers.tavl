@@ -1,2 +1,0 @@
-{ name = anchors, format = [ station = ul3 ], size = chunk_anchor_capacity }
-{ name = anchor_counts, format = [ anchors = ui1 ], size = one }

@@ -14,6 +14,8 @@
 namespace gn09_next {
 namespace o = devils_engine::originator;
 inline constexpr int chunk_cells = 16;
+// Сторона отладочного фрагмента карты биомов (`biome_window`), пикселей.
+inline constexpr size_t biome_map_side = 33;
 o::instance_key key(int64_t x, int64_t z);
 o::instance_key key(int64_t x, int64_t y, int64_t z);
 class runtime {

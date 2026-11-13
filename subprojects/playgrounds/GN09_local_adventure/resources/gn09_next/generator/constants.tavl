@@ -1,18 +1,73 @@
+// Числа мира GN09. Их читают скрипты (`constants.<имя>`), формулы `world.tavl` и проверки C++.
+// Расстояния — в метрах, вероятности — доли единицы. Ёмкости буферов и размер чанка здесь не задаются:
+// это параметры хоста.
 { numbers = {
-  terrain_normal_step = 1, cave_detail_normal_step = 0.125,
-  feature_root_search = 124, feature_root_embed = 4, feature_chain_gap = 100,
-  cave_system_spacing = 480, cave_layer_spacing = 240, cave_system_reach = 320, cave_system_height = 280,
-  cave_low_room_probability = 0.12, cave_slit_probability = 0.08, swimmer_half_width = 0.24, swimmer_half_height = 0.18,
-  cave_surface_refinement = 4, surface_kuhn = 1, surface_skip = 2, surface_band = 3, surface_lattice_normals = 1,
-  outpost_search_reach = 450, outpost_directions = 12, outpost_vertical_yaws = 3, outpost_dock_gap = 3, outpost_approach_step = 8,
-  outpost_deck = 3.5, outpost_cell = 6, outpost_tower_chance = 0.65, outpost_crease_refinement = 1,
-  terrain_segment_length = 24, terrain_max_reach = 220, biome_max_reach = 480,
-  main_spacing = 384, main_jitter = 0.24, main_neighbour_radius = 700, main_backbone_stride = 3,
-  route_min_ordinary = 3, route_extra_ordinary = 3, route_bend = 105, route_rise = 110, route_branch_length = 80,
-  biome_jitter = 0.28, biome_warp = 64, biome_transition = 48,
-  sector_size = 128, region_sectors = 5, node_radius = 27,
-  sub_length = 34, sub_beam = 12, route_radius = 8.5,
-  world_y_min = -800, world_y_max = 600,
-  gallery_radius = 23, clutter_radius = 25,
-  station_reach = 110
+  // Мир по вертикали: фон поля — порода между этими высотами, вода за ними.
+  world_y_min = -800,
+  world_y_max = 600,
+
+  // Лодка: корпус 34 × 12 м и радиус защищённой воды вдоль маршрута.
+  sub_length = 34,
+  sub_beam = 12,
+  route_radius = 8.5,
+
+  // Биомы: техническая область sector_size × region_sectors (640 м) выдаёт один центр.
+  sector_size = 128,
+  region_sectors = 5,
+  biome_jitter = 0.28,       // смещение центра, доля области
+  biome_warp = 64,           // предел плавной деформации координат перед поиском ближайших центров
+  biome_transition = 48,     // ширина перехода профилей между соседними биомами
+
+  // Сеть главных узлов (аванпостов) и маршруты между ними.
+  main_spacing = 384,        // шаг адресов главных узлов
+  main_jitter = 0.24,        // смещение узла, доля шага
+  main_neighbour_radius = 700,
+  main_backbone_stride = 3,  // каждый третий ряд адресов — поперечная связь обязательного каркаса
+  route_min_ordinary = 3,    // N: минимум обычных узлов на кратчайшем пути между главными
+  route_extra_ordinary = 3,  // до стольких дополнительных обычных узлов на маршрут
+  route_bend = 105,          // боковой изгиб маршрута
+  route_rise = 110,          // перепад глубины маршрута
+  route_branch_length = 80,  // длина тупиковой ветви
+
+  // Рельеф: шаг кривых галерей и объявленные области влияния форм. Превышение — ошибка скрипта.
+  terrain_segment_length = 24,
+  terrain_max_reach = 220,
+  biome_max_reach = 480,
+
+  // Гряды, колонны и завалы: опора ищется не дальше feature_root_search и заглубляется на
+  // feature_root_embed; соседние выступы ближе feature_chain_gap соединяются перемычкой.
+  feature_root_search = 124,
+  feature_root_embed = 4,
+  feature_chain_gap = 100,
+
+  // Экспедиционные пещеры: шаг адресов систем, слой по глубине и обещанная область влияния.
+  cave_system_spacing = 480,
+  cave_layer_spacing = 240,
+  cave_system_reach = 320,
+  cave_system_height = 280,
+  cave_low_room_probability = 0.12,
+  cave_slit_probability = 0.08,
+  // Пловец головой вперёд: полугабариты сечения по плечам и по толщине тела.
+  swimmer_half_width = 0.24,
+  swimmer_half_height = 0.18,
+
+  // Аванпосты.
+  outpost_search_reach = 450,      // дальность лучей поиска дока от центра главного узла
+  outpost_directions = 12,         // горизонтальных лучей (плюс вверх и вниз)
+  outpost_vertical_yaws = 3,       // поворотов рамки для дока над или под корпусом
+  outpost_approach_step = 8,       // шаг проб сечения лодки на пути к доку
+  outpost_deck = 3.5,              // высота палубы
+  outpost_cell = 6,                // клетка башни
+  outpost_tower_chance = 0.65,     // доля аванпостов, которые хотят башню вместо хобота
+  outpost_crease_refinement = 1,   // 1 — уточнять поверхность у стыка стен с породой
+  station_reach = 110,             // предел полугабарита аванпоста
+
+  // Поверхность чанка (originator.field_surface).
+  terrain_normal_step = 1,         // шаг градиента нормалей крупного окружения
+  cave_detail_normal_step = 0.125, // шаг градиента нормалей внутри коробок уточнения
+  cave_surface_refinement = 4,     // клетка уточнения узких ходов: 1/4 м
+  surface_kuhn = 1,                // 1 — клетки вдали от уточнения режутся 6 тетраэдрами Куна
+  surface_skip = 2,                // блок 2³ клеток, внутренние точки которого можно не считать
+  surface_band = 3,                // полоса значений поля, для которой объявлены наклоны форм
+  surface_lattice_normals = 1      // 1 — нормали вдали от коробок из разностей решётки
 } }

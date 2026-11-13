@@ -58,8 +58,7 @@ if(DEVILS_ENGINE_BUILD_TESTS)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_migration_contract.py
       $<TARGET_FILE:GN02_planet_generator> $<TARGET_FILE:GN03_streaming_volume>
       $<TARGET_FILE:GN04_texture_generation> $<TARGET_FILE:GN06_dungeon_layout>
-      $<TARGET_FILE:GN07_location_brief> $<TARGET_FILE:GN09_local_adventure>
-      $<TARGET_FILE:GN09_local_adventure_viewer> $<TARGET_FILE:GN09_next> $<TARGET_FILE:GN09_next_viewer>)
+      $<TARGET_FILE:GN07_location_brief> $<TARGET_FILE:GN09_next> $<TARGET_FILE:GN09_next_viewer>)
   set_tests_properties(playground_cli_migration_contract PROPERTIES LABELS devils_engine TIMEOUT 240)
 endif()
 

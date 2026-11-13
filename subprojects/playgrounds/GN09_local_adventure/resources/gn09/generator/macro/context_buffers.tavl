@@ -1,6 +1,0 @@
-{
-  name = canonical
-  // corner — (min_x, min_z), size — ширина | высота << 32: вместе ключ окна
-  format = [ corner = ul2, size = ul1 ]
-  size = one
-}

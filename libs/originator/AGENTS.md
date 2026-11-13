@@ -190,13 +190,13 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
 |---|---|
 | буферы, аксессоры | `originator_buffer_test` |
 | инструменты ядра/графа | `originator_tools_test`, `originator_scatter_test` |
-| скелет (явные списки точек и рёбер) | `originator_skeleton_test`, GN09 `--verify` (пещеры) |
+| скелет (явные списки точек и рёбер) | `originator_skeleton_test` |
 | цепочка генераторов, связанные буферы пайплайна, `step.links`/`step.key` | `originator_chain_test`, GN09 `--verify` |
-| поле из примитивов, `field_sample`/`field_march` | `originator_field_test`, GN09 `--verify`; NEXT — `--verify-caves` (разные миры/контракты) |
+| поле из примитивов, `field_sample`/`field_march` | `originator_field_test`, GN09 `--verify` и `--verify-caves` |
 | соседство, общие ядра, `edge_csr`, `slope`/`vote` | `originator_neighbourhood_test`; дампы GN02 (`--dump`) побайтно до/после |
-| `marching_tetrahedra` | GN09 `--bench`: «0 surface vertices differ from the host mesh» и отпечаток чанков цепочки |
+| `marching_tetrahedra` | прямого теста нет, потребителя тоже (GN09 перешла на `field_surface` 2026-11-13) — сначала завести тест |
 | объём | `originator_volume_test` |
-| локально уточнённая поверхность поля | `originator_surface_test`, GN09 NEXT `--verify-caves` |
+| локально уточнённая поверхность поля | `originator_surface_test`, GN09 `--verify`, `--verify-caves` и отпечаток `--bench` |
 | решатель | `originator_collapse_test` |
 | постройки (нора и зоны здания, план в мере против картинки) | `originator_structure_test` |
 | авторские планы и цельные полосы путей | `originator_motif_test`, GN06 `--mode=site --verify` |
@@ -210,7 +210,7 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
 Тесты с устройством сами проверяют `painter::compute_device_available()` и молча пропускают сверку,
 если GPU нет: зелёный прогон без устройства ничего не доказывает про GPU-путь.
 
-Живые потребители — GN01–GN06 и обе версии GN09. GN07 — отдельный experiment без линковки originator. У каждой свой `--verify`, и
+Живые потребители — GN01–GN06 и GN09. GN07 — отдельный experiment без линковки originator. У каждой свой `--verify`, и
 серьёзную правку разумно прогнать через них: они ловят то, чего не видит юнит-тест (иерархия
 названных мест, швы чанков, дыры в поверхности).
 
@@ -274,7 +274,7 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
 - Cross-thread cycles chain недопустимы; same-thread cycle detection не доказывает отсутствие
   межпоточного deadlock. Не добавлять внешний scheduler поверх parallel fan-in/helping waits.
 - Смена миров GN09 исторически разрешила изменение seed result; это не отменяет детерминизм
-  одного описания и независимость от порядка чанков. NEXT promises — в NEXT_CAVES_PLAN.md.
+  одного описания и независимость от порядка чанков. Обещания мира GN09 — в его README.
 - Новая очередь — [TASKS.md](../../TASKS.md), аудит — [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md).
 
 ## Технический аудит 2026-11-07
