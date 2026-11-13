@@ -20,5 +20,8 @@ return function(step)
     return
   end
   counts:field("sampled"):set(0, 1)
+  -- With refinement links the surface step samples its own tetrahedral grid; the lattice samples
+  -- would be thrown away, so `samples` stays empty there.
+  if step.links.caves then return end
   originator.field_sample{ inputs = { lattice }, outputs = { samples }, params = { field = "solid", half = cells + 2 } }
 end

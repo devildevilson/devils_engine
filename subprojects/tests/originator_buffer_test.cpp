@@ -25,6 +25,32 @@ originator::buffer make_tiles(const originator::storage_kind::values storage, co
 }
 } // namespace
 
+// Большой буфер берёт память нулевыми страницами ОС: он обязан быть нулём, а копия и перенос — держать данные.
+TEST_CASE("originator large buffers start zeroed and survive copy and move") {
+  auto big = make_tiles(originator::storage_kind::soa, 1 << 18);
+  auto small = make_tiles(originator::storage_kind::aos, 7);
+  for (auto* b : {&big, &small}) {
+    const auto* bytes = b->base_pointer();
+    REQUIRE(bytes != nullptr);
+    bool zero = true;
+    for (size_t i = 0; i < b->byte_size(); ++i) zero = zero && bytes[i] == std::byte{0};
+    CHECK(zero);
+    auto height = b->field(b->find_field("height"));
+    height.set(b->count() - 1, 2.5);
+    height.set(0, -1.5);
+    originator::buffer copy(*b);
+    CHECK(copy.field(copy.find_field("height")).get(b->count() - 1) == 2.5);
+    originator::buffer moved(std::move(copy));
+    CHECK(moved.field(moved.find_field("height")).get(0) == -1.5);
+    CHECK(copy.base_pointer() == nullptr);
+    originator::buffer assigned = make_tiles(originator::storage_kind::aos, 3);
+    assigned = moved;
+    CHECK(assigned.field(assigned.find_field("height")).get(b->count() - 1) == 2.5);
+    assigned = std::move(moved);
+    CHECK(assigned.field(assigned.find_field("height")).get(0) == -1.5);
+  }
+}
+
 TEST_CASE("originator field type spelling follows painter") {
   CHECK(originator::parse_field_type("v3").components == 3);
   CHECK(originator::parse_field_type("v3").byte_size() == 12);

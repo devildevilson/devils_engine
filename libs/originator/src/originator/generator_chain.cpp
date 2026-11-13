@@ -100,6 +100,12 @@ struct shape_mirror {
     std::string box_b;
   };
   std::vector<part_mirror> parts;
+  std::string frame_right;
+  std::string frame_up;
+  std::string reach_right;
+  std::string reach_up;
+  std::string reach_end;
+  std::string slope;
 };
 
 struct noise_slot_mirror {
@@ -335,9 +341,21 @@ chain_description parse_chain(const std::string_view& text, const std::string_vi
     if (m.box == "aabb" && m.box_b.empty()) {
       utils::error{}("originator chain '{}': shape '{}' needs box_b for an aabb", label, m.name);
     }
+    const size_t framing = size_t(!m.frame_right.empty()) + !m.frame_up.empty() + !m.reach_right.empty() + !m.reach_up.empty() + !m.reach_end.empty();
+    if (framing != 0 && (framing != 5 || m.box == "aabb" || m.box_b.empty())) {
+      utils::error{}("originator chain '{}': shape '{}' frames a capsule with all of frame_right, frame_up, reach_right, reach_up and reach_end and needs box_b, not an aabb",
+                     label, m.name);
+    }
     out.shapes.push_back({std::move(m.name), std::move(m.buffer), std::move(m.count), std::move(m.box_a),
                           std::move(m.box_b), std::move(m.box), std::move(m.reach), std::move(m.tag), std::move(m.value), {},
-                          std::move(m.role), m.blend, {}});
+                          std::move(m.role), m.blend, {}, {}, {}, {}, {}, {}, {}});
+    auto& shape = out.shapes.back();
+    shape.frame_right = std::move(m.frame_right);
+    shape.frame_up = std::move(m.frame_up);
+    shape.reach_right = std::move(m.reach_right);
+    shape.reach_up = std::move(m.reach_up);
+    shape.reach_end = std::move(m.reach_end);
+    shape.slope = std::move(m.slope);
     for (auto& part : m.parts) {
       if (part.buffer.empty() || part.first.empty() || part.count.empty() || part.value.empty() ||
           (part.op != "max" && part.op != "min") || part.box_a.empty() != part.box_b.empty()) {
@@ -1269,21 +1287,25 @@ std::shared_ptr<const primitive_field> generator_result::shape_field_handle(cons
 }
 
 shape_rows generator_result::decoded_rows(const shape_vocabulary& vocabulary, const size_t kind) const {
+  return shapes(vocabulary, kind)->rows;
+}
+
+std::shared_ptr<const shape_set> generator_result::shapes(const shape_vocabulary& vocabulary, const size_t kind) const {
   // Разбор — без замка: вид формы вправе спросить у экземпляра его представление (view), а оно
   // берёт свой замок. Повторный разбор в двух потоках даёт те же строки; остаются первые.
   {
     std::lock_guard guard(decoded_lock_);
     for (const auto& entry : decoded_) {
-      if (entry.vocabulary == &vocabulary && entry.kind == kind) return entry.rows;
+      if (entry.vocabulary == &vocabulary && entry.kind == kind) return entry.set;
     }
   }
-  auto rows = vocabulary.decoder(kind)(*this);
+  auto set = std::make_shared<const shape_set>(make_shape_set(kind, vocabulary.decoder(kind)(*this)));
   std::lock_guard guard(decoded_lock_);
   for (const auto& entry : decoded_) {
-    if (entry.vocabulary == &vocabulary && entry.kind == kind) return entry.rows;
+    if (entry.vocabulary == &vocabulary && entry.kind == kind) return entry.set;
   }
-  decoded_.push_back({&vocabulary, kind, rows});
-  return rows;
+  decoded_.push_back({&vocabulary, kind, set});
+  return set;
 }
 
 } // namespace originator

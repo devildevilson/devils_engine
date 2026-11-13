@@ -706,6 +706,8 @@ endif()
 #add_compile_definitions("DEVILS_ENGINE_ENGINE_NAME=\"${DEVILS_ENGINE_NAME}\"")
 
 # Link each target with other targets or add options, etc.
+include("${CMAKE_SOURCE_DIR}/cmake/devils_tests.cmake")
+
 add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
 add_subdirectory(libs/network/)
@@ -746,37 +748,27 @@ add_subdirectory(subprojects/frontier_online "${CMAKE_BINARY_DIR}/cmake/subproje
 add_subdirectory(subprojects/playgrounds "${CMAKE_BINARY_DIR}/cmake/subprojects/playgrounds")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  # Цели, зарегистрированные через devils_add_doctest, собираются сами; здесь
-  # перечислены только площадки и смоки, которые заводят add_test напрямую.
-  set(DEVILS_ENGINE_EXTRA_TEST_TARGETS
-    NET06_in_memory_transport
-    NET07_replication_baselines
-    GN01_generator_contract
-    GN02_planet_generator
-    GN03_streaming_volume
-    GN04_texture_generation
-    GN05_constraint_collapse
-    audio_coloration_lab
-    cardgame_headless_smoke
-    tile_frontier_snapshot_smoke
-    tile_frontier_resume_smoke
-    tile_frontier_checkpoint_audit
-    tile_frontier_config_effect_smoke
-    tile_frontier_time_smoke
-    frontier_resume_smoke
-    frontier_time_smoke
-    frontier_online_server
-  )
   get_property(DEVILS_ENGINE_DOCTEST_TARGETS GLOBAL PROPERTY DEVILS_ENGINE_TEST_TARGETS)
-
-  # The multi-process stand exists only where the GNS adapter does.
-  if (TARGET NETLAB01_multi_process)
-    list(APPEND DEVILS_ENGINE_EXTRA_TEST_TARGETS NETLAB01_multi_process)
+  get_property(DEVILS_ENGINE_DIRECT_TEST_TARGETS GLOBAL PROPERTY DEVILS_ENGINE_DIRECT_TEST_TARGETS)
+  set(DEVILS_ENGINE_TEST_DEPENDENCIES ${DEVILS_ENGINE_DOCTEST_TARGETS} ${DEVILS_ENGINE_DIRECT_TEST_TARGETS})
+  list(REMOVE_DUPLICATES DEVILS_ENGINE_TEST_DEPENDENCIES)
+  set(test_artifacts "")
+  foreach(target IN LISTS DEVILS_ENGINE_TEST_DEPENDENCIES)
+    if(NOT TARGET ${target})
+      message(FATAL_ERROR "Registered test needs missing target '${target}'; guard optional tests with their target")
+    endif()
+    string(APPEND test_artifacts "${target}\t$<TARGET_FILE:${target}>\n")
+  endforeach()
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/devils_engine_test_artifacts.tsv" CONTENT "${test_artifacts}")
+  if(TARGET devils_public_headers)
+    list(APPEND DEVILS_ENGINE_TEST_DEPENDENCIES devils_public_headers)
   endif()
 
+  # Build prerequisites independently when running a selected CTest subset.
+  add_custom_target(devils_engine_test_binaries DEPENDS ${DEVILS_ENGINE_TEST_DEPENDENCIES})
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS ${DEVILS_ENGINE_DOCTEST_TARGETS} ${DEVILS_ENGINE_EXTRA_TEST_TARGETS}
+    DEPENDS devils_engine_test_binaries
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )

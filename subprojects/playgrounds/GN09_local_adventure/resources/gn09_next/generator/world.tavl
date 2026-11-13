@@ -1,23 +1,49 @@
 name = gn09_next
 constants = ./constants.tavl
-modules = [ { name = caves, path = ./modules/caves.lua }, { name = world, path = ./modules/world.lua }, { name = mesh, path = ./modules/mesh.lua }, { name = biomes, path = ./modules/biomes.lua }, { name = network, path = ./modules/network.lua }, { name = feature_bounds, path = ./modules/feature_bounds.lua }, { name = feature_collect, path = ./modules/feature_collect.lua } ]
+modules = [ { name = caves, path = ./modules/caves.lua }, { name = world, path = ./modules/world.lua }, { name = mesh, path = ./modules/mesh.lua }, { name = frame, path = ./modules/frame.lua }, { name = outpost, path = ./modules/outpost.lua }, { name = core, path = ./modules/core.lua }, { name = biomes, path = ./modules/biomes.lua }, { name = network, path = ./modules/network.lua }, { name = feature_bounds, path = ./modules/feature_bounds.lua }, { name = feature_collect, path = ./modules/feature_collect.lua } ]
 noise_slots = [ { name = terrain_broad, seed_add = 911, period = 31 }, { name = terrain_detail, seed_add = 912, period = 7 } ]
 background = { enabled = true, base = 3, outside = 3, y_min_constant = world_y_min, y_max_constant = world_y_max,
  upper = 3, lower = 3 }
+// `slope` bounds the gradient of a shape wherever it can change the field (field_box::slope); the surface
+// skips 2 m blocks whose corners are farther from zero than slope * half a diagonal. `<slot>_slope` is
+// 3*sqrt(3)/period of a value noise. Ellipsoids (|q|-1)*min(half) and distances have gradient <= 1.
+// Natural shapes act only below the background 3 + blend 0.35, so their bounds may use value <= 3.5;
+// fill and cut shapes act anywhere in their boxes. Boxes may cut a shape only beyond the band +-3
+// (surface_band), so the slope is a promise about the field clamped to that band.
 shapes = [
- { name = station_cut, buffer = station_cut, count = station_meta.cuts, box_a = centre, reach = "sqrt(half_x*half_x+half_y*half_y+half_z*half_z)+3.5", tag = tag, role = cut, value = ./field/02_box.ds },
- { name = passages, buffer = passages, count = terrain_meta.passages, blend = 0.35, box_a = a, box_b = b, reach = reach, tag = tag, value = ./field/04_gallery.ds },
- { name = shelters, buffer = shelters, count = terrain_meta.shelters, box_a = a, box_b = b, reach = "radius+3.5", tag = tag, role = cut, value = ./field/01_capsule.ds },
- { name = caverns, buffer = caverns, count = cavern_meta.caverns, blend = 0.35, box_a = centre, reach = "max(half_x,max(half_y,half_z))*(1+(relief+3.5)/min(half_x,min(half_y,half_z)))+1", tag = tag, value = ./field/05_cavern.ds },
+ { name = station_cut, buffer = station_cut, count = station_meta.cuts, box_a = centre, reach = "sqrt(half_x*half_x+half_y*half_y+half_z*half_z)+3.5", tag = tag, role = cut, value = ./field/02_box.ds, slope = 1 },
+ // The gallery is (n-1)*cap+relief with n >= |u|/width, |v|/height, |w|/cap: it reaches 3.5 (no effect over
+ // the background bound 3 and blend) at width*(1+(3.5+relief)/cap) across, height*(...) up and cap+3.5+relief
+ // past an end. The capsule radius `reach` takes the widest of these in every direction.
+ { name = passages, buffer = passages, count = terrain_meta.passages, blend = 0.35, box_a = a, box_b = b, reach = reach, tag = tag, value = ./field/04_gallery.ds,
+   frame_right = right, frame_up = up,
+   reach_right = "max(width_a,width_b)*(1+(relief+3.5)/min(width_a,min(width_b,min(roof_a,min(roof_b,min(floor_a,floor_b))))))+1",
+   reach_up = "max(roof_a,max(roof_b,max(floor_a,floor_b)))*(1+(relief+3.5)/min(width_a,min(width_b,min(roof_a,min(roof_b,min(floor_a,floor_b))))))+1",
+   reach_end = "max(min(width_a,min(roof_a,floor_a)),min(width_b,min(roof_b,floor_b)))+relief+3.5+1",
+   // Fixed radii give gradient <= cap/min(width,height,cap) = 1. Radii change along the axis by D per
+   // length: C*s*D/W + |s-1|*D with s <= 1+(3.5+relief)/min radius where the gallery acts. Plus the noise.
+   slope = "1+2*(1+(relief+3.5)/min(width_a,min(width_b,min(roof_a,min(roof_b,min(floor_a,floor_b))))))*max(abs(width_b-width_a),max(abs(roof_b-roof_a),abs(floor_b-floor_a)))/sqrt(length2)+relief*(0.7*terrain_broad_slope+0.3*terrain_detail_slope)" },
+ { name = shelters, buffer = shelters, count = terrain_meta.shelters, box_a = a, box_b = b, reach = "radius+3.5", tag = tag, role = cut, value = ./field/01_capsule.ds, slope = 1 },
+ { name = caverns, buffer = caverns, count = cavern_meta.caverns, blend = 0.35, box_a = centre, reach = "max(half_x,max(half_y,half_z))*(1+(relief+3.5)/min(half_x,min(half_y,half_z)))+1", tag = tag, value = ./field/05_cavern.ds,
+   slope = "1+relief*(0.7*terrain_broad_slope+0.3*terrain_detail_slope)" },
  { name = biome_cell, buffer = biome_cell, count = cavern_meta.cells, box_a = low, box_b = high, box = aabb, reach = 3.5, tag = 0, value = ./field/08_domain.ds,
    parts = [ { buffer = biome_clips, first = first_clip, count = clip_count, op = max, value = ./field/07_biome_clip.ds, box_a = low, box_b = high } ] },
  { name = cave_chambers, buffer = cave_chambers, count = cave_meta.chambers, blend = 0.35, box_a = centre,
-   reach = "max(half_x,max(half_y,half_z))*(1+(relief+3.5)/min(half_x,min(half_y,half_z)))+1", tag = tag, role = cut, value = ./field/11_oriented_cavern.ds },
- { name = small_passages, buffer = passages, count = cave_meta.passages, blend = 0.2, box_a = a, box_b = b, reach = reach, tag = tag, role = cut, value = ./field/04_gallery.ds },
- { name = ocean, buffer = ocean, count = cavern_meta.ocean, box_a = low, box_b = high, box = aabb, reach = 0, tag = 4, value = ./field/09_ocean.ds },
- { name = collapse_voids, buffer = collapse_voids, count = terrain_meta.collapses, blend = 0.35, box_a = centre, reach = "max(half_x,max(half_y,half_z))*(1+(relief+3.5)/min(half_x,min(half_y,half_z)))+1", tag = tag, value = ./field/05_cavern.ds },
- { name = anchored_rocks, buffer = details, count = features_meta.details, box_a = a, box_b = b, reach = "radius+3.5", tag = tag, role = fill, value = ./field/06_rib.ds },
- { name = rubble, buffer = heaps, count = features_meta.heaps, box_a = centre, reach = "sqrt(half_x*half_x+half_y*half_y+half_z*half_z)*(1+4.1/min(half_x,min(half_y,half_z)))+1", tag = tag, role = fill, value = ./field/10_rubble.ds }
+   reach = "max(half_x,max(half_y,half_z))*(1+(relief+3.5)/min(half_x,min(half_y,half_z)))+1", tag = tag, role = cut, value = ./field/11_oriented_cavern.ds,
+   slope = "1+relief*(0.3*terrain_broad_slope+0.7*terrain_detail_slope)" },
+ // A cut acts anywhere in its capsule, where s <= reach/min radius.
+ { name = small_passages, buffer = passages, count = cave_meta.passages, blend = 0.2, box_a = a, box_b = b, reach = reach, tag = tag, role = cut, value = ./field/04_gallery.ds,
+   slope = "1+2*max(1,reach/min(width_a,min(width_b,min(roof_a,min(roof_b,min(floor_a,floor_b))))))*max(abs(width_b-width_a),max(abs(roof_b-roof_a),abs(floor_b-floor_a)))/sqrt(length2)+relief*(0.7*terrain_broad_slope+0.3*terrain_detail_slope)" },
+ { name = ocean, buffer = ocean, count = cavern_meta.ocean, box_a = low, box_b = high, box = aabb, reach = 0, tag = 4, value = ./field/09_ocean.ds,
+   // 40*grad S <= 40/min(half, height) with height >= min(half_y, 0.88*depth); the noisy depth adds
+   // 40*S/height*0.12*depth*slope <= 5.46*S*slope, S <= 1+(3.5+relief)/40.
+   slope = "40/min(half_x,min(half_z,min(half_y,max(0.1,0.88*depth))))+5.46*(1+(3.5+relief)/40)*terrain_broad_slope+relief*(0.75*terrain_broad_slope+0.25*terrain_detail_slope)" },
+ { name = collapse_voids, buffer = collapse_voids, count = terrain_meta.collapses, blend = 0.35, box_a = centre, reach = "max(half_x,max(half_y,half_z))*(1+(relief+3.5)/min(half_x,min(half_y,half_z)))+1", tag = tag, value = ./field/05_cavern.ds,
+   slope = "1+relief*(0.7*terrain_broad_slope+0.3*terrain_detail_slope)" },
+ { name = anchored_rocks, buffer = details, count = features_meta.details, box_a = a, box_b = b, reach = "radius+3.5", tag = tag, role = fill, value = ./field/06_rib.ds,
+   slope = "1+abs(radius)*abs(finish-start)/sqrt(max((b_x-a_x)*(b_x-a_x)+(b_y-a_y)*(b_y-a_y)+(b_z-a_z)*(b_z-a_z),0.000001))+0.15*abs(radius)*max(abs(start),abs(finish))*terrain_detail_slope" },
+ { name = rubble, buffer = heaps, count = features_meta.heaps, box_a = centre, reach = "sqrt(half_x*half_x+half_y*half_y+half_z*half_z)*(1+4.1/min(half_x,min(half_y,half_z)))+1", tag = tag, role = fill, value = ./field/10_rubble.ds,
+   slope = "abs(1-angular)+abs(angular)+0.6*terrain_detail_slope" }
 
 ]
 generators = [
@@ -47,6 +73,8 @@ generators = [
  { name = biome_domain, entry = ./biome/biome.tavl, key = 2, outputs = [ biome ], capacity = 128,
    links = [ { name = geometry, from = biome_terrain, key = same } ],
    fields = [ { name = cell, terms = [ { kind = biome_cell, link = geometry } ] } ] },
+ { name = station_scope, entry = ./chunk/station_scope.tavl, key = 3, capacity = 2048,
+   outputs = [ station_keys, station_count ], trim = { station_keys = station_count.value } },
  { name = terrain_scope, entry = ./terrain/scope.tavl, key = 3, capacity = 2048,
    outputs = [ terrain_keys, biome_terrain_keys, terrain_count ], trim = { terrain_keys = terrain_count.terrain, biome_terrain_keys = terrain_count.biomes } },
  { name = feature_scope, entry = ./features/scope.tavl, key = 3, outputs = [ terrain_keys, biome_terrain_keys, terrain_count ], capacity = 256,
@@ -87,7 +115,8 @@ generators = [
    links = [ { name = scope, from = terrain_scope, key = same },
      { name = terrain, from = terrain, keys = [ terrain_keys.key ], count = terrain_count.terrain },
      { name = biomes, from = biome_terrain, keys = [ biome_terrain_keys.key ], count = terrain_count.biomes },
-     { name = stations, from = outpost, keys = [ terrain_keys.key ], count = terrain_count.terrain },
+     { name = station_scope, from = station_scope, key = same },
+     { name = stations, from = outpost, keys = [ station_keys.key ], count = station_count.value },
      { name = caves_scope, from = small_cave_scope, key = same },
      { name = caves, from = small_cave, keys = [ small_cave_keys.key ], count = small_cave_count.value },
      { name = detail_keys, from = feature_collect, key = same },
@@ -98,8 +127,8 @@ generators = [
    outputs = [ terrain_keys, biome_terrain_keys, terrain_count ], trim = { terrain_keys = terrain_count.terrain, biome_terrain_keys = terrain_count.biomes } },
  { name = outpost_context, entry = ./outpost/context.tavl, key = 2, outputs = [ outpost_context ], capacity = 256 },
  { name = outpost, entry = ./outpost/outpost.tavl, key = 2, capacity = 256,
-   outputs = [ station_cut, station_rooms, station_walls, station_mesh, station_meta, outpost_meta ],
-   trim = { station_cut = station_meta.cuts, station_rooms = station_meta.rooms, station_walls = station_meta.walls, station_mesh = station_meta.triangles },
+   outputs = [ station_cut, station_rooms, station_walls, station_openings, station_details, station_mesh, station_meta, outpost_meta ],
+   trim = { station_cut = station_meta.cuts, station_rooms = station_meta.rooms, station_walls = station_meta.walls, station_openings = station_meta.openings, station_details = station_meta.details, station_mesh = station_meta.triangles },
    links = [ { name = network, from = network, key = same }, { name = context, from = outpost_context, key = same },
      { name = scope, from = outpost_scope, keys = [ outpost_context.chunk ] },
      { name = terrain, from = terrain, keys = [ terrain_keys.key ], count = terrain_count.terrain },

@@ -1,0 +1,3 @@
+name = station_scope
+buffers = ./station_scope_buffers.tavl
+steps = [ { name = scope, body = ./04_station_scope.lua, writes = [ station_keys, station_count ] } ]

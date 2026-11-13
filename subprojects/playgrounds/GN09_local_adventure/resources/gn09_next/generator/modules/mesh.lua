@@ -1,8 +1,17 @@
 -- Small mesh writer. All dimensions and openings are chosen by the station grammar.
+-- With a frame (modules.frame), boxes are given in its local coordinates.
 local M = {}
-function M.writer(buffer)
+function M.writer(buffer, frame)
   local count = 0
+  local function world(p, direction)
+    if not frame then return p end
+    local q = {x = p[1], y = p[2], z = p[3]}
+    q = direction and frame.dir(q) or frame.point(q)
+    return {q.x, q.y, q.z}
+  end
   local function triangle(a, b, c, n, shade)
+    assert(count<buffer:count(), 'station triangle capacity exceeded')
+    a, b, c, n = world(a), world(b), world(c), world(n, true)
     for name, p in pairs({a = a, b = b, c = c, normal = n}) do
       local f = buffer:field(name)
       for axis = 1, 3 do f:set(count, p[axis], axis-1) end

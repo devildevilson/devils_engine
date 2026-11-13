@@ -6,6 +6,7 @@
 #include <deque>
 #include <functional>
 #include <future>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -177,6 +178,17 @@ struct chain_shape {
     std::string box_b;
   };
   std::vector<part> parts;
+  // Необязательная рамка капсулы (field_box::framed): поля строки с осями right/up и три выражения по
+  // полям строки — сколько форма влияет поперёк по right, по up и за концом отрезка. Всё или ничего.
+  std::string frame_right;
+  std::string frame_up;
+  std::string reach_right;
+  std::string reach_up;
+  std::string reach_end;
+  // Необязательный НАКЛОН (field_box::slope): число или выражение по полям строки и `<слот>_slope`
+  // (граница градиента слота словаря). Пусто — не объявлен, и поверхность возле формы не пропускает
+  // пустых блоков.
+  std::string slope;
 };
 
 // Общие шумовые слоты и фон поля задаются документом цепочки. Программа формы DS видит слоты
@@ -239,6 +251,18 @@ struct field_box {
   std::array<double, 3> a{};
   std::array<double, 3> b{};
   double capsule_radius = -1.0;
+  // Необязательная РАМКА отрезка (frame_right <= 0 — нет): точка вне, если её смещение от оси по right
+  // или up больше frame_right/frame_up или если она дальше frame_end за концом отрезка. Это обещание
+  // формулы в её собственных осях: у плоского широкого хода капсула радиуса reach во много раз больше.
+  std::array<double, 3> right{};
+  std::array<double, 3> up{};
+  double frame_right = -1.0;
+  double frame_up = -1.0;
+  double frame_end = -1.0;
+  // НАКЛОН: верхняя граница модуля градиента значения формы (единиц поля на метр) везде, где форма может
+  // изменить поле. Обещание данных, как reach; бесконечность — не объявлен. По нему поверхность пропускает
+  // блоки, в которых знак поля измениться не может (field_surface, параметр skip).
+  double slope = std::numeric_limits<double>::infinity();
 
   bool contains(const std::array<double, 3>& p) const noexcept;
   bool overlaps(const std::array<double, 3>& other_low, const std::array<double, 3>& other_high) const noexcept;
@@ -246,12 +270,36 @@ struct field_box {
   static field_box around(const std::array<double, 3>& a, const std::array<double, 3>& b, const double radius) noexcept;
   // То же с капсулой: точка дальше radius от отрезка — вне.
   static field_box capsule(const std::array<double, 3>& a, const std::array<double, 3>& b, const double radius) noexcept;
+  // Капсула, дополнительно ограниченная рамкой отрезка. Коробка сужается до рамки, только если right, up
+  // и ось ортонормированы: иначе проверка рамки верна, а её коробка — нет.
+  static field_box framed(const std::array<double, 3>& a, const std::array<double, 3>& b, const double radius,
+                          const std::array<double, 3>& right, const std::array<double, 3>& up, const double across_right,
+                          const double across_up, const double beyond_end) noexcept;
 };
 
 struct shape_rows {
   std::shared_ptr<const void> rows;
   std::vector<field_box> boxes;
 };
+
+// Одна форма поля: вид, номер строки, стёртые строки вида и коробка влияния.
+struct field_shape {
+  uint32_t kind = 0;
+  uint32_t row = 0;
+  const void* rows = nullptr;
+  field_box box;
+};
+
+// Формы одного вида из одного источника, разобранные ОДИН раз: поле чанка ссылается на них, а не
+// копирует. low/high — общая коробка всех форм набора (пустой набор — low > high).
+struct shape_set {
+  shape_rows rows;
+  std::vector<field_shape> shapes;
+  std::array<double, 3> low{};
+  std::array<double, 3> high{};
+};
+// Набор форм из строк вида; коробки без строк — громкий отказ.
+shape_set make_shape_set(const size_t kind, shape_rows rows);
 
 class generator_result {
 public:
@@ -287,6 +335,8 @@ public:
   // Строки вида формы из выходов этого экземпляра — разбираются ОДИН раз на (словарь, вид): экземпляр
   // неизменен, а поля многих потребителей (чанки одного окна) читают одни и те же строки.
   shape_rows decoded_rows(const shape_vocabulary& vocabulary, const size_t kind) const;
+  // То же набором форм поля; держатель указателя держит и строки.
+  std::shared_ptr<const shape_set> shapes(const shape_vocabulary& vocabulary, const size_t kind) const;
 
   // ПРЕДСТАВЛЕНИЕ ХОСТА: C++-объект, собранный из выходов экземпляра (например, станция для нативных
   // потребителей). Собирается один раз на тип и живёт с экземпляром; держатель указателя держит и его.
@@ -320,7 +370,7 @@ private:
   struct decoded_entry {
     const shape_vocabulary* vocabulary = nullptr;
     size_t kind = 0;
-    shape_rows rows;
+    std::shared_ptr<const shape_set> set;
   };
   std::vector<std::pair<std::string, std::shared_ptr<const primitive_field>>> fields_;
   mutable std::mutex decoded_lock_;

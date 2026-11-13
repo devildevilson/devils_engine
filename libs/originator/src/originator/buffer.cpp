@@ -1,7 +1,17 @@
 #include "devils_engine/originator/buffer.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 #include "devils_engine/utils/core.h"
 
@@ -121,29 +131,65 @@ buffer_layout make_buffer_layout(const storage_kind::values storage,
 }
 
 namespace {
-// Выровненное начало внутри уже выделенного вектора. Правило то же, что в конструкторе, и живёт оно
-// в одном месте: два способа выровнять один и тот же буфер однажды разъедутся.
-std::byte* aligned_start(std::vector<std::byte>& memory) noexcept {
-  if (memory.empty()) {
-    return nullptr;
-  }
-  auto* raw = memory.data();
-  const auto address = reinterpret_cast<uintptr_t>(raw);
-  const auto aligned = align_up(size_t(address), plane_alignment);
-  return raw + (aligned - size_t(address));
-}
+// С этого размера память — нулевые страницы ОС: их не нужно писать, чтобы они были нулями.
+constexpr size_t mapped_threshold = size_t(1) << 20;
 } // namespace
+
+void buffer::allocate(const size_t bytes) {
+  release();
+  if (bytes == 0) return;
+  if (bytes >= mapped_threshold) {
+#if defined(_WIN32)
+    void* raw = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (raw == nullptr) utils::error{}("originator buffer '{}': cannot map {} bytes", name_, bytes);
+#else
+    void* raw = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) utils::error{}("originator buffer '{}': cannot map {} bytes", name_, bytes);
+#endif
+    memory_ = static_cast<std::byte*>(raw);
+    mapped_ = true;
+  } else {
+    memory_ = static_cast<std::byte*>(std::calloc(bytes, 1));
+    if (memory_ == nullptr) utils::error{}("originator buffer '{}': cannot allocate {} bytes", name_, bytes);
+    mapped_ = false;
+  }
+  memory_size_ = bytes;
+  // Выровненное начало внутри выделенной памяти: правило одно для конструктора и копии.
+  const auto address = reinterpret_cast<uintptr_t>(memory_);
+  data_ = memory_ + (align_up(size_t(address), plane_alignment) - size_t(address));
+}
+
+void buffer::release() noexcept {
+  if (memory_ != nullptr) {
+    if (mapped_) {
+#if defined(_WIN32)
+      VirtualFree(memory_, 0, MEM_RELEASE);
+#else
+      munmap(memory_, memory_size_);
+#endif
+    } else {
+      std::free(memory_);
+    }
+  }
+  memory_ = nullptr;
+  memory_size_ = 0;
+  mapped_ = false;
+  data_ = nullptr;
+}
+
+buffer::~buffer() {
+  release();
+}
 
 buffer::buffer(const buffer& other) :
   name_(other.name_), layout_(other.layout_), extent_(other.extent_), count_(other.count_),
   placement_(other.placement_) {
-  // СМЕЩЕНИЕ ВЫРАВНИВАНИЯ У КОПИИ СВОЁ, поэтому копируется НЕ ВЕКТОР, А ДАННЫЕ ОТ НАЧАЛА ДО НАЧАЛА.
+  // СМЕЩЕНИЕ ВЫРАВНИВАНИЯ У КОПИИ СВОЁ, поэтому копируются ДАННЫЕ ОТ НАЧАЛА ДО НАЧАЛА.
   //
-  // Копия вектора сохранила бы байты на их прежних СМЕЩЕНИЯХ, а выровненное начало у новой аллокации
+  // Копия памяти сохранила бы байты на их прежних СМЕЩЕНИЯХ, а выровненное начало у новой аллокации
   // приходится на другое смещение — и копия читала бы свои же данные, сдвинутые на несколько байт.
   // Ошибка при этом невидима по результату: буфер валиден, значения правдоподобны, просто не те.
-  memory_.assign(other.memory_.size(), std::byte{0});
-  data_ = aligned_start(memory_);
+  allocate(other.memory_size_);
   if (data_ != nullptr && other.data_ != nullptr) {
     std::memcpy(data_, other.data_, layout_.byte_size(count_));
   }
@@ -158,8 +204,7 @@ buffer& buffer::operator=(const buffer& other) {
   extent_ = other.extent_;
   count_ = other.count_;
   placement_ = other.placement_;
-  memory_.assign(other.memory_.size(), std::byte{0});
-  data_ = aligned_start(memory_);
+  allocate(other.memory_size_);
   if (data_ != nullptr && other.data_ != nullptr) {
     std::memcpy(data_, other.data_, layout_.byte_size(count_));
   }
@@ -168,11 +213,9 @@ buffer& buffer::operator=(const buffer& other) {
 
 buffer::buffer(buffer&& other) noexcept :
   name_(std::move(other.name_)), layout_(std::move(other.layout_)), extent_(other.extent_),
-  count_(other.count_), placement_(std::move(other.placement_)), memory_(std::move(other.memory_)) {
-  // У переноса вектор тот же самый, но полагаться на это нельзя: реализация вправе не переносить
-  // память, а скопировать её. Пересчёт здесь стоит ничего и снимает вопрос.
-  data_ = aligned_start(memory_);
-  other.data_ = nullptr;
+  count_(other.count_), placement_(std::move(other.placement_)), memory_(std::exchange(other.memory_, nullptr)),
+  memory_size_(std::exchange(other.memory_size_, 0)), mapped_(std::exchange(other.mapped_, false)),
+  data_(std::exchange(other.data_, nullptr)) {
   other.count_ = 0;
 }
 
@@ -185,9 +228,11 @@ buffer& buffer::operator=(buffer&& other) noexcept {
   extent_ = other.extent_;
   count_ = other.count_;
   placement_ = std::move(other.placement_);
-  memory_ = std::move(other.memory_);
-  data_ = aligned_start(memory_);
-  other.data_ = nullptr;
+  release();
+  memory_ = std::exchange(other.memory_, nullptr);
+  memory_size_ = std::exchange(other.memory_size_, 0);
+  mapped_ = std::exchange(other.mapped_, false);
+  data_ = std::exchange(other.data_, nullptr);
   other.count_ = 0;
   return *this;
 }
@@ -223,8 +268,7 @@ buffer::buffer(std::string name, buffer_layout layout, const size_t count) :
   }
 
   const size_t total = layout_.byte_size(count_);
-  memory_.assign(total + plane_alignment, std::byte{0});
-  data_ = aligned_start(memory_);
+  allocate(total + plane_alignment);
 }
 
 bool buffer_extent::declared() const noexcept {

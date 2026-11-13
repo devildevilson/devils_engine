@@ -38,15 +38,4 @@ function W.ball(buffer, i, centre, half, tag)
   buffer:field('tag'):set(i, tag)
 end
 
-function W.port(step)
-  local ports = step.reads.ports
-  for i=0,ports:count()-1 do
-    local key = ports:field('key')
-    if key:get(i, 0)==step.key[1] and key:get(i, 1)==step.key[2] then
-      return W.get(ports:field('mouth'), i), W.get(ports:field('direction'), i),
-             W.get(ports:field('dock'), i), ports:field('kind'):get(i)
-    end
-  end
-  error('node has no regional port')
-end
 return W

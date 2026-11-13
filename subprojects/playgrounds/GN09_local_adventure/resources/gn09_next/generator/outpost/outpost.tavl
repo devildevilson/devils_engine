@@ -2,14 +2,14 @@ name = outpost
 buffers = ./buffers.tavl
 steps = [
  { name = rays, body = ./01_rays.lua, reads = [ network_node ], writes = [ outpost_rays, outpost_meta ] },
- { name = rock, body = ./02_march.lua, writes = [ outpost_rays ] },
- { name = proposals, body = ./03_proposals.lua, reads = [ outpost_rays ], writes = [ outpost_proposals, outpost_probes, outpost_meta ] },
+ { name = rock, body = ./02_march.lua, reads = [ outpost_meta ], writes = [ outpost_rays ] },
+ { name = proposals, body = ./03_proposals.lua, writes = [ outpost_rays, outpost_docks, outpost_bodies, outpost_probes, outpost_meta ] },
  { name = samples, body = ./04_samples.lua, reads = [ outpost_meta ], writes = [ outpost_probes ] },
- { name = choose, body = ./05_choose.lua, reads = [ outpost_probes, outpost_proposals ], writes = [ ports, outpost_meta ] },
- { name = rooms, body = ./06_rooms.lua, reads = [ ports ], writes = [ station_cut, station_rooms, station_meta ] },
- { name = walls, body = ./07_walls.lua, reads = [ station_rooms, station_meta ], writes = [ station_walls ] },
- { name = exposure, body = ./08_exposure.lua, writes = [ station_walls ] },
- { name = shell, body = ./09_shell.lua, reads = [ station_rooms, station_cut ], writes = [ station_walls, station_mesh, station_meta ] },
+ { name = choose, body = ./05_choose.lua, reads = [ outpost_probes, outpost_rays ], writes = [ outpost_docks, outpost_bodies, outpost_frame, outpost_meta ] },
+ { name = rooms, body = ./06_rooms.lua, reads = [ outpost_frame ], writes = [ station_cut, station_rooms, station_meta, outpost_probes, outpost_meta ] },
+ { name = walls, body = ./07_walls.lua, reads = [ station_rooms ], writes = [ station_walls, station_meta ] },
+ { name = exposure, body = ./08_exposure.lua, reads = [ station_rooms ], writes = [ station_walls, station_openings, station_meta, outpost_probes ] },
+ { name = shell, body = ./09_shell.lua, reads = [ station_rooms, station_openings ], writes = [ station_walls, station_mesh, station_meta ] },
  { name = bounds, body = ./10_bounds.lua, reads = [ station_cut ], writes = [ station_meta ] },
- { name = horizontal_shell, body = ./11_outer_floors.lua, reads = [ station_rooms ], writes = [ station_walls, station_meta ] }
+ { name = details, body = ./11_details.lua, reads = [ station_walls, outpost_probes ], writes = [ station_details, station_meta ] }
 ]

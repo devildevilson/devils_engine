@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     app.add_option("--workers", options.workers, "Workers")->check(CLI::PositiveNumber);
     app.add_option("--guard", options.guard_radius, "Guard radius");
     app.add_option("--dump", options.dump_path, "Frame output");
-    app.add_option("--view", view, "Debug view")->check(CLI::IsMember({"gallery", "clutter", "hall", "ocean", "cave", "cave-hall", "cave-tight", "cave-shaft", "station", "station-room", "station-exterior", "collapse"}));
+    app.add_option("--view", view, "Debug view")->check(CLI::IsMember({"gallery", "clutter", "hall", "ocean", "cave", "cave-hall", "cave-tight", "cave-shaft", "station", "station-room", "station-exterior", "station-dock", "collapse"}));
     app.add_option("--module", module, "Generator module");
     std::array<int, 2> sector{sx, sz};
     devils_engine::playground::add_tuple(app, "--sector", sector, ',');
@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
     if (!view.empty()) {
       const std::vector<std::string> profiles{"gallery", "clutter", "hall", "ocean"};
       const auto profile = std::find(profiles.begin(), profiles.end(), view);
-      const bool cave = view == "cave" || view == "cave-hall" || view == "cave-tight" || view == "cave-shaft", station = view == "station" || view == "station-room" || view == "station-exterior";
+      const bool cave = view == "cave" || view == "cave-hall" || view == "cave-tight" || view == "cave-shaft", station = view == "station" || view == "station-room" || view == "station-exterior" || view == "station-dock";
       const bool collapse = view == "collapse";
       if (profile == profiles.end() && !cave && !station && !collapse) throw std::runtime_error("unknown debug view: " + view);
       o::result_ptr inspected_cave, inspected_features;
@@ -209,25 +209,42 @@ int main(int argc, char** argv) {
           delta[a] = target.get(0, a) - p[a];
         }
         if (view == "station-room") {
+          // The docking bay of a tower, otherwise the first core room; look towards the room it is entered from.
+          const auto centre = local->field("station_rooms", "centre"), half = local->field("station_rooms", "half"), label = local->field("station_rooms", "label"), parent = local->field("station_rooms", "parent");
+          size_t room = centre.count();
+          for (size_t i = 0; i < centre.count() && room == centre.count(); ++i)
+            if (label.get(i) == 1) room = i;
+          for (size_t i = 0; i < centre.count() && room == centre.count(); ++i)
+            if (label.get(i) == 4) room = i;
+          if (room == centre.count()) throw std::runtime_error("selected outpost has neither a docking bay nor a core room");
+          // Entered through the floor or roof: look at the farthest room entered from this one instead.
+          size_t from = size_t(parent.get(room));
+          auto across = [&](size_t i) {
+            return std::hypot(centre.get(i, 0) - centre.get(room, 0), centre.get(i, 2) - centre.get(room, 2));
+          };
+          if (across(from) < 1)
+            for (size_t i = 0; i < centre.count(); ++i)
+              if (parent.get(i) == double(room) && across(i) > across(from)) from = i;
+          std::array<double, 3> towards{centre.get(from, 0) - centre.get(room, 0), 0, centre.get(from, 2) - centre.get(room, 2)};
+          const double length = std::max(1e-6, std::hypot(towards[0], towards[2]));
+          const double back = std::min({half.get(room, 0), half.get(room, 2)}) * 0.7;
           for (uint32_t a = 0; a < 3; ++a)
-            p[a] = local->field("station_rooms", "centre").get(0, a);
-          p[0] -= 3;
-          p[1] -= 1.3;
-          p[2] -= 3;
-          delta = {6, 0.5, 3};
+            p[a] = centre.get(room, a) - towards[a] / length * back;
+          p[1] = centre.get(room, 1) - half.get(room, 1) + 1.6;
+          for (uint32_t a = 0; a < 3; ++a)
+            delta[a] = centre.get(from, a) - p[a];
+          delta[1] = 0;
         }
         if (view == "station-exterior") {
-          const auto c = local->field("station_walls", "centre"), outside = local->field("station_walls", "outside"), axis = local->field("station_walls", "axis"), sign = local->field("station_walls", "sign");
+          const auto c = local->field("station_walls", "centre"), outside = local->field("station_walls", "outside"), normal = local->field("station_walls", "normal");
           const auto natural_field = world->chain().field("outpost", options.seed, key(sx, sz), "natural");
           bool chosen = false;
           for (size_t i = 0; i < c.count() && !chosen; ++i)
             if (outside.get(i) != 0) {
-              const uint32_t a = uint32_t(axis.get(i));
               for (double distance : {10.0, 6.0, 3.0}) {
                 o::field_vector eye{};
                 for (uint32_t j = 0; j < 3; ++j)
-                  eye[j] = c.get(i, j);
-                eye[a] += sign.get(i) * distance;
+                  eye[j] = c.get(i, j) + normal.get(i, j) * distance;
                 if (natural_field->value(eye).value < -0.5) {
                   for (uint32_t j = 0; j < 3; ++j) {
                     p[j] = eye[j];
@@ -239,6 +256,50 @@ int main(int argc, char** argv) {
               }
             }
           if (!chosen) throw std::runtime_error("selected outpost has no exposed wall viewpoint; choose another --sector");
+        }
+        if (view == "station-dock") {
+          // Behind the docked boat, looking across the dock at the lock mouth.
+          const auto hatch = local->field("station_meta", "hatch");
+          std::array<double, 3> forward{};
+          double length = 0;
+          for (uint32_t a = 0; a < 3; ++a) {
+            forward[a] = hatch.get(0, a) - position.get(0, a);
+            length += forward[a] * forward[a];
+          }
+          length = std::sqrt(length);
+          for (uint32_t a = 0; a < 3; ++a)
+            forward[a] /= length;
+          // Prefer the view from behind the boat (side lock) or beside it (vertical lock); keep the eye in open water.
+          const double c = local->field("station_meta", "yaw_c").get(0), s = local->field("station_meta", "yaw_s").get(0);
+          const bool vertical = std::abs(forward[1]) > 0.5;
+          const std::array<double, 3> back{-forward[0], 0, -forward[2]}, beam{s, 0, -c}, along{c, 0, s};
+          std::vector<std::array<double, 3>> directions;
+          if (vertical) directions = {beam, {-beam[0], 0, -beam[2]}, along, {-along[0], 0, -along[2]}};
+          else directions = {back, beam, {-beam[0], 0, -beam[2]}};
+          const auto natural_field = world->chain().field("outpost", options.seed, key(sx, sz), "natural");
+          bool chosen = false;
+          for (double distance : {18.0, 14.0, 10.0})
+            for (const auto& away : directions) {
+              if (chosen) break;
+              o::field_vector eye{}, middle{};
+              for (uint32_t a = 0; a < 3; ++a) {
+                eye[a] = position.get(0, a) + away[a] * distance + (a == 1 ? distance * 0.2 : 0);
+                middle[a] = (eye[a] + position.get(0, a)) / 2;
+              }
+              if (natural_field->value(eye).value < -1 && natural_field->value(middle).value < -1) {
+                for (uint32_t a = 0; a < 3; ++a) {
+                  p[a] = eye[a];
+                  delta[a] = hatch.get(0, a) - eye[a];
+                }
+                chosen = true;
+              }
+            }
+          if (!chosen) throw std::runtime_error("selected outpost has no open-water dock viewpoint; choose another --sector");
+          std::cout << "Dock view: eye " << p[0] << ' ' << p[1] << ' ' << p[2] << ", dock " << position.get(0, 0) << ' ' << position.get(0, 1) << ' ' << position.get(0, 2)
+                    << ", hatch " << hatch.get(0, 0) << ' ' << hatch.get(0, 1) << ' ' << hatch.get(0, 2);
+          const auto beacon = local->field("station_meta", "beacon");
+          static const char* beacon_kinds[] = {"roof", "wall", "lock mouth"};
+          std::cout << ", beacon " << beacon.get(0, 0) << ' ' << beacon.get(0, 1) << ' ' << beacon.get(0, 2) << " (" << beacon_kinds[std::min<size_t>(2, size_t(local->field("station_meta", "beacon_kind").get(0)))] << ")\n";
         }
         if (view == "station") {
           for (uint32_t a = 0; a < 3; ++a)

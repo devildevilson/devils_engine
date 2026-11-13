@@ -27,9 +27,45 @@ bool field_box::contains(const field_vector& p) const noexcept {
   const double bx = b[0] - a[0], by = b[1] - a[1], bz = b[2] - a[2];
   const double px = p[0] - a[0], py = p[1] - a[1], pz = p[2] - a[2];
   const double length2 = bx * bx + by * by + bz * bz;
-  const double t = length2 > 0.0 ? std::clamp((px * bx + py * by + pz * bz) / length2, 0.0, 1.0) : 0.0;
+  const double raw = length2 > 0.0 ? (px * bx + py * by + pz * bz) / length2 : 0.0;
+  const double t = std::clamp(raw, 0.0, 1.0);
   const double dx = px - bx * t, dy = py - by * t, dz = pz - bz * t;
-  return dx * dx + dy * dy + dz * dz <= capsule_radius * capsule_radius;
+  if (dx * dx + dy * dy + dz * dz > capsule_radius * capsule_radius) return false;
+  if (frame_right < 0.0) return true;
+  // Смещение от ближайшей точки оси в осях рамки и выход за конец отрезка — те же величины, что
+  // считает формула хода.
+  if (std::abs(dx * right[0] + dy * right[1] + dz * right[2]) > frame_right) return false;
+  if (std::abs(dx * up[0] + dy * up[1] + dz * up[2]) > frame_up) return false;
+  return (raw - t) * (raw - t) * length2 <= frame_end * frame_end;
+}
+
+field_box field_box::framed(const field_vector& a, const field_vector& b, const double radius, const field_vector& right,
+                            const field_vector& up, const double across_right, const double across_up,
+                            const double beyond_end) noexcept {
+  field_box out = capsule(a, b, radius);
+  out.right = right;
+  out.up = up;
+  out.frame_right = across_right;
+  out.frame_up = across_up;
+  out.frame_end = beyond_end;
+  const field_vector e{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+  const double length = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+  if (!(length > 0.0)) return out;
+  const field_vector axis{e[0] / length, e[1] / length, e[2] / length};
+  const auto dot = [](const field_vector& u, const field_vector& v) { return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]; };
+  constexpr double tolerance = 1e-9;
+  if (std::abs(dot(right, right) - 1) > tolerance || std::abs(dot(up, up) - 1) > tolerance || std::abs(dot(right, up)) > tolerance ||
+      std::abs(dot(right, axis)) > tolerance || std::abs(dot(up, axis)) > tolerance)
+    return out;
+  // Ортонормированная рамка: точка влияния лежит в ящике [-end, length+end] x [-right, right] x [-up, up]
+  // вокруг оси; его коробка пересекается с коробкой капсулы.
+  for (size_t i = 0; i < 3; ++i) {
+    const double centre = a[i] + e[i] / 2;
+    const double half = std::abs(axis[i]) * (length / 2 + beyond_end) + std::abs(right[i]) * across_right + std::abs(up[i]) * across_up + tolerance;
+    out.low[i] = std::max(out.low[i], centre - half);
+    out.high[i] = std::min(out.high[i], centre + half);
+  }
+  return out;
 }
 
 field_box field_box::capsule(const field_vector& a, const field_vector& b, const double radius) noexcept {
@@ -71,14 +107,15 @@ double field_point::slot(const size_t index) {
   return values_[index];
 }
 
-size_t shape_vocabulary::add_slot(std::string name, slot_function compute) {
+size_t shape_vocabulary::add_slot(std::string name, slot_function compute, const double slope) {
+  if (!(slope >= 0.0)) utils::error{}("originator field: slot '{}' has slope {}, expected a non-negative bound", name, slope);
   if (slots_.size() >= field_point::max_slots) {
     utils::error{}("originator field: at most {} slots, '{}' is one too many", field_point::max_slots, name);
   }
   for (const auto& existing : slots_) {
     if (existing.name == name) utils::error{}("originator field: slot '{}' is declared twice", name);
   }
-  slots_.push_back({std::move(name), std::move(compute)});
+  slots_.push_back({std::move(name), std::move(compute), slope});
   return slots_.size() - 1;
 }
 
@@ -104,6 +141,13 @@ double shape_vocabulary::background_lower() const noexcept { return background_l
 
 const shape_vocabulary::background_function& shape_vocabulary::background() const noexcept { return background_; }
 double shape_vocabulary::background_bound() const noexcept { return background_bound_; }
+double shape_vocabulary::slot_slope(const size_t index) const noexcept { return slots_[index].slope; }
+void shape_vocabulary::set_background_slope(const double slope, const double y_min, const double y_max) noexcept {
+  background_slope_ = slope >= 0.0 ? slope : std::numeric_limits<double>::infinity();
+  background_slope_low_ = y_min;
+  background_slope_high_ = y_max;
+}
+double shape_vocabulary::background_slope() const noexcept { return background_slope_; }
 
 void shape_vocabulary::add_kind_erased(std::string name, decode_function decode, value_function value) {
   for (const auto& existing : kinds_) {
@@ -167,7 +211,7 @@ primitive_field::primitive_field(const shape_vocabulary& vocabulary, std::span<c
   }
   for (const auto& term : terms) {
     const size_t kind = vocabulary.kind(term.kind);
-    for (const auto& instance : term.instances) add_rows(kind, instance->decoded_rows(vocabulary, kind));
+    for (const auto& instance : term.instances) add_set(instance->shapes(vocabulary, kind));
   }
 }
 
@@ -177,30 +221,53 @@ primitive_field::primitive_field(const shape_vocabulary& vocabulary, std::span<c
   if (!vocabulary.background()) {
     utils::error{}("originator field: the vocabulary has no background");
   }
-  for (const auto& term : terms) add_rows(vocabulary.kind(term.kind), term.rows);
-}
-
-void primitive_field::add_rows(const size_t kind, shape_vocabulary::decoded decoded) {
-  if (decoded.boxes.empty()) return;
-  if (decoded.rows == nullptr) {
-    utils::error{}("originator field: {} boxes of a '{}' term come without rows", decoded.boxes.size(), kind);
-  }
-  const void* rows = decoded.rows.get();
-  sources_.push_back(std::move(decoded.rows));
-  for (size_t row = 0; row < decoded.boxes.size(); ++row) {
-    shapes_.push_back(shape{uint32_t(kind), uint32_t(row), rows, decoded.boxes[row]});
+  for (const auto& term : terms) {
+    const size_t kind = vocabulary.kind(term.kind);
+    add_set(std::make_shared<const shape_set>(make_shape_set(kind, term.rows)));
   }
 }
 
+shape_set make_shape_set(const size_t kind, shape_rows rows) {
+  shape_set out;
+  out.low = {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+  out.high = {-out.low[0], -out.low[1], -out.low[2]};
+  if (!rows.boxes.empty() && rows.rows == nullptr) {
+    utils::error{}("originator field: {} boxes of a '{}' term come without rows", rows.boxes.size(), kind);
+  }
+  out.shapes.reserve(rows.boxes.size());
+  for (size_t row = 0; row < rows.boxes.size(); ++row) {
+    const field_box& box = rows.boxes[row];
+    out.shapes.push_back(field_shape{uint32_t(kind), uint32_t(row), rows.rows.get(), box});
+    for (size_t a = 0; a < 3; ++a) {
+      out.low[a] = std::min(out.low[a], box.low[a]);
+      out.high[a] = std::max(out.high[a], box.high[a]);
+    }
+  }
+  out.rows = std::move(rows);
+  return out;
+}
+
+void primitive_field::add_set(std::shared_ptr<const shape_set> set) {
+  if (set->shapes.empty()) return;
+  spans_.push_back(span{set->shapes.data(), set->shapes.size(), set->low, set->high});
+  shape_count_ += set->shapes.size();
+  sources_.push_back(std::move(set));
+}
+
+// Источник целиком вне коробки запроса пропускается по общей коробке; порядок форм — порядок членов,
+// источников и строк, как и прежде.
 void primitive_field::collect(const field_vector& low, const field_vector& high, std::vector<const void*>& out) const {
-  for (const auto& s : shapes_) {
-    if (s.box.overlaps(low, high)) out.push_back(&s);
+  for (const auto& s : spans_) {
+    if (s.low[0] > high[0] || s.high[0] < low[0] || s.low[1] > high[1] || s.high[1] < low[1] || s.low[2] > high[2] || s.high[2] < low[2]) continue;
+    for (size_t i = 0; i < s.count; ++i) {
+      if (s.first[i].box.overlaps(low, high)) out.push_back(&s.first[i]);
+    }
   }
 }
 
 const shape_vocabulary& primitive_field::vocabulary() const noexcept { return *vocabulary_; }
 uint64_t primitive_field::seed() const noexcept { return seed_; }
-size_t primitive_field::shape_count() const noexcept { return shapes_.size(); }
+size_t primitive_field::shape_count() const noexcept { return shape_count_; }
 
 namespace {
 
@@ -234,7 +301,7 @@ shape_value primitive_field::evaluate(std::span<const void* const> candidates, c
   // Стадии по порядку: природное, заливка, вырез, вставка.
   for (const shape_role stage : {shape_role::natural, shape_role::fill, shape_role::cut, shape_role::insert}) {
     for (const void* candidate : candidates) {
-      const shape& s = *static_cast<const shape*>(candidate);
+      const field_shape& s = *static_cast<const field_shape*>(candidate);
       if (vocabulary_->role(s.kind) != stage || !s.box.contains(p)) continue;
       const shape_value got = vocabulary_->evaluator(s.kind)(s.rows, s.row, point);
       combine(stage, vocabulary_->blend(s.kind), got.value, got.tag, best.value, best.tag);
@@ -267,6 +334,19 @@ void primitive_field::sample_points(std::span<const field_vector> points, std::s
                 uint32_t(i)};
   }
   std::stable_sort(keyed.begin(), keyed.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  // Формы, задевающие коробку ВСЕХ точек, — один раз: поле чанка несёт формы всей округи (тысячи), а
+  // клеток выборки десятки. Отбор сохраняет порядок форм, поэтому кандидаты клетки те же и в том же
+  // порядке, что и при переборе всего поля.
+  std::vector<const void*> nearby;
+  if (!points.empty()) {
+    field_vector low = points[0], high = low;
+    for (const auto& p : points)
+      for (size_t a = 0; a < 3; ++a) {
+        low[a] = std::min(low[a], p[a]);
+        high[a] = std::max(high[a], p[a]);
+      }
+    collect(low, high, nearby);
+  }
 
   constexpr size_t lanes = 256;
   std::vector<field_point> cell_points;
@@ -303,13 +383,14 @@ void primitive_field::sample_points(std::span<const field_vector> points, std::s
       stopped[k] = stop;
     }
     candidates.clear();
-    collect(low, high, candidates);
+    for (const void* candidate : nearby)
+      if (static_cast<const field_shape*>(candidate)->box.overlaps(low, high)) candidates.push_back(candidate);
     // Стадии по порядку: природное, заливка, вырез, вставка (внутри стадии — порядок слагаемых).
     std::stable_sort(candidates.begin(), candidates.end(), [this](const void* a, const void* b) {
-      return vocabulary_->role(static_cast<const shape*>(a)->kind) < vocabulary_->role(static_cast<const shape*>(b)->kind);
+      return vocabulary_->role(static_cast<const field_shape*>(a)->kind) < vocabulary_->role(static_cast<const field_shape*>(b)->kind);
     });
     for (const void* candidate : candidates) {
-      const shape& s = *static_cast<const shape*>(candidate);
+      const field_shape& s = *static_cast<const field_shape*>(candidate);
       const shape_role role = vocabulary_->role(s.kind);
       const double blend = vocabulary_->blend(s.kind);
       const auto& batch = vocabulary_->batcher(s.kind);
@@ -371,6 +452,57 @@ shape_value primitive_field::region::value(const field_vector& p, field_workspac
 const field_vector& primitive_field::region::low() const noexcept { return low_; }
 const field_vector& primitive_field::region::high() const noexcept { return high_; }
 size_t primitive_field::region::shape_count() const noexcept { return shapes_.size(); }
+
+void primitive_field::region::slopes(const field_vector& origin, const double side, const std::array<int, 3>& count,
+                                     std::span<double> out, std::span<uint8_t> roles) const {
+  const size_t total = size_t(std::max(count[0], 0)) * size_t(std::max(count[1], 0)) * size_t(std::max(count[2], 0));
+  if (!(side > 0.0) || count[0] < 0 || count[1] < 0 || count[2] < 0 || out.size() < total || (!roles.empty() && roles.size() < total)) {
+    utils::error{}("originator field: slope grid {}x{}x{} of side {} needs as many outputs, got {}", count[0], count[1], count[2], side, out.size());
+  }
+  const double background = field_->vocabulary_->background_slope();
+  std::fill(out.begin(), out.begin() + ptrdiff_t(total), background);
+  if (!roles.empty()) std::fill(roles.begin(), roles.begin() + ptrdiff_t(total), uint8_t(0));
+  field_vector far{};
+  for (size_t a = 0; a < 3; ++a) far[a] = origin[a] + side * count[a];
+  // Формы вне области не попали в её список: тогда — заново по всему полю.
+  bool inside = true;
+  for (size_t a = 0; a < 3; ++a) inside &= origin[a] >= low_[a] && far[a] <= high_[a];
+  std::vector<const void*> collected;
+  if (!inside) field_->collect(origin, far, collected);
+  const auto& shapes = inside ? shapes_ : collected;
+  // Каждая форма поднимает наклон в блоках, которые задевает её коробка (с замкнутыми гранями, как overlaps).
+  for (const void* candidate : shapes) {
+    const field_shape& s = *static_cast<const field_shape*>(candidate);
+    std::array<int, 3> first{}, last{};
+    bool any = true;
+    for (size_t a = 0; a < 3 && any; ++a) {
+      first[a] = int(std::clamp(std::ceil((s.box.low[a] - origin[a]) / side) - 1.0, 0.0, double(count[a])));
+      last[a] = int(std::clamp(std::floor((s.box.high[a] - origin[a]) / side), -1.0, double(count[a] - 1)));
+      any = first[a] <= last[a];
+    }
+    if (!any) continue;
+    const shape_role role = field_->vocabulary_->role(s.kind);
+    const uint8_t bit = role == shape_role::fill || role == shape_role::insert ? 1 : role == shape_role::cut ? 2 : 0;
+    for (int z = first[2]; z <= last[2]; ++z)
+      for (int y = first[1]; y <= last[1]; ++y)
+        for (int x = first[0]; x <= last[0]; ++x) {
+          const field_vector lo{origin[0] + side * x, origin[1] + side * y, origin[2] + side * z};
+          const field_vector hi{lo[0] + side, lo[1] + side, lo[2] + side};
+          if (!s.box.overlaps(lo, hi)) continue;
+          const size_t b = size_t(x) + size_t(count[0]) * (size_t(y) + size_t(count[1]) * size_t(z));
+          out[b] = std::max(out[b], s.box.slope);
+          if (!roles.empty()) roles[b] |= bit;
+        }
+  }
+  // Блок, который задевает вертикальную границу фона, наклона не имеет.
+  const double y_min = field_->vocabulary_->background_slope_low(), y_max = field_->vocabulary_->background_slope_high();
+  for (int y = 0; y < count[1]; ++y) {
+    const double low = origin[1] + side * y, high = low + side;
+    if (low > y_min && high < y_max) continue;
+    for (int z = 0; z < count[2]; ++z)
+      for (int x = 0; x < count[0]; ++x) out[size_t(x) + size_t(count[0]) * (size_t(y) + size_t(count[1]) * size_t(z))] = std::numeric_limits<double>::infinity();
+  }
+}
 
 bool primitive_field::region::contains(const field_vector& p) const noexcept {
   return p[0] >= low_[0] && p[0] <= high_[0] && p[1] >= low_[1] && p[1] <= high_[1] && p[2] >= low_[2] &&

@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <doctest/doctest.h>
@@ -237,6 +239,47 @@ TEST_CASE("primitive field: roles — natural minimum, fill with a smooth seam, 
   for (size_t i = 0; i < pillar_points.size(); ++i) CHECK(pillar_values[i] == pillared.value(pillar_points[i]).value);
 }
 
+// Рамка капсулы сужает и проверку, и коробку; коробка не вправе отрезать точку, которую рамка пускает.
+TEST_CASE("framed capsule box admits exactly the points its frame admits") {
+  using originator::field_box;
+  using originator::field_vector;
+  const field_vector a{3, -2, 5}, b{27, 4, -9};
+  const field_vector e{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+  const double length = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+  const double horizontal = std::sqrt(e[0] * e[0] + e[2] * e[2]);
+  const field_vector right{-e[2] / horizontal, 0, e[0] / horizontal};
+  field_vector up{-e[1] * right[2], e[0] * right[2] - e[2] * right[0], e[1] * right[0]};
+  const double up_length = std::sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+  for (double& v : up) v /= up_length;
+  const double radius = 30, across_right = 25, across_up = 6, beyond = 4;
+  const auto box = field_box::framed(a, b, radius, right, up, across_right, across_up, beyond);
+  const auto plain = field_box::capsule(a, b, radius);
+  for (size_t axis = 0; axis < 3; ++axis) {
+    CHECK(box.low[axis] >= plain.low[axis]);
+    CHECK(box.high[axis] <= plain.high[axis]);
+  }
+  CHECK(box.high[1] - box.low[1] < plain.high[1] - plain.low[1]);
+  uint64_t state = 12345;
+  const auto next = [&] {
+    state = state * 6364136223846793005ull + 1442695040888963407ull;
+    return double(state >> 11) / double(uint64_t(1) << 53);
+  };
+  size_t inside = 0;
+  for (int i = 0; i < 20000; ++i) {
+    const field_vector p{-40 + 110 * next(), -40 + 80 * next(), -50 + 110 * next()};
+    const field_vector d{p[0] - a[0], p[1] - a[1], p[2] - a[2]};
+    const double raw = (d[0] * e[0] + d[1] * e[1] + d[2] * e[2]) / (length * length);
+    const double t = std::clamp(raw, 0.0, 1.0);
+    const field_vector q{d[0] - e[0] * t, d[1] - e[1] * t, d[2] - e[2] * t};
+    const bool admitted = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] <= radius * radius &&
+                          std::abs(q[0] * right[0] + q[1] * right[1] + q[2] * right[2]) <= across_right &&
+                          std::abs(q[0] * up[0] + q[1] * up[1] + q[2] * up[2]) <= across_up && std::abs(raw - t) * length <= beyond;
+    CHECK(box.contains(p) == admitted);
+    inside += admitted;
+  }
+  CHECK(inside > 100);
+}
+
 TEST_CASE("primitive field refusals") {
   auto test = make();
   CHECK_THROWS(originator::current_field(originator::generation_context{}, "world")); // вне сборки экземпляра
@@ -327,6 +370,75 @@ generators = [ { name = shape, native = shape, buffers = shape_buffers,
     CHECK(values[i] == field.value(points[i]).value);
     CHECK(tags[i] == field.value(points[i]).tag);
   }
+}
+
+// Наклон формы — выражение по полям строки и границам градиента слотов; блоки решётки получают
+// наибольший наклон задевающих их форм и биты ролей, а за вертикальной границей фона — бесконечность.
+TEST_CASE("script slopes reach the block grid with their roles") {
+  constexpr const char* buffers = R"(
+{ name = main, size = two, format = [ low = d3, high = d3, radius = d1 ] }
+)";
+  auto description = originator::parse_chain(R"(
+generators = [ { name = shape, native = shape, buffers = shape_buffers, outputs = [ main ] } ]
+)", "slopes");
+  const auto build = [&](const std::string& slope, const char* role) {
+    auto words = std::make_unique<originator::shape_vocabulary>();
+    words->set_background([](originator::field_point&, bool&) { return originator::shape_value{3.0, 0}; }, 3.0);
+    words->set_background_slope(0.0, -100.0, 100.0);
+    words->add_slot("wobble", [](originator::field_point&) { return 0.0; }, 0.5);
+    originator::chain_shape shape;
+    shape.name = "box"; shape.buffer = "main";
+    shape.box_a = "low"; shape.box_b = "high"; shape.box = "aabb"; shape.reach = "0";
+    shape.tag = "1"; shape.path = "test/box"; shape.text = "{ x - radius }";
+    shape.role = std::string(role) == "natural" ? "" : role; shape.slope = slope;
+    originator::add_script_kind(*words, shape);
+    return words;
+  };
+  const auto run_shape = [](originator::generator_run& run) {
+    auto& main = run.output("main");
+    for (size_t i = 0; i < 2; ++i) {
+      for (size_t axis = 0; axis < 3; ++axis) {
+        main.field(0).set(i, i == 0 ? 0.0 : 10.0, axis);
+        main.field(1).set(i, i == 0 ? 3.0 : 13.0, axis);
+      }
+      main.field(2).set(i, i == 0 ? 1.0 : 4.0);
+    }
+  };
+  for (const char* role : {"natural", "fill", "cut"}) {
+    auto words = build("1+radius*wobble_slope", role);
+    originator::chain_setup setup;
+    setup.native_buffers.emplace_back("shape", originator::parse_buffers(buffers, "shape"));
+    setup.sizes.set("two", 2);
+    setup.vocabulary = words.get();
+    originator::generator_chain chain(description, std::move(setup));
+    chain.set_native("shape", run_shape);
+    const auto instance = chain.get("shape", 1, {{0, 0, 0}});
+    const std::vector<originator::field_term_source> terms{{"box", {instance}}};
+    const originator::primitive_field field(*words, terms);
+    std::vector<double> slopes(8);
+    std::vector<uint8_t> roles(8);
+    field.prepare({0, 0, 0}, {16, 16, 16}).slopes({0, 0, 0}, 8.0, {2, 2, 2}, slopes, roles);
+    const uint8_t bit = std::string(role) == "fill" ? 1 : std::string(role) == "cut" ? 2 : 0;
+    // Первая коробка [0, 3]^3 — блок 0: 1 + 1 * 0.5; вторая [10, 13]^3 — блок 7: 1 + 4 * 0.5; прочие — фон.
+    for (size_t b = 0; b < 8; ++b) {
+      CHECK(slopes[b] == (b == 0 ? 1.5 : b == 7 ? 3.0 : 0.0));
+      CHECK(roles[b] == (b == 0 || b == 7 ? bit : 0));
+    }
+    std::vector<double> edge(1);
+    field.prepare({0, 95, 0}, {8, 103, 8}).slopes({0, 95, 0}, 8.0, {1, 1, 1}, edge);
+    CHECK(std::isinf(edge[0]));
+  }
+  // Отрицательный наклон — громкий отказ при разборе строк.
+  auto words = build("radius-5", "natural");
+  originator::chain_setup setup;
+  setup.native_buffers.emplace_back("shape", originator::parse_buffers(buffers, "shape"));
+  setup.sizes.set("two", 2);
+  setup.vocabulary = words.get();
+  originator::generator_chain chain(description, std::move(setup));
+  chain.set_native("shape", run_shape);
+  const auto instance = chain.get("shape", 1, {{0, 0, 0}});
+  const std::vector<originator::field_term_source> terms{{"box", {instance}}};
+  CHECK_THROWS(originator::primitive_field(*words, terms));
 }
 
 TEST_CASE("natural and cut shapes can round a union without changing distant surfaces") {

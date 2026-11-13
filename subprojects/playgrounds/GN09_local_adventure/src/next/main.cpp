@@ -1,14 +1,18 @@
 #include "devils_engine/playground/cli.h"
 #include "runtime.h"
 #include "devils_engine/originator/script_column.h"
+#include "devils_engine/utils/prng.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <bit>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
 #include <thread>
+#include <vector>
 #include <stdexcept>
 using namespace gn09_next;
 using clock_type = std::chrono::steady_clock;
@@ -263,10 +267,20 @@ void verify_features(runtime& world, uint64_t seed) {
   require(world.chain().verify("features", seed, key(0, 0, 0)).empty(), "anchored features rebuild differs");
   std::cout << "Anchored environment: " << anchors << " buried roots, " << details << " rock spans, " << curtains << " ridge links, " << heaps << " rubble forms, " << refused << " unsupported and " << severed << " severed proposals refused\n";
 }
+bool verbose_outposts = false;
 void verify_places(runtime& world, uint64_t seed) {
   size_t stations = 0;
   std::array<size_t, 3> poses{};
   double occupancy = 0, trunk = 0;
+  std::array<size_t, 5> refusals{};
+  double standoff = 0;
+  std::array<size_t, 2> transitions{};
+  std::array<size_t, 6> labels_seen{};
+  std::array<size_t, 3> beacon_kinds{};
+  std::array<std::array<size_t, 2>, 3> by_pose{};
+  double extent_max = 0, reach_max = 0;
+  size_t windows_total = 0, hatches_total = 0;
+  size_t rooms_total = 0, triangles_max = 0, walls_max = 0, tower_valid = 0, core_min = SIZE_MAX, core_max = 0, rooms_max = 0;
   for (int z = -1; z <= 1; ++z)
     for (int x = -1; x <= 1; ++x) {
       const auto station = world.chain().get("outpost", seed, key(x, z));
@@ -277,31 +291,151 @@ void verify_places(runtime& world, uint64_t seed) {
       trunk += station->field("station_meta", "trunk_length").get(0);
       ++poses.at(size_t(station->field("station_meta", "pose").get(0)));
       ++stations;
+      refusals[0] += size_t(station->field("outpost_meta", "proposals").get(0));
+      standoff += station->field("outpost_meta", "standoff").get(0);
+      if (verbose_outposts) {
+        const auto o = station->field("station_meta", "origin");
+        std::cout << "  outpost " << x << ',' << z << ": pose " << station->field("station_meta", "pose").get(0) << ", yaw "
+                  << std::atan2(station->field("station_meta", "yaw_s").get(0), station->field("station_meta", "yaw_c").get(0)) << ", origin "
+                  << o.get(0, 0) << ' ' << o.get(0, 1) << ' ' << o.get(0, 2) << ", lock " << station->field("station_meta", "trunk_length").get(0)
+                  << " m, standoff " << station->field("outpost_meta", "standoff").get(0) << " m, occupancy " << station->field("outpost_meta", "occupancy").get(0)
+                  << ", pairs " << station->field("outpost_meta", "proposals").get(0) << ", " << (station->field("station_meta", "transition").get(0) != 0 ? "tower" : "trunk") << " (towers "
+                  << station->field("outpost_meta", "tower_valid").get(0) << '/' << station->field("outpost_meta", "tower_candidates").get(0) << "; buried " << station->field("outpost_meta", "tower_buried").get(0) << ", floating "
+                  << station->field("outpost_meta", "tower_floating").get(0) << ", protected " << station->field("outpost_meta", "tower_protected").get(0) << "), core " << station->field("outpost_meta", "core_rooms").get(0) << " (refused: water "
+                  << station->field("outpost_meta", "core_water").get(0) << ", protected " << station->field("outpost_meta", "core_protected").get(0) << ", overlap " << station->field("outpost_meta", "core_overlap").get(0) << "), windows " << station->field("station_meta", "windows").get(0) << ", hatches "
+                  << station->field("station_meta", "hatches").get(0) << ", beacon " << station->field("station_meta", "beacon_kind").get(0) << ", rooms " << station->field("station_meta", "rooms").get(0) << '\n';
+      }
+      refusals[1] += size_t(station->field("outpost_meta", "refused_approach").get(0));
+      refusals[2] += size_t(station->field("outpost_meta", "refused_dock").get(0));
+      refusals[3] += size_t(station->field("outpost_meta", "refused_water").get(0));
+      refusals[4] += size_t(station->field("outpost_meta", "refused_protected").get(0));
       const auto dock = station->field("station_meta", "dock");
+      const double yaw_c = station->field("station_meta", "yaw_c").get(0), yaw_s = station->field("station_meta", "yaw_s").get(0);
+      require(std::abs(yaw_c * yaw_c + yaw_s * yaw_s - 1) < 1e-9, "outpost frame yaw is not a rotation");
+      const std::array<double, 3> boat_half{world.constants().number("sub_length") / 2, world.constants().number("sub_beam") / 2, world.constants().number("sub_beam") / 2};
+      // Boat frame: local x = (c,0,s), y = up, z = (-s,0,c), centred on the dock.
+      auto to_boat = [&](const o::field_vector& p) {
+        const double dx = p[0] - dock.get(0, 0), dy = p[1] - dock.get(0, 1), dz = p[2] - dock.get(0, 2);
+        return std::array<double, 3>{dx * yaw_c + dz * yaw_s, dy, dz * yaw_c - dx * yaw_s};
+      };
       const auto natural = world.chain().field("outpost", seed, key(x, z), "natural");
-      for (uint32_t axis = 0; axis < 3; ++axis)
-        for (int sign : {-1, 1}) {
-          o::field_vector p{};
-          for (uint32_t a = 0; a < 3; ++a)
-            p[a] = dock.get(0, a);
-          p[axis] += sign * world.constants().number(axis == 0 ? "sub_length" : "sub_beam") / 2;
-          require(natural->value(p).value < 0, "new wet dock is blocked");
-        }
+      for (int sx : {-1, 0, 1})
+        for (int sy : {-1, 0, 1})
+          for (int sz : {-1, 0, 1}) {
+            const double lx = sx * boat_half[0], ly = sy * boat_half[1], lz = sz * boat_half[2];
+            const o::field_vector p{dock.get(0, 0) + lx * yaw_c - lz * yaw_s, dock.get(0, 1) + ly, dock.get(0, 2) + lx * yaw_s + lz * yaw_c};
+            require(natural->value(p).value < 0, "new wet dock is blocked");
+          }
       const auto ma = station->field("station_mesh", "a"), mb = station->field("station_mesh", "b"), mc = station->field("station_mesh", "c");
       for (size_t i = 0; i < ma.count(); ++i) {
+        std::array<std::array<double, 3>, 3> local{};
+        for (size_t v = 0; v < 3; ++v) {
+          const auto& f = v == 0 ? ma : v == 1 ? mb : mc;
+          local[v] = to_boat(o::field_vector{f.get(i, 0), f.get(i, 1), f.get(i, 2)});
+        }
         bool overlap = true;
         for (uint32_t axis = 0; axis < 3; ++axis) {
-          const double half = world.constants().number(axis == 0 ? "sub_length" : "sub_beam") / 2;
-          const double low = std::min({ma.get(i, axis), mb.get(i, axis), mc.get(i, axis)}), high = std::max({ma.get(i, axis), mb.get(i, axis), mc.get(i, axis)});
-          overlap &= high > dock.get(0, axis) - half && low < dock.get(0, axis) + half;
+          const double low = std::min({local[0][axis], local[1][axis], local[2][axis]}), high = std::max({local[0][axis], local[1][axis], local[2][axis]});
+          overlap &= high > -boat_half[axis] && low < boat_half[axis];
         }
         require(!overlap, "outpost mesh intrudes into the boat at its wet dock");
       }
-      const auto parents = station->field("station_rooms", "parent");
-      for (size_t i = 1; i < parents.count(); ++i)
-        require(parents.get(i) >= 0 && parents.get(i) < double(i), "new outpost floor graph is disconnected");
+      // Rooms are reached from the lock only through passages that exist in the wall records.
+      const auto parents = station->field("station_rooms", "parent"), labels = station->field("station_rooms", "label");
+      const auto wall_room = station->field("station_walls", "room"), wall_other = station->field("station_walls", "other"), wall_opening = station->field("station_walls", "opening");
+      const size_t room_count = parents.count();
+      require(room_count > 0 && labels.get(0) == 0 && parents.get(0) < 0, "new outpost does not start with the lock");
+      std::vector<std::vector<size_t>> around(room_count);
+      for (size_t w = 0; w < wall_room.count(); ++w)
+        if (wall_opening.get(w) == 1) {
+          require(wall_other.get(w) >= 0 && wall_other.get(w) < double(room_count), "outpost passage leads outside the room list");
+          const size_t a = size_t(wall_room.get(w)), b = size_t(wall_other.get(w));
+          require(parents.get(a) == double(b) || parents.get(b) == double(a), "outpost passage joins rooms that are not linked");
+          around[a].push_back(b);
+          around[b].push_back(a);
+        }
+      std::vector<bool> reached(room_count, false);
+      std::vector<size_t> queue{0};
+      reached[0] = true;
+      for (size_t head = 0; head < queue.size(); ++head)
+        for (size_t next : around[queue[head]])
+          if (!reached[next]) {
+            reached[next] = true;
+            queue.push_back(next);
+          }
+      require(queue.size() == room_count, "outpost room is not reachable from the lock through passages");
+      // The lock mouth and the beacon point stand in open water, visible from the approaching boat.
+      const auto hatch = station->field("station_meta", "hatch"), beacon = station->field("station_meta", "beacon");
+      require(natural->value(o::field_vector{hatch.get(0, 0), hatch.get(0, 1), hatch.get(0, 2)}).value < 0, "outpost lock mouth is buried in rock");
+      for (uint32_t a = 0; a < 3; ++a)
+        require(std::isfinite(beacon.get(0, a)), "outpost beacon is not finite");
+      require(natural->value(o::field_vector{beacon.get(0, 0), beacon.get(0, 1), beacon.get(0, 2)}).value < 0, "outpost beacon is not in open water");
+      ++beacon_kinds.at(size_t(station->field("station_meta", "beacon_kind").get(0)));
+      windows_total += size_t(station->field("station_meta", "windows").get(0));
+      hatches_total += size_t(station->field("station_meta", "hatches").get(0));
+      const bool tower = station->field("station_meta", "transition").get(0) != 0;
+      ++transitions[tower ? 1 : 0];
+      ++by_pose.at(size_t(station->field("station_meta", "pose").get(0)))[tower ? 1 : 0];
+      // Influence region: extent against station_reach, distance from the main node against the terrain halo.
+      const auto low = station->field("station_meta", "low"), high = station->field("station_meta", "high");
+      const auto node = world.chain().get("network", seed, key(x, z))->field("network_node", "centre");
+      for (uint32_t a = 0; a < 3; ++a) {
+        extent_max = std::max(extent_max, high.get(0, a) - low.get(0, a));
+        if (a != 1) reach_max = std::max({reach_max, std::abs(low.get(0, a) - node.get(0, a)), std::abs(high.get(0, a) - node.get(0, a))});
+      }
+      for (size_t i = 0; i < room_count; ++i)
+        ++labels_seen.at(size_t(labels.get(i)));
+      rooms_total += room_count;
+      triangles_max = std::max(triangles_max, size_t(station->field("station_meta", "triangles").get(0)));
+      walls_max = std::max(walls_max, wall_room.count());
+      tower_valid += size_t(station->field("outpost_meta", "tower_valid").get(0) > 0);
+      const size_t core = size_t(station->field("outpost_meta", "core_rooms").get(0));
+      core_min = std::min(core_min, core);
+      core_max = std::max(core_max, core);
+      rooms_max = std::max(rooms_max, room_count);
     }
-  std::cout << "New places: " << stations << " embedded outposts, occupancy " << occupancy / stations << ", trunk " << trunk / stations << " m, poses " << poses[0] << '/' << poses[1] << '/' << poses[2] << '\n';
+  std::cout << "New places: " << stations << " embedded outposts, occupancy " << occupancy / stations << ", trunk " << trunk / stations << " m, poses side/below/above " << poses[0] << '/' << poses[1] << '/' << poses[2]
+            << "; dock standoff " << standoff / stations << " m; valid pairs " << refusals[0] << "; refused docks: approach " << refusals[1] << ", blocked " << refusals[2] << "; refused bodies: open water " << refusals[3] << ", protected route " << refusals[4] << '\n';
+  std::cout << "Outpost transitions: trunk " << transitions[0] << ", tower " << transitions[1] << " (tower possible at " << tower_valid << "); rooms " << rooms_total << ": lock " << labels_seen[0] << ", dock " << labels_seen[1] << ", guard " << labels_seen[2]
+            << ", technical " << labels_seen[3] << ", core " << labels_seen[4] << ", passage " << labels_seen[5] << "; core per outpost " << core_min << ".." << core_max
+            << ", max rooms " << rooms_max << "; trunk/tower by pose side " << by_pose[0][0] << '/' << by_pose[0][1] << ", below " << by_pose[1][0] << '/' << by_pose[1][1] << ", above " << by_pose[2][0] << '/' << by_pose[2][1]
+            << "; extent " << extent_max << " of " << 2 * world.constants().number("station_reach") << " m, reach from node " << reach_max << " of " << world.constants().number("outpost_search_reach") + 60 << " m; windows " << windows_total << ", emergency hatches " << hatches_total << "; beacon on roof/wall/lock mouth " << beacon_kinds[0] << '/' << beacon_kinds[1] << '/' << beacon_kinds[2] << ", max walls " << walls_max << ", max triangles " << triangles_max << '\n';
+}
+// Chunks overlapping the nine outposts of a seed: own build cost and surface size. Compare runs with
+// outpost_crease_refinement = 1 and 0 to price the refinement of rock creases along the shell.
+void outpost_chunks(runtime& world, uint64_t seed) {
+  std::set<std::array<int64_t, 3>> keys;
+  size_t details = 0;
+  for (int z = -1; z <= 1; ++z)
+    for (int x = -1; x <= 1; ++x) {
+      const auto station = world.chain().get("outpost", seed, key(x, z));
+      details += size_t(station->field("station_meta", "details").get(0));
+      const auto low = station->field("station_meta", "low"), high = station->field("station_meta", "high");
+      std::array<int64_t, 3> a{}, b{};
+      for (uint32_t i = 0; i < 3; ++i) {
+        a[i] = int64_t(std::floor(low.get(0, i) / chunk_cells));
+        b[i] = int64_t(std::floor(high.get(0, i) / chunk_cells));
+      }
+      for (int64_t cz = a[2]; cz <= b[2]; ++cz)
+        for (int64_t cy = a[1]; cy <= b[1]; ++cy)
+          for (int64_t cx = a[0]; cx <= b[0]; ++cx)
+            keys.insert({cx, cy, cz});
+    }
+  size_t vertices = 0, worst = 0, structure = 0;
+  const auto start = std::chrono::steady_clock::now();
+  for (const auto& k : keys) {
+    const auto chunk = world.chain().get(world.generator_name(), seed, key(k[0], k[1], k[2]));
+    const size_t v = size_t(chunk->field("surface_counts", "vertices").get(0));
+    vertices += v;
+    worst = std::max(worst, v);
+    structure += size_t(chunk->field("surface_counts", "structure").get(0));
+  }
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  std::cout << "Outpost chunks, seed " << seed << ": " << keys.size() << " chunks, " << details << " crease boxes; rock surface " << vertices << " vertices (mean " << vertices / std::max<size_t>(1, keys.size()) << ", densest " << worst
+            << "), structure " << structure << " vertices; wall " << seconds << " s\n";
+  for (const auto& [name, st] : world.chain().all_stats())
+    if (st.builds && (name == world.generator_name() || name == "outpost"))
+      std::cout << "  " << name << ": " << st.builds << " builds, self " << double(st.self_ns) / 1e6 / st.builds << " ms\n";
 }
 bool segment_hits_triangle(const o::field_vector& p, const o::field_vector& q, const o::field_vector& a, const o::field_vector& b, const o::field_vector& c) {
   auto sub = [](const auto& x, const auto& y) {
@@ -453,14 +587,13 @@ void verify(runtime& world, uint64_t seed) {
   const int64_t cy = int64_t(std::floor(start[1] / chunk_cells)), cz = int64_t(std::floor(start[2] / chunk_cells));
   const int64_t boundary = int64_t(world.constants().number("main_spacing")) / chunk_cells;
   constexpr int padded = chunk_cells + 3;
+  // The shared face of two chunks across an address-cell boundary: both chunk fields give one value.
   for (const int64_t x : {int64_t(-1), boundary - 1}) {
-    const auto a = world.chunk(seed, {x, cy, cz}), b = world.chunk(seed, {x + 1, cy, cz});
-    const auto av = a->field("samples", "value"), bv = b->field("samples", "value");
+    const auto a = world.chain().field("landscape", seed, key(x, cy, cz), "solid"), b = world.chain().field("landscape", seed, key(x + 1, cy, cz), "solid");
     for (int z = 0; z < padded; ++z)
       for (int y = 0; y < padded; ++y) {
-        const double va = a->field("surface_counts", "sampled").get(0) != 0 ? av.get(size_t(z * padded * padded + y * padded + chunk_cells + 1)) : 3.0;
-        const double vb = b->field("surface_counts", "sampled").get(0) != 0 ? bv.get(size_t(z * padded * padded + y * padded + 1)) : 3.0;
-        require(std::abs(va - vb) < 1e-9, "active terrain seam changed across address cells");
+        const o::field_vector p{double((x + 1) * chunk_cells), double(cy * chunk_cells - 1 + y), double(cz * chunk_cells - 1 + z)};
+        require(std::abs(a->value(p).value - b->value(p).value) < 1e-9, "active terrain seam changed across address cells");
       }
   }
   std::cout << "Verified active slice 2, seed " << seed << ": biome/network/terrain/places/chunk seams passed\n";
@@ -550,6 +683,61 @@ void cave_plan_svg(runtime& world, uint64_t seed, int x, int z, int layer, const
   }
   out << "<text x='20' y='725' fill='#c3d6d9' font-family='sans-serif' font-size='14'>Projected cavity envelopes and curved connections; no resources or creatures. Site rock preference: " << cave->field("cave_meta", "site_quality").get(0) << "</text></svg>";
 }
+// Plan (local XZ) and elevation (local ZY) of one outpost inside a 390 x 390 panel.
+void outpost_panel(std::ostream& out, const o::result_ptr& local) {
+  // Two projections of the outpost frame: plan (local XZ) above, elevation (local ZY) below.
+  const auto p = local->field("station_rooms", "local_centre"), half = local->field("station_rooms", "half"), label = local->field("station_rooms", "label");
+  double low[3]{1e30, 1e30, 1e30}, high[3]{-1e30, -1e30, -1e30};
+  for (size_t i = 0; i < p.count(); ++i)
+    for (uint32_t a = 0; a < 3; ++a) {
+      low[a] = std::min(low[a], p.get(i, a) - half.get(i, a));
+      high[a] = std::max(high[a], p.get(i, a) + half.get(i, a));
+    }
+  const double scale = std::min({360 / (high[0] - low[0]), 360 / (high[2] - low[2]), 140 / (high[2] - low[2]), 140 / (high[0] - low[0]), 140 / (high[1] - low[1])});
+  static const char* colours[] = {"#c9a25a", "#4fa3d1", "#d1605a", "#8a8fd6", "#4c7a5a", "#9a9a9a"};
+  // Panel 0: horizontal = x, vertical = z; panel 1: horizontal = z, vertical = y (up).
+  auto project = [&](int panel, double x, double y, double z) {
+    if (panel == 0) return std::array<double, 2>{20 + (x - low[0]) * scale, 45 + (z - low[2]) * scale};
+    return std::array<double, 2>{20 + (z - low[2]) * scale, 205 + (high[1] - y) * scale};
+  };
+  for (int panel = 0; panel < 2; ++panel)
+    for (size_t i = 0; i < p.count(); ++i) {
+      const auto a = project(panel, p.get(i, 0) - half.get(i, 0), p.get(i, 1) + half.get(i, 1), p.get(i, 2) - half.get(i, 2));
+      const auto b = project(panel, p.get(i, 0) + half.get(i, 0), p.get(i, 1) - half.get(i, 1), p.get(i, 2) + half.get(i, 2));
+      out << "<rect x='" << std::min(a[0], b[0]) << "' y='" << std::min(a[1], b[1]) << "' width='" << std::abs(b[0] - a[0]) << "' height='" << std::abs(b[1] - a[1]) << "' fill='" << colours[std::min<size_t>(5, size_t(label.get(i)))]
+          << "' fill-opacity='.3' stroke='" << colours[std::min<size_t>(5, size_t(label.get(i)))] << "'/>";
+    }
+  auto dot = [&](double x, double y, double z, const char* colour) {
+    for (int panel = 0; panel < 2; ++panel) {
+      const auto c = project(panel, x, y, z);
+      out << "<circle cx='" << c[0] << "' cy='" << c[1] << "' r='2.5' fill='" << colour << "'/>";
+    }
+  };
+  const auto hole = local->field("station_walls", "hole_centre"), opening = local->field("station_walls", "opening");
+  for (size_t i = 0; i < hole.count(); ++i)
+    if (opening.get(i) == 1) dot(hole.get(i, 0), hole.get(i, 1), hole.get(i, 2), "#81df9b");
+  const auto openings = local->field("station_openings", "local_centre"), kind = local->field("station_openings", "kind");
+  for (size_t i = 0; i < openings.count(); ++i)
+    dot(openings.get(i, 0), openings.get(i, 1), openings.get(i, 2), kind.get(i) == 3 ? "#69bdf1" : "#efaa62");
+  out << "<text x='18' y='372' fill='white' font-family='sans-serif' font-size='12'>Plan XZ, elevation ZY; dots: passage/emergency/window</text>";
+  out << "<text x='18' y='388' fill='white' font-family='sans-serif' font-size='12'>" << (local->field("station_meta", "transition").get(0) != 0 ? "Tower" : "Trunk") << ", lock " << local->field("station_meta", "trunk_length").get(0) << " m; pose " << local->field("station_meta", "pose").get(0) << "; rooms " << local->field("station_meta", "rooms").get(0)
+      << ", windows " << local->field("station_meta", "windows").get(0) << "</text>";
+}
+// All nine main outposts of a seed, 3 x 3 panels.
+void outpost_gallery_svg(runtime& world, uint64_t seed, const std::string& path) {
+  std::ofstream out(path);
+  require(bool(out), "cannot write outpost gallery");
+  out << "<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='1200' viewBox='0 0 1200 1200'><rect width='1200' height='1200' fill='#17202a'/>";
+  for (int z = -1; z <= 1; ++z)
+    for (int x = -1; x <= 1; ++x) {
+      const auto local = world.chain().get("outpost", seed, key(x, z));
+      out << "<g transform='translate(" << 400 * (x + 1) << ',' << 400 * (z + 1) << ")'><rect x='5' y='5' width='390' height='390' fill='none' stroke='#586574'/><text x='18' y='30' fill='white' font-family='sans-serif' font-size='18'>Outpost " << x << ',' << z << ", seed " << seed << "</text>";
+      outpost_panel(out, local);
+      out << "</g>";
+    }
+  out << "</svg>";
+  std::cout << "Outpost gallery: " << path << '\n';
+}
 void plans_svg(runtime& world, uint64_t seed, const std::string& path) {
   std::ofstream out(path);
   require(bool(out), "cannot write local plans");
@@ -598,22 +786,7 @@ void plans_svg(runtime& world, uint64_t seed, const std::string& path) {
         out << "<circle cx='" << px(i) << "' cy='" << py(i) << "' r='" << 2 * scale << "' fill='#315b72' stroke='#8bc6df'/><text x='" << px(i) << "' y='" << py(i) << "' fill='white' font-size='12'>" << i << "</text>";
       out << "<text x='18' y='375' fill='white' font-size='14'>XY projection; independent system</text>";
     } else {
-      const auto p = local->field("station_rooms", "centre"), floor = local->field("station_rooms", "floor");
-      for (size_t i = 0; i < p.count(); ++i) {
-        const double xx = 35 + floor.get(i) * 115 + (p.get(i, 0) - p.get(0, 0)) * 3, yy = 85 + (p.get(i, 2) - p.get(0, 2)) * 3;
-        out << "<rect x='" << xx << "' y='" << yy << "' width='36' height='30' fill='#385066' stroke='#b4c5cd'/><text x='" << xx + 8 << "' y='" << yy + 20 << "' fill='white' font-size='12'>" << i << "</text>";
-      }
-      const auto walls = local->field("station_walls", "centre"), room = local->field("station_walls", "room"), opening = local->field("station_walls", "opening"), axis = local->field("station_walls", "axis");
-      for (size_t i = 0; i < walls.count(); ++i)
-        if (opening.get(i) > 0) {
-          const double xx = 53 + floor.get(size_t(room.get(i))) * 115 + (walls.get(i, 0) - p.get(0, 0)) * 3, yy = 100 + (walls.get(i, 2) - p.get(0, 2)) * 3;
-          const bool vertical = axis.get(i) == 0;
-          const char* colour = opening.get(i) == 3 ? "#69bdf1" : opening.get(i) == 2 ? "#efaa62"
-                                                                                     : "#81df9b";
-          out << "<path d='M " << xx - (vertical ? 0 : 4) << ' ' << yy - (vertical ? 4 : 0) << " L " << xx + (vertical ? 0 : 4) << ' ' << yy + (vertical ? 4 : 0) << "' stroke='" << colour << "' stroke-width='3'/>";
-        }
-      out << "<text x='18' y='185' fill='white' font-size='14'>XZ floors left to right; stairs in first room</text><text x='18' y='215' fill='#81df9b' font-size='14'>Door</text><text x='95' y='215' fill='#efaa62' font-size='14'>Emergency</text><text x='205' y='215' fill='#69bdf1' font-size='14'>Window</text>";
-      out << "<text x='18' y='250' fill='white' font-size='14'>Trunk " << local->field("station_meta", "trunk_length").get(0) << " m; pose " << local->field("station_meta", "pose").get(0) << "</text>";
+      outpost_panel(out, local);
     }
     out << "</g>";
   }
@@ -621,6 +794,39 @@ void plans_svg(runtime& world, uint64_t seed, const std::string& path) {
   std::cout << "Local plans: " << path << '\n';
 }
 
+// One thread, a fixed 8x5x7 block of chunks around the start: comparable step costs between versions.
+void bench(runtime& world, uint64_t seed) {
+  const auto p = world.start(seed, 0, 0);
+  const int64_t cx = int64_t(std::floor(p[0] / chunk_cells)), cy = int64_t(std::floor(p[1] / chunk_cells)), cz = int64_t(std::floor(p[2] / chunk_cells));
+  world.reset_timings();
+  world.chain().reset_stats();
+  size_t vertices = 0, chunks = 0;
+  // Fingerprint of every surface and structure vertex, bit for bit: an optimisation that claims the
+  // same geometry must keep it.
+  uint64_t print = 0;
+  const auto began = clock_type::now();
+  for (int64_t x = cx - 4; x < cx + 4; ++x)
+    for (int64_t y = cy - 2; y <= cy + 2; ++y)
+      for (int64_t z = cz - 3; z <= cz + 3; ++z) {
+        const auto chunk = world.chunk(seed, {x, y, z});
+        for (const char* buffer : {"surface", "structure_surface"})
+          for (const char* field : {"position", "normal", "shade"}) {
+            const auto values = chunk->field(buffer, field);
+            const uint32_t components = field[0] == 's' ? 1 : 3;
+            print = devils_engine::utils::mix(print, values.count());
+            for (size_t i = 0; i < values.count(); ++i)
+              for (uint32_t a = 0; a < components; ++a)
+                print = devils_engine::utils::mix(print, std::bit_cast<uint64_t>(values.get(i, a)));
+          }
+        vertices += chunk->field("surface", "position").count();
+        ++chunks;
+      }
+  const double seconds = std::chrono::duration<double>(clock_type::now() - began).count();
+  std::cout << "Bench seed " << seed << ": " << chunks << " chunks, " << vertices << " surface vertices, fingerprint " << std::hex << print << std::dec << ", " << seconds << " s\n";
+  for (const auto& [name, s] : world.chain().all_stats())
+    if (s.builds && s.self_ns > 50'000'000) std::cout << "  " << name << ": " << s.builds << " builds, " << s.hits << " hits, " << s.evictions << " evictions, self " << double(s.self_ns) / 1e6 / s.builds << " ms, total " << double(s.self_ns) / 1e9 << " s\n";
+  world.report_timings();
+}
 int flight(runtime& world, uint64_t seed, double speed, double seconds, size_t workers, int sx, int sz) {
   const auto p = world.start(seed, sx, sz);
   o::chunk_key current{};
@@ -680,22 +886,28 @@ int flight(runtime& world, uint64_t seed, double speed, double seconds, size_t w
   std::cout << "Flight " << speed << " m/s, " << seconds << " s, " << workers << " workers: " << holes << '/' << frames << " near-hole frames, worst " << worst << " missing, " << stats.generated << " chunks, mean build " << stats.total_milliseconds / std::max<size_t>(1, stats.generated) << " ms\n";
   for (const auto& [name, s] : world.chain().all_stats())
     if (s.builds) std::cout << "  " << name << ": " << s.builds << " builds, self " << double(s.self_ns) / 1e6 / s.builds << " ms, wait " << double(s.wait_ns) / 1e9 << " s\n";
+  world.report_timings();
   return holes ? 2 : 0;
 }
 int main(int argc, char** argv) {
   try {
     uint64_t seed = 0;
     size_t seeds = 1;
-    bool check = false, natural = false, progress = false, caves_only = false, cave_check = false;
+    bool check = false, natural = false, progress = false, caves_only = false, cave_check = false, outpost_check = false;
     double speed = 0, seconds = 20;
     size_t workers = 11;
     int sx = 0, sz = 0, cave_layer = 0;
-    std::string map, plans, cave_plan, module = "gn09_next";
+    std::string map, plans, cave_plan, gallery, module = "gn09_next";
+    bool outpost_chunk_check = false, benchmark = false;
     CLI::App app{"GN09 NEXT"};
     app.option_defaults()->always_capture_default();
     app.add_flag("--natural", natural);
     app.add_flag("--caves-only", caves_only);
     app.add_flag("--verify-caves", cave_check);
+    app.add_flag("--verify-outposts", outpost_check);
+    app.add_flag("--outpost-chunks", outpost_chunk_check);
+    app.add_flag("--bench", benchmark, "Build a fixed block of chunks in one thread and report step costs");
+    app.add_option("--outpost-gallery", gallery, "Plans of all nine outposts, SVG");
     app.add_flag("--progress", progress);
     app.add_flag("--verify", check);
     app.add_option("--seed", seed, "World seed");
@@ -727,15 +939,26 @@ int main(int argc, char** argv) {
                   });
     if (!map.empty()) map_svg(world, seed, map);
     if (!plans.empty()) plans_svg(world, seed, plans);
+    if (!gallery.empty()) outpost_gallery_svg(world, seed, gallery);
+    if (outpost_chunk_check)
+      for (size_t i = 0; i < seeds; ++i)
+        outpost_chunks(world, seed + i);
     if (!cave_plan.empty()) cave_plan_svg(world, seed, sx, sz, cave_layer, cave_plan);
     if (cave_check)
       for (size_t i = 0; i < seeds; ++i)
         verify_cave_systems(world, seed + i);
+    verbose_outposts = outpost_check && seeds == 1;
+    if (outpost_check)
+      for (size_t i = 0; i < seeds; ++i)
+        verify_places(world, seed + i);
     if (check)
       for (size_t i = 0; i < seeds; ++i)
         verify(world, seed + i);
+    if (benchmark)
+      for (size_t i = 0; i < seeds; ++i)
+        bench(world, seed + i);
     if (speed > 0) return flight(world, seed, speed, seconds, workers, sx, sz);
-    if (!check && !cave_check && map.empty() && plans.empty() && cave_plan.empty()) verify(world, seed);
+    if (!check && !cave_check && !outpost_check && !outpost_chunk_check && !benchmark && map.empty() && plans.empty() && gallery.empty() && cave_plan.empty()) verify(world, seed);
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "GN09_next: " << e.what() << '\n';

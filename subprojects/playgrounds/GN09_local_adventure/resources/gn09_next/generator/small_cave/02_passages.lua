@@ -6,6 +6,7 @@ return function(step)
   local r=function(salt) return C.random(step.world_seed,step.key[1],step.key[2],step.key[3],salt) end
   local low,high=W.get(meta:field('low'),0),W.get(meta:field('high'),0)
   local made,slits,details=0,0,0
+  local detail_low,detail_high={x=math.huge,y=math.huge,z=math.huge},{x=-math.huge,y=-math.huge,z=-math.huge}
   local write_segment=originator.algorithms.segment_writer(passages)
   for edge=0,meta:field('edges'):get(0)-1 do
     local a=W.get(nodes:field('centre'),edges:field('a'):get(edge))
@@ -61,6 +62,7 @@ return function(step)
           lo[axis]=math.min(last[axis],p[axis])-pad;hi[axis]=math.max(last[axis],p[axis])+pad
         end
         W.put(step.writes.cave_details:field('low'),details,lo);W.put(step.writes.cave_details:field('high'),details,hi);details=details+1
+        for _,axis in ipairs({'x','y','z'}) do detail_low[axis]=math.min(detail_low[axis],lo[axis]);detail_high[axis]=math.max(detail_high[axis],hi[axis]) end
       end
       made=made+1;last=p
     end
@@ -68,4 +70,6 @@ return function(step)
   meta:field('passages'):set(0,made);meta:field('slits'):set(0,slits)
   W.put(meta:field('low'),0,low);W.put(meta:field('high'),0,high)
   step.writes.cave_detail_meta:field('count'):set(0,details)
+  -- Bounds of all refinement boxes: a chunk far from them skips the whole list.
+  W.put(step.writes.cave_detail_meta:field('low'),0,detail_low);W.put(step.writes.cave_detail_meta:field('high'),0,detail_high)
 end

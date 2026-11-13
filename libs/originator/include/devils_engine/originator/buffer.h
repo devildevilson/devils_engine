@@ -162,7 +162,7 @@ public:
   buffer& operator=(const buffer& other);
   buffer(buffer&& other) noexcept;
   buffer& operator=(buffer&& other) noexcept;
-  ~buffer() = default;
+  ~buffer();
 
   buffer(std::string name, buffer_layout layout, const size_t count);
   // Буфер с объявленной ФОРМОЙ. Число элементов не передаётся отдельно, потому что оно уже сказано:
@@ -198,8 +198,15 @@ private:
   buffer_extent extent_{};
   size_t count_ = 0;
   std::vector<field_placement> placement_;
-  std::vector<std::byte> memory_;
+  // Обнулённая память. Большой буфер берёт нулевые страницы у ОС, и они появляются при первом касании:
+  // выход с объявленной ёмкостью (поверхность чанка — десятки МБ) почти весь остаётся нетронутым, а
+  // обнуление вектором писало бы его целиком на каждой сборке.
+  std::byte* memory_ = nullptr;
+  size_t memory_size_ = 0;
+  bool mapped_ = false;
   std::byte* data_ = nullptr; // выровненное начало внутри memory_
+  void allocate(const size_t bytes);
+  void release() noexcept;
 };
 
 // Template implementation

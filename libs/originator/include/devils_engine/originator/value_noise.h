@@ -28,6 +28,11 @@ inline double value_noise(const uint64_t seed, const std::array<double, 3>& p, c
   return lerp(bottom, top, fz);
 }
 
+// Граница модуля градиента value_noise: 3 / period. Градиент выпукл по значениям углов, поэтому его
+// максимум — на углах ±1; перебор всех 256 наборов с поиском по положению в клетке даёт 3 (на ребре
+// клетки, где одна ось берёт 2 * 1,5, а две другие — ноль). Грубая оценка по осям — 3 * sqrt(3).
+inline double value_noise_slope(const double period) { return 3.0 / period; }
+
 } // namespace devils_engine::originator
 
 #endif

@@ -1,0 +1,3 @@
+// Main cells whose outpost can reach this chunk (outpost/10_bounds.lua asserts the bound).
+{ name = station_keys, size = terrain_scope_capacity, format = [ key = ul2 ] }
+{ name = station_count, size = one, format = [ value = ui1 ] }

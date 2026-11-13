@@ -5,12 +5,15 @@ function M.ocean_weight(seed,x,z)
   local a,b,w=modules.biomes.sample(seed,x,z)
   return (a.kind==3 and 1-w or 0)+(b.kind==3 and w or 0)
 end
-function M.main(seed,x,z)
+-- Horizontal position of a main node: no biome sampling, for scopes that only need x and z.
+function M.main_xz(seed,x,z)
   local span=constants.main_spacing
   local jitter=constants.main_jitter
   assert(jitter>=0 and jitter<=0.3,'main_jitter outside proven local bound')
-  local px=(x+0.5+(random(seed,x,z,801)*2-1)*jitter)*span
-  local pz=(z+0.5+(random(seed,x,z,802)*2-1)*jitter)*span
+  return (x+0.5+(random(seed,x,z,801)*2-1)*jitter)*span,(z+0.5+(random(seed,x,z,802)*2-1)*jitter)*span
+end
+function M.main(seed,x,z)
+  local px,pz=M.main_xz(seed,x,z)
   local sea=M.ocean_weight(seed,px,pz)
   local offset=(random(seed,x,z,803)-0.5)*210
   offset=offset*(1-sea)+(-8+(random(seed,x,z,803)-0.5)*18)*sea

@@ -80,6 +80,7 @@ struct script_kind_state {
   // Имена слотов словаря на момент объявления вида (словарь потом может переехать: держать на него
   // указатель нельзя). Слоты объявляются раньше видов.
   std::vector<std::string> slot_names;
+  std::vector<double> slot_slopes;
   std::once_flag once;
   std::unique_ptr<column_program> program;
   std::vector<size_t> slot_of_column; // столбцы 3.. — слоты словаря
@@ -87,6 +88,14 @@ struct script_kind_state {
   size_t tag_scalar = 0;              // метка из поля строки: номер её скаляра
   // Досягаемость коробки выражением по полям строки (не число и не одно поле): считается на строку.
   std::unique_ptr<column_program> reach_program;
+  // Границы рамки (reach_right, reach_up, reach_end): число или выражение по полям строки.
+  struct frame_reach {
+    double fixed = 0.0;
+    std::unique_ptr<column_program> program;
+  };
+  std::array<frame_reach, 3> frame_reaches;
+  // Наклон: число или выражение по полям строки и границам градиента слотов (`<слот>_slope`).
+  frame_reach slope;
   struct compiled_part {
     std::unique_ptr<column_program> program;
     bool maximum = false;
@@ -107,6 +116,17 @@ struct script_kind_state {
         // Одно поле — тоже выражение: программа из имени читает скаляр.
         reach_program = column_program::compile(shape.name + ".reach", "{ " + shape.reach + " }",
                                                 std::span<const std::string>{}, scalars);
+      }
+      const std::array<const std::string*, 3> frame_texts{&shape.reach_right, &shape.reach_up, &shape.reach_end};
+      for (size_t k = 0; k < 3; ++k) {
+        if (frame_texts[k]->empty() || number_of(*frame_texts[k], frame_reaches[k].fixed)) continue;
+        frame_reaches[k].program = column_program::compile(shape.name + ".frame_reach", "{ " + *frame_texts[k] + " }",
+                                                           std::span<const std::string>{}, scalars);
+      }
+      if (!shape.slope.empty() && !number_of(shape.slope, slope.fixed)) {
+        auto names = scalars;
+        for (const auto& slot : slot_names) names.push_back(slot + "_slope");
+        slope.program = column_program::compile(shape.name + ".slope", "{ " + shape.slope + " }", std::span<const std::string>{}, names);
       }
       double fixed = 0.0;
       if (!shape.tag.empty() && !number_of(shape.tag, fixed)) {
@@ -134,7 +154,7 @@ void configure_script_field(shape_vocabulary& words, const chain_description& ch
   for (const auto& slot : chain.noise_slots) {
     words.add_slot(slot.name, [offset = slot.seed_add, period = slot.period](field_point& p) {
       return value_noise(p.seed() + offset, p.position(), period);
-    });
+    }, value_noise_slope(slot.period));
   }
   if (!chain.has_background) return;
   auto b = chain.background;
@@ -153,6 +173,8 @@ void configure_script_field(shape_vocabulary& words, const chain_description& ch
   }
   std::vector<std::pair<size_t, double>> terms;
   for (const auto& term : b.terms) terms.emplace_back(words.slot(term.slot), term.weight);
+  // Постоянный фон без скачка на вертикальных границах не наклонён; у остальных наклон не выводится.
+  if (terms.empty() && b.base == b.outside) words.set_background_slope(0.0, b.y_min, b.y_max);
   words.set_background(
     [b, terms = std::move(terms)](field_point& p, bool& stop) {
       if (p.position()[1] < b.y_min || p.position()[1] > b.y_max) {
@@ -170,7 +192,10 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
   state->shape = shape;
   state->background_upper = words.background_bound();
   state->max_can_skip = shape.role.empty() || shape.role == "natural";
-  for (size_t k = 0; k < words.slot_count(); ++k) state->slot_names.emplace_back(words.slot_name(k));
+  for (size_t k = 0; k < words.slot_count(); ++k) {
+    state->slot_names.emplace_back(words.slot_name(k));
+    state->slot_slopes.push_back(words.slot_slope(k));
+  }
 
   auto decode = [state](const generator_result& instance) {
     const chain_shape& s = state->shape;
@@ -230,6 +255,7 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
     shape_vocabulary::decoded out;
     out.boxes.reserve(count);
     column_workspace reach_workspace;
+    std::vector<double> slope_scalars;
     for (size_t i = 0; i < count; ++i) {
       const auto a = point_of(s.box_a, i);
       const auto b = s.box_b.empty() ? a : point_of(s.box_b, i);
@@ -242,7 +268,18 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
         utils::error{}("originator shape '{}': row {} has invalid reach {}", s.name, i, reach);
       }
       // Ящик сохраняет заданные углы; капсула дополнительно отсекает точки по расстоянию до оси.
-      if (s.box == "aabb") {
+      if (!s.frame_right.empty()) {
+        const std::span<const double> scalars(table->data.data() + i * table->stride, table->stride);
+        std::array<double, 3> extent{};
+        for (size_t k = 0; k < 3; ++k) {
+          extent[k] = state->frame_reaches[k].fixed;
+          if (state->frame_reaches[k].program) state->frame_reaches[k].program->run(1, std::span<const double* const>{}, scalars, &extent[k], reach_workspace);
+          if (!std::isfinite(extent[k]) || extent[k] < 0.0) {
+            utils::error{}("originator shape '{}': row {} has invalid frame reach {} (right, up, end: {})", s.name, i, extent[k], k);
+          }
+        }
+        out.boxes.push_back(field_box::framed(a, b, reach, point_of(s.frame_right, i), point_of(s.frame_up, i), extent[0], extent[1], extent[2]));
+      } else if (s.box == "aabb") {
         field_box box;
         for (size_t axis = 0; axis < 3; ++axis) {
           if (a[axis] > b[axis]) utils::error{}("originator shape '{}': inverted aabb on axis {}", s.name, axis);
@@ -252,6 +289,16 @@ void add_script_kind(shape_vocabulary& words, const chain_shape& shape) {
         out.boxes.push_back(box);
       } else {
         out.boxes.push_back(field_box::capsule(a, b, reach));
+      }
+      if (!s.slope.empty()) {
+        double slope = state->slope.fixed;
+        if (state->slope.program) {
+          slope_scalars.assign(table->data.begin() + ptrdiff_t(i * table->stride), table->data.begin() + ptrdiff_t((i + 1) * table->stride));
+          slope_scalars.insert(slope_scalars.end(), state->slot_slopes.begin(), state->slot_slopes.end());
+          state->slope.program->run(1, std::span<const double* const>{}, slope_scalars, &slope, reach_workspace);
+        }
+        if (!(slope >= 0.0)) utils::error{}("originator shape '{}': row {} has invalid slope {}", s.name, i, slope);
+        out.boxes.back().slope = slope;
       }
     }
     out.rows = table;

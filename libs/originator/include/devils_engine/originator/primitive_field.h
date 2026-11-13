@@ -114,9 +114,11 @@ public:
   using decode_function = std::function<decoded(const generator_result&)>;
   using value_function = std::function<shape_value(const void* rows, size_t row, field_point&)>;
 
-  size_t add_slot(std::string name, slot_function compute);
+  // slope — верхняя граница модуля градиента слота (единиц на метр); бесконечность — не известна.
+  size_t add_slot(std::string name, slot_function compute, double slope = std::numeric_limits<double>::infinity());
   size_t slot(const std::string_view& name) const;
   const slot_function& slot_at(const size_t index) const noexcept;
+  double slot_slope(const size_t index) const noexcept;
 
   // upper_bound — верхняя оценка фона везде: коробка влияния формы — там, где форма может быть ниже.
   // lower_bound — нижняя оценка фона: если она выше порога поверхности, область без форм — сплошная
@@ -126,6 +128,13 @@ public:
   const background_function& background() const noexcept;
   double background_bound() const noexcept;
   double background_lower() const noexcept;
+  // Наклон фона (field_box::slope) строго между y_min и y_max (за ними фон решает точку сам, и поле
+  // скачет); бесконечность — не известен.
+  void set_background_slope(double slope, double y_min = -std::numeric_limits<double>::infinity(),
+                            double y_max = std::numeric_limits<double>::infinity()) noexcept;
+  double background_slope() const noexcept;
+  double background_slope_low() const noexcept { return background_slope_low_; }
+  double background_slope_high() const noexcept { return background_slope_high_; }
 
   // Строки своего C++-типа в стёртый вид: так их отдаёт decode, и так же их собирает хост, у которого
   // строки уже есть объектом (см. field_term_rows).
@@ -177,6 +186,7 @@ private:
   struct named_slot {
     std::string name;
     slot_function compute;
+    double slope = std::numeric_limits<double>::infinity();
   };
   struct named_kind {
     std::string name;
@@ -191,6 +201,9 @@ private:
   background_function background_;
   double background_bound_ = 0.0;
   double background_lower_ = -std::numeric_limits<double>::infinity();
+  double background_slope_ = std::numeric_limits<double>::infinity();
+  double background_slope_low_ = -std::numeric_limits<double>::infinity();
+  double background_slope_high_ = std::numeric_limits<double>::infinity();
 };
 
 // Член поля: вид формы и экземпляры, из выходов которых он читает строки.
@@ -227,6 +240,13 @@ public:
     const field_vector& high() const noexcept;
     bool contains(const field_vector& p) const noexcept;
     size_t shape_count() const noexcept;
+    // Наибольший объявленный наклон поля в каждом блоке решётки count[0] x count[1] x count[2] блоков со
+    // стороной side от origin (x быстрее всех): наклон фона и форм, чьи коробки задевают блок. Блок вне
+    // области учитывает и формы вне её. Поле — сглаженные min/max фона и форм, поэтому его градиент не
+    // больше градиента формы, которая на него влияет. roles (если не пусто) — по блоку биты задевающих его
+    // ролей: 1 — заливка или вставка (поднимают поле, обрываются снизу), 2 — вырез (обрывается сверху).
+    void slopes(const field_vector& origin, double side, const std::array<int, 3>& count, std::span<double> out,
+                std::span<uint8_t> roles = {}) const;
 
   private:
     friend class primitive_field;
@@ -272,20 +292,21 @@ public:
                const double to, const double step, const bool want_rock, const uint32_t refine = 0) const;
 
 private:
-  struct shape {
-    uint32_t kind = 0;
-    uint32_t row = 0;
-    const void* rows = nullptr;
-    field_box box;
+  // Формы поля лежат наборами (shape_set) у источников; поле держит наборы и ссылается на их формы.
+  struct span {
+    const field_shape* first = nullptr;
+    size_t count = 0;
+    field_vector low{}, high{};
   };
   shape_value evaluate(std::span<const void* const> candidates, const field_vector& p, field_frame& workspace) const;
-  void add_rows(const size_t kind, shape_vocabulary::decoded decoded);
+  void add_set(std::shared_ptr<const shape_set> set);
   void collect(const field_vector& low, const field_vector& high, std::vector<const void*>& out) const;
 
   const shape_vocabulary* vocabulary_ = nullptr;
   uint64_t seed_ = 0;
-  std::vector<std::shared_ptr<const void>> sources_;
-  std::vector<shape> shapes_;
+  std::vector<std::shared_ptr<const shape_set>> sources_;
+  std::vector<span> spans_;
+  size_t shape_count_ = 0;
 };
 
 // Поле, объявленное у текущего исполняемого генератора цепочки: инструменты зовут его по имени.

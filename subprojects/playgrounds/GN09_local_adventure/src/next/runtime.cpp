@@ -28,15 +28,59 @@ runtime::runtime(const std::string& module, bool natural, bool caves_only) : gen
   setup.values.set_number("chunk_cells", chunk_cells);
   setup.values.set_number("biome_map_side", 33);
   for (const auto& [name, count] : std::initializer_list<std::pair<const char*, size_t>>{
-         {"cave_node_capacity", 96}, {"cave_edge_capacity", 192}, {"cave_chamber_capacity", 64}, {"cave_passage_capacity", 1024}, {"cave_probe_capacity", 2048}, {"cave_portal_capacity", 256}, {"cave_detail_capacity", 8192}, {"feature_capacity", 2048}, {"feature_probe_capacity", 131072}, {"feature_key_capacity", 256}, {"small_cave_scope_capacity", 512}, {"biome_map_side", 33}, {"biome_source_capacity", 49}, {"outpost_ray_capacity", 16}, {"outpost_proposal_capacity", 48}, {"outpost_probe_capacity", 2048}, {"terrain_capacity", 1024}, {"terrain_scope_capacity", 225}, {"network_node_capacity", 256}, {"network_edge_capacity", 256}, {"network_route_capacity", 64}, {"wall_capacity", 128}, {"one", 1}, {"shape_capacity", 32}, {"chunk_padded", chunk_cells + 3}, {"surface_capacity", 524288}, {"middle_capacity", chunk_cells * chunk_cells * chunk_cells}, {"structure_vertex_capacity", 65536}, {"prop_capacity", 128}, {"room_capacity", 32}, {"station_triangle_capacity", 4096}})
+         {"cave_node_capacity", 96}, {"cave_edge_capacity", 192}, {"cave_chamber_capacity", 64}, {"cave_passage_capacity", 1024}, {"cave_probe_capacity", 2048}, {"cave_portal_capacity", 256}, {"cave_detail_capacity", 8192}, {"feature_capacity", 2048}, {"feature_probe_capacity", 131072}, {"feature_key_capacity", 256}, {"small_cave_scope_capacity", 512}, {"biome_map_side", 33}, {"biome_source_capacity", 49}, {"outpost_ray_capacity", 16}, {"outpost_dock_capacity", 96}, {"outpost_body_capacity", 64}, {"outpost_probe_capacity", 32768}, {"terrain_capacity", 1024}, {"terrain_scope_capacity", 225}, {"network_node_capacity", 256}, {"network_edge_capacity", 256}, {"network_route_capacity", 64}, {"wall_capacity", 512}, {"station_detail_capacity", 4096}, {"station_opening_capacity", 1024}, {"one", 1}, {"shape_capacity", 32}, {"chunk_padded", chunk_cells + 3}, {"surface_capacity", 524288}, {"middle_capacity", chunk_cells * chunk_cells * chunk_cells}, {"structure_vertex_capacity", 65536}, {"prop_capacity", 128}, {"room_capacity", 96}, {"station_triangle_capacity", 12288}})
     setup.sizes.set(name, count);
   chain_ = std::make_unique<o::generator_chain>(loaded_.description, std::move(setup));
-  chain_->set_invoker_source(o::make_chain_invokers(*chain_, [](o::tool_registry& tools) {
-    tools.add_standard_tools();
-    tools.add_field_tools();
-    tools.add_volume_tools();
-    tools.add_graph_tools();
-  }));
+  auto source = o::make_chain_invokers(*chain_, [this](o::tool_registry& tools) {
+    o::tool_registry all;
+    all.add_standard_tools();
+    all.add_field_tools();
+    all.add_volume_tools();
+    all.add_graph_tools();
+    for (size_t i = 0; i < all.size(); ++i) {
+      auto description = all.at(i);
+      if (description.body) {
+        description.body = [this, body = description.body](const o::tool_call& call, const size_t begin, const size_t end) {
+          const auto began = std::chrono::steady_clock::now();
+          body(call, begin, end);
+          std::string name(call.step_name);
+          name += '/';
+          name += call.tool_name;
+          add_timing(name, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - began).count()));
+        };
+      }
+      tools.add(std::move(description));
+    }
+  });
+  chain_->set_invoker_source([this, source = std::move(source)](const o::chain_generator& generator, o::generation_context& context) -> o::step_invoker {
+    return [this, inner = source(generator, context), generator_name = generator.name](const o::step_context& step) {
+      const auto began = std::chrono::steady_clock::now();
+      inner(step);
+      add_timing(generator_name + "/" + std::string(step.name), uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - began).count()));
+    };
+  });
+}
+void runtime::add_timing(std::string_view name, uint64_t ns) {
+  std::lock_guard guard(timings_lock_);
+  auto found = timings_.find(name);
+  if (found == timings_.end()) found = timings_.emplace(std::string(name), timing{}).first;
+  ++found->second.calls;
+  found->second.ns += ns;
+}
+void runtime::reset_timings() {
+  std::lock_guard guard(timings_lock_);
+  timings_.clear();
+}
+void runtime::report_timings() const {
+  std::vector<std::pair<std::string, timing>> rows;
+  {
+    std::lock_guard guard(timings_lock_);
+    rows.assign(timings_.begin(), timings_.end());
+  }
+  std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second.ns > b.second.ns; });
+  std::cout << "Step and tool wall time (total s, calls, ms per call):\n";
+  for (const auto& [name, t] : rows)
+    if (t.ns >= 10'000'000) std::cout << "  " << name << ": " << double(t.ns) / 1e9 << " s, " << t.calls << ", " << double(t.ns) / 1e6 / double(t.calls) << " ms\n";
 }
 std::array<double, 3> runtime::start(uint64_t seed, int64_t x, int64_t z) {
   auto node = chain_->get("network", seed, key(x, z))->field("network_node", "centre");
