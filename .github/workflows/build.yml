@@ -14,6 +14,9 @@ env:
   # scripts/ is not committed yet; these three tests run Python scripts from it.
   UNTRACKED_SCRIPT_TESTS: "^(module_profile_migration|test_build_dependencies_contract|project_task_ids_contract)$"
 
+# Every step tees its output into ci-logs/; on failure report_errors.py turns the error lines into
+# annotations, which (unlike job logs) can be read without signing in.
+
 jobs:
   linux:
     # Ubuntu 26.04 LTS in a container: GCC 15, GLFW 3.4 and Lua 5.4 from the distribution.
@@ -21,6 +24,9 @@ jobs:
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
     timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install system dependencies
         env:
@@ -43,22 +49,27 @@ jobs:
           restore-keys: ccache-linux-
 
       - name: Configure
-        run: >
-          cmake -S . -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: |
+          mkdir -p ci-logs
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            2>&1 | tee ci-logs/configure.log
 
       - name: Build
         run: |
           ccache --max-size=3G
-          cmake --build build --parallel 4
+          cmake --build build --parallel 4 -- -k 0 2>&1 | tee ci-logs/build.log
           ccache --show-stats
 
       - name: Test
         # lavapipe (mesa-vulkan-drivers) is the Vulkan device; xvfb is the display for GLFW.
-        run: >
-          xvfb-run -a ctest --test-dir build -L devils_engine
-          -E "$UNTRACKED_SCRIPT_TESTS" --output-on-failure --parallel 2
+        run: |
+          xvfb-run -a ctest --test-dir build -L devils_engine \
+            -E "$UNTRACKED_SCRIPT_TESTS" --output-on-failure --parallel 2 2>&1 | tee ci-logs/test.log
+
+      - name: Report errors
+        if: failure()
+        run: python3 .github/scripts/report_errors.py ci-logs/configure.log ci-logs/build.log ci-logs/test.log
 
   windows:
     runs-on: windows-2025
@@ -67,6 +78,9 @@ jobs:
       VCPKG_COMMIT: 4702e381dbbd9b54d3f7e1eb565cd8981c1814cd
       VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
       VCPKG_CACHE: ${{ github.workspace }}\..\vcpkg-cache
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
 
@@ -78,7 +92,6 @@ jobs:
           restore-keys: vcpkg-windows-${{ env.VCPKG_COMMIT }}-
 
       - name: Bootstrap vcpkg
-        shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           git -C "$env:VCPKG_ROOT" checkout $env:VCPKG_COMMIT
@@ -87,17 +100,28 @@ jobs:
           "VCPKG_BINARY_SOURCES=clear;files,$env:VCPKG_CACHE,readwrite" >> $env:GITHUB_ENV
 
       - name: Configure
-        shell: pwsh
-        run: >
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-          "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+        run: |
+          New-Item -ItemType Directory -Force ci-logs | Out-Null
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows 2>&1 | Tee-Object -FilePath ci-logs\configure.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Build
-        run: cmake --build build --config Release --parallel 4
+        run: |
+          cmake --build build --config Release --parallel 4 2>&1 | Tee-Object -FilePath ci-logs\build.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Test
-        shell: pwsh
-        run: >
-          ctest --test-dir build -C Release -L devils_engine
-          -E "$env:UNTRACKED_SCRIPT_TESTS" --output-on-failure --parallel 2
+        run: |
+          ctest --test-dir build -C Release -L devils_engine -E "$env:UNTRACKED_SCRIPT_TESTS" `
+            --output-on-failure --parallel 2 2>&1 | Tee-Object -FilePath ci-logs\test.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Report errors
+        if: failure()
+        run: |
+          $logs = @("ci-logs\configure.log", "ci-logs\build.log", "ci-logs\test.log")
+          # vcpkg writes the failing port's own logs under buildtrees; include them too.
+          $logs += Get-ChildItem -Path "$env:VCPKG_ROOT\buildtrees" -Recurse -Filter "*-err.log" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          python .github/scripts/report_errors.py @logs
