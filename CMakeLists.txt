@@ -574,6 +574,12 @@ FetchContent_MakeAvailable(freetype)
 
 add_library(Freetype::Freetype ALIAS freetype-interface)
 
+# make global 23 later
+if (MSVC AND NOT DEFINED CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+endif()
+
 FetchContent_MakeAvailable(absl)
 FetchContent_MakeAvailable(protobuf)
 
