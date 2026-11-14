@@ -1,3 +1,4 @@
+#include "devils_engine/utils/numeric.h"
 #include <memory>
 
 #include <devils_engine/simul/window_runtime.h>

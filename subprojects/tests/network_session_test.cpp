@@ -251,10 +251,6 @@ TEST_CASE("network handshake refuses compatibility before authenticating identit
   local.content_root[0] = 13;
 
   auto incompatible = local;
-  ++incompatible.handshake_format;
-  CHECK(net::compare_session_compatibility(local, incompatible) ==
-        net::session_compatibility_status::handshake_format_mismatch);
-  incompatible = local;
   ++incompatible.protocol_version;
   CHECK(net::compare_session_compatibility(local, incompatible) ==
         net::session_compatibility_status::protocol_version_mismatch);

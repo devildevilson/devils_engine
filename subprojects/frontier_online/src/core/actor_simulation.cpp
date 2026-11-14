@@ -1439,6 +1439,19 @@ bool actor_world_slice::enqueue_player_intent(act::intent intent) {
   return true;
 }
 
+bool actor_world_slice::enqueue_canonical_intent(act::intent intent) {
+  if (!world_.exists(player_entity_) || intent.kind == act::intent_kind::none) {
+    return false;
+  }
+  auto* queue = world_.get<player_intent_queue>(player_entity_);
+  if (queue == nullptr) {
+    return false;
+  }
+  intent.actor.id = player_entity_;
+  queue->pending.push_back(intent);
+  return true;
+}
+
 uint32_t actor_world_slice::apply_player_intents() {
   auto* queue = world_.get<player_intent_queue>(player_entity_);
   if (queue == nullptr) {

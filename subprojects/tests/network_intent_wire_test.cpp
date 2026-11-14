@@ -510,10 +510,62 @@ TEST_CASE("network intent tick reconstruction survives the sixteen-bit wrap") {
   SUBCASE("a delta reaching before the first tick has no answer") {
     CHECK_FALSE(net::intent_absolute_tick(2, 2, 5).has_value());
   }
+
+  SUBCASE("tick 0 is not a step and cannot be targeted") {
+    CHECK_FALSE(net::intent_absolute_tick(2, 2, 2).has_value());
+    CHECK_FALSE(net::intent_absolute_tick(0, 0, 0).has_value());
+    CHECK(net::intent_absolute_tick(2, 2, 1) == std::optional<uint64_t>(1));
+  }
 }
 
 TEST_CASE("network input sequence reconstructs across the sixteen-bit wrap") {
   CHECK(net::widen_input_sequence_low16(0x1'0005, 0xffff) == 0xffff);
   CHECK(net::widen_input_sequence_low16(0xffff, 0) == 0x1'0000);
   CHECK(net::widen_input_sequence_low16(0x1'fff0, 3) == 0x2'0003);
+}
+
+TEST_CASE("network intent with absolute cells carries the full key and keeps delta layouts unchanged") {
+  constexpr uint8_t kind_place = 5;
+  const std::array<net::intent_kind_layout, 2> declared{
+    net::intent_kind_layout{kind_move, {2, false, false, false}},
+    net::intent_kind_layout{kind_place, {2, false, false, false, true}}};
+  net::intent_layout_table layouts;
+  REQUIRE(layouts.assign(declared) == net::intent_wire_status::ok);
+  CHECK(layouts.fields(kind_move).wire_bytes() == 9);
+  CHECK(layouts.fields(kind_place).wire_bytes() == 15);
+  const auto registry = make_registry();
+  auto wire = prepared();
+  auto decoded = prepared_intents(4);
+
+  // A point far outside any int8 delta of the origin.
+  const auto x = net::split_axis(axis, 70000.25), y = net::split_axis(axis, -123456.5);
+  REQUIRE_FALSE(x.clamped);
+  REQUIRE_FALSE(y.clamped);
+  REQUIRE(net::relative_cell(0, x.key).out_of_range);
+  net::intent place;
+  place.kind = kind_place;
+  place.sequence_low = 9;
+  place.cell_key = {x.key, y.key, 0};
+  place.code = {uint16_t(x.code), uint16_t(y.code), 0};
+  const std::array<net::intent, 1> sent{place};
+  REQUIRE(net::try_encode_intent_batch(40, sent, layouts, registry, wire) ==
+          net::intent_wire_status::ok);
+  REQUIRE(wire.size() == net::intent_batch_header_bytes + 15);
+  // The key is little-endian int32 right after packed kind and sequence.
+  CHECK(wire[6] == std::byte(uint8_t(uint32_t(x.key))));
+  CHECK(wire[9] == std::byte(uint8_t(uint32_t(x.key) >> 24)));
+
+  net::intent_batch_view view;
+  REQUIRE(net::try_decode_intent_batch(wire, layouts, registry, view, decoded) ==
+          net::intent_wire_status::ok);
+  REQUIRE(decoded.size() == 1);
+  CHECK(decoded[0] == place);
+  CHECK(decoded[0].cell_delta == std::array<int8_t, 3>{0, 0, 0});
+  CHECK(net::join_axis(axis, decoded[0].cell_key[0], decoded[0].code[0]) == 70000.25);
+  CHECK(net::join_axis(axis, decoded[0].cell_key[1], decoded[0].code[1]) == -123456.5);
+
+  // Truncation inside the wider axis is refused, never read as a short delta.
+  for (size_t length = net::intent_batch_header_bytes + 1; length < wire.size(); ++length)
+    CHECK(net::try_decode_intent_batch(std::span(wire).first(length), layouts, registry, view,
+                                       decoded) == net::intent_wire_status::truncated);
 }

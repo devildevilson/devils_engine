@@ -25,6 +25,7 @@
 #include <devils_engine/network/state_digest.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/simulation_time.h>
+#include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/timeline.h>
 #include <spdlog/spdlog.h>
 
@@ -34,6 +35,7 @@
 #include "net/actor_component_wire.h"
 #include "net/authority.h"
 #include "net/follower.h"
+#include "net/player_intent_wire.h"
 
 using namespace devils_engine;
 namespace fo = frontier_online::core;
@@ -226,6 +228,87 @@ void check_join_confirmation_contract() {
   CHECK(decoded.session == expected.session && decoded.logical_peer == expected.logical_peer);
   CHECK(!fnet::encode(fnet::join_confirmation{17, 0, 12, 99}, bytes));
   CHECK(bytes.empty());
+
+  const fnet::catchup_marker marker{17, 3, 12};
+  CHECK(fnet::encode(marker, bytes));
+  CHECK(bytes.size() == 25);
+  fnet::catchup_marker observed;
+  CHECK(fnet::decode(bytes, observed));
+  CHECK(observed.session == marker.session && observed.logical_peer == marker.logical_peer &&
+        observed.tick == marker.tick);
+  for (size_t length = 0; length < bytes.size(); ++length)
+    CHECK(!fnet::decode(std::span(bytes).first(length), observed));
+  CHECK(!fnet::encode(fnet::catchup_marker{17, 3, 0}, bytes));
+  CHECK(bytes.empty());
+}
+
+// Байты протокола v4: завершение сессии, payload канонической записи, новый статус отчёта,
+// размер предложения с абсолютными клетками.
+void check_protocol_v4_contract() {
+  std::vector<std::byte> bytes;
+  CHECK(fnet::encode(fnet::session_terminated{fnet::termination_reason::history_exhausted}, bytes));
+  CHECK(bytes.size() == 2);
+  CHECK(bytes[0] == std::byte{7} && bytes[1] == std::byte{3});
+  fnet::session_terminated notice;
+  CHECK(fnet::decode(bytes, notice));
+  CHECK(notice.reason == fnet::termination_reason::history_exhausted);
+  CHECK(!fnet::decode(std::span(bytes).first(1), notice));
+  auto forged = bytes;
+  forged[1] = std::byte{0};
+  CHECK(!fnet::decode(forged, notice));
+  forged[1] = std::byte{fnet::termination_reason_max + 1};
+  CHECK(!fnet::decode(forged, notice));
+  forged = bytes;
+  forged.push_back(std::byte{0});
+  CHECK(!fnet::decode(forged, notice));
+  CHECK(!fnet::encode(fnet::session_terminated{fnet::termination_reason(0)}, bytes));
+  CHECK(bytes.empty());
+
+  CHECK(fnet::encode(fnet::canonical_food_action{13.0, -2.5}, bytes));
+  CHECK(bytes.size() == fnet::canonical_food_action_bytes);
+  fnet::canonical_food_action action;
+  CHECK(fnet::decode(bytes, action));
+  CHECK(action.x == 13.0 && action.y == -2.5);
+  for (size_t length = 0; length < bytes.size(); ++length)
+    CHECK(!fnet::decode(std::span(bytes).first(length), action));
+  CHECK(!fnet::encode(fnet::canonical_food_action{std::numeric_limits<double>::infinity(), 0.0},
+                      bytes));
+  forged.assign(fnet::canonical_food_action_bytes, std::byte{0});
+  CHECK(!fnet::decode(forged, action)); // нулевой вид и чужой префаб
+
+  fnet::join_report report;
+  report.status = fnet::join_status::world_declaration_malformed;
+  CHECK(fnet::encode(report, bytes));
+  fnet::join_report decoded;
+  CHECK(fnet::decode(bytes, decoded));
+  CHECK(decoded.status == fnet::join_status::world_declaration_malformed);
+  bytes[1] = std::byte{8};
+  CHECK(!fnet::decode(bytes, decoded));
+
+  // spawn_food с абсолютными клетками: 3 байта заголовка пакета + 15 байт предложения.
+  const auto layouts = fnet::player_intent_layouts();
+  CHECK(layouts.fields(fnet::spawn_food_kind).wire_bytes() == 15);
+  network::intent proposal;
+  devils_engine::act::intent far;
+  far.kind = devils_engine::act::intent_kind::spawn_prefab;
+  far.payload.spawn.prefab = utils::string_hash("food");
+  far.payload.spawn.target = {100000.5, -70000.25, 0.0};
+  CHECK(fnet::encode_player_intent(far, 1, 0, proposal));
+  std::vector<std::byte> batch;
+  batch.reserve(network::intent_batch_max_bytes);
+  const network::id_index_table registry;
+  CHECK(network::try_encode_intent_batch(9, std::span(&proposal, 1), layouts, registry, batch) ==
+        network::intent_wire_status::ok);
+  CHECK(batch.size() == 18);
+  devils_engine::act::intent restored;
+  CHECK(fnet::decode_player_intent(proposal, restored));
+  CHECK(restored.payload.spawn.target.x == 100000.5);
+  CHECK(restored.payload.spawn.target.y == -70000.25);
+  CHECK(fnet::protocol_version == 4);
+  // Замороженное значение: отпечаток объявления меняется только вместе с ревизией схемы.
+  // murmur3_32 по {revision 2, kind 1, axes 2, absolute 1, shift 6, fraction 10,
+  // payload revision 1, payload kind 1, payload bytes 25}.
+  CHECK(fnet::player_intent_schema_fingerprint == 0x3fd8afa0u);
 }
 
 // Один прогон присоединения. Мир авторитета тикает всё это время: присоединяющийся получает
@@ -301,6 +384,7 @@ int main() {
   check_actor_component_wire_contract();
   check_checkpoint_transfer_contract();
   check_join_confirmation_contract();
+  check_protocol_v4_contract();
 
   // ДВА НЕЗАВИСИМЫХ ЭКЗЕМПЛЯРА содержимого — как две установки. Общий объект скрыл бы ровно ту
   // беду, ради которой считается отпечаток.

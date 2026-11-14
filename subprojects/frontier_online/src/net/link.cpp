@@ -1,5 +1,6 @@
 #include "net/link.h"
 
+#include <algorithm>
 #include <charconv>
 #include <steam/isteamnetworkingutils.h>
 #include <steam/steamnetworkingsockets.h>
@@ -13,12 +14,20 @@ namespace utils = devils_engine::utils;
 
 namespace {
 
-std::array<network::gns_lane_config, 3> declared_lanes(const size_t bulk_slots) {
+// Слоты отправки у адаптера заведены на ПОЛОСУ транспорта, а не на соединение: все участники
+// делят один пул. Поэтому управляющая полоса получает по 32 слота на каждое соединение, которое
+// транспорт может держать, — иначе bundles одного отстающего занимают места, нужные чужому
+// отказу или подтверждению.
+inline constexpr size_t control_slots_per_peer = 32;
+
+std::array<network::gns_lane_config, 3> declared_lanes(const size_t bulk_slots,
+                                                       const size_t connections) {
   std::array<network::gns_lane_config, 3> lanes{};
+  const size_t control_slots = control_slots_per_peer * connections;
   // Бюджет в байтах не может быть больше, чем удержат объявленные слоты: слоты И ЕСТЬ бюджет,
   // и просить байт больше, чем слотов, — противоречие, которое адаптер отвергает при постройке.
-  lanes[lane_control] = {network::gns_delivery::reliable_ordered, 0, 1, 32, control_message_bytes,
-                         32 * control_message_bytes};
+  lanes[lane_control] = {network::gns_delivery::reliable_ordered, 0, 1, control_slots,
+                         control_message_bytes, control_slots * control_message_bytes};
   lanes[lane_bulk] = {network::gns_delivery::reliable_ordered, 2, 1, bulk_slots,
                       chunk_message_bytes, bulk_slots * chunk_message_bytes};
   // Ненадёжно-последовательные: для этого класса восстановление — это избыточность в окне тиков,
@@ -107,7 +116,7 @@ struct net_link::state {
   std::vector<std::byte> scratch;
 
   state(network::gns_dispatcher& dispatcher, const size_t peers)
-    : lanes(declared_lanes(256)),
+    : lanes(declared_lanes(256, peers + 2)),
       transport(dispatcher,
                 network::gns_transport_config{
                   // На один слот больше объявленного числа участников: переподключение
@@ -227,20 +236,35 @@ send_result net_link::send(const network::gns_peer peer, const uint16_t lane,
 
 size_t net_link::receive_batch(void* consumer,
                                void (*invoke)(void*, network::gns_peer, uint16_t,
-                                              std::span<const std::byte>)) {
+                                              std::span<const std::byte>),
+                               const size_t max_messages) {
   size_t total = 0;
-  for (unsigned round = 0; round < 8; ++round) {
+  while (total < max_messages) {
     std::array<network::gns_received_message, 8> input;
-    const auto result = state_->transport.receive(input);
-    if (result.status != network::gns_status::ok) {
-      utils::error{}("frontier_online net: receive refused, status {}", unsigned(result.status));
-    }
+    const size_t want = std::min(input.size(), max_messages - total);
+    const auto result = state_->transport.receive(std::span(input).first(want));
     superseded_ += result.superseded;
-    if (result.count == 0) break;
+    // Полученное обрабатывается ВСЕГДА, даже вместе с не-ok: адаптер обещает, что `count`
+    // сообщений уже арендованы, и бросить их значило бы потерять надёжные байты.
     for (size_t i = 0; i < result.count; ++i) {
       invoke(consumer, input[i].peer(), input[i].lane(), input[i].payload());
       ++total;
     }
+    switch (result.status) {
+      case network::gns_status::ok:
+        break;
+      case network::gns_status::count_budget_exceeded:
+        return total; // аренды заняты: обратное давление, следующий круг
+      case network::gns_status::invalid_message:
+        // Удалённая сторона нарушила контракт полос; адаптер уже закрыл ЕЁ соединение. Это
+        // поведение участника, а не повод останавливать процесс: о закрытии сообщит poll.
+        ++invalid_closed_;
+        continue;
+      default:
+        utils::error{}("frontier_online net: receive refused, status {}",
+                       unsigned(result.status));
+    }
+    if (result.count < want) break;
   }
   return total;
 }

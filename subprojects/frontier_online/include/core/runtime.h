@@ -32,8 +32,6 @@ struct runtime_bootstrap
     persisted_settings.window.fullscreen = settings.window.fullscreen;
     persisted_settings.window.monitor = settings.window.monitor;
     persisted_settings.sound = settings.sound;
-    persisted_settings.metrics = settings.metrics;
-    persisted_settings.logging = settings.logging;
     persisted_settings.ui = settings.ui;
   }
 
@@ -43,8 +41,6 @@ struct runtime_bootstrap
     settings.window.fullscreen = persisted_settings.window.fullscreen;
     settings.window.monitor = persisted_settings.window.monitor;
     settings.sound = persisted_settings.sound;
-    settings.metrics = persisted_settings.metrics;
-    settings.logging = persisted_settings.logging;
     settings.ui = persisted_settings.ui;
   }
 };

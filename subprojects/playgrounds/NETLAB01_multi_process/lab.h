@@ -608,7 +608,6 @@ struct verifier {
 // that better with a value a test can perturb on purpose.
 inline net::session_compatibility lab_compatibility(const uint32_t content_salt = 0) {
   net::session_compatibility value;
-  value.handshake_format = 1;
   value.protocol_version = 1;
   value.state_schema_fingerprint = lab_schema::schema_fingerprint();
   value.intent_schema_fingerprint = lab_registry().fingerprint();
@@ -628,7 +627,6 @@ inline net::session_compatibility lab_compatibility(const uint32_t content_salt 
 
 enum class lab_compatibility_variant : uint8_t {
   compatible,
-  handshake_format,
   protocol,
   content,
   state_schema,
@@ -641,7 +639,6 @@ inline net::session_compatibility lab_compatibility(
   auto value = lab_compatibility();
   switch (variant) {
     case lab_compatibility_variant::compatible: break;
-    case lab_compatibility_variant::handshake_format: ++value.handshake_format; break;
     case lab_compatibility_variant::protocol: ++value.protocol_version; break;
     case lab_compatibility_variant::content: value.content_root[0] ^= uint8_t(1); break;
     case lab_compatibility_variant::state_schema: ++value.state_schema_fingerprint; break;
@@ -653,8 +650,6 @@ inline net::session_compatibility lab_compatibility(
 
 inline net::session_refusal_reason refusal_for(const lab_compatibility_variant variant) noexcept {
   switch (variant) {
-    case lab_compatibility_variant::handshake_format:
-      return net::session_refusal_reason::handshake_format_mismatch;
     case lab_compatibility_variant::protocol:
       return net::session_refusal_reason::protocol_version_mismatch;
     case lab_compatibility_variant::content:

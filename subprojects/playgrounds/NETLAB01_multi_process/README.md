@@ -66,17 +66,20 @@ complete harness's own 125 checks are fixed.
 ## NET-LAB-02 compatibility matrix
 
 The same executable now runs the incompatible half of the build exchange over real UDP,
-not only through the in-memory handshake test. Six followers independently perturb one
+not only through the in-memory handshake test. Five followers independently perturb one
 field and each is refused with its exact wire reason:
 
 | Perturbed field | Refusal |
 | --- | --- |
-| handshake format | `handshake_format_mismatch` |
 | protocol version | `protocol_version_mismatch` |
 | content root | `content_mismatch` |
 | state schema | `state_schema_mismatch` |
 | intent schema | `intent_schema_mismatch` |
 | numeric profile | `numeric_profile_mismatch` |
+
+The handshake-format field was removed with session envelope v4 (2026-11-14): the envelope version
+already names the handshake grammar, and a build speaking another grammar is refused by the envelope
+case (`unsupported_wire_version`) below.
 
 Every refusal process asserts `tick=0`, no applied bundle, no issued challenge and no
 credential admission check. The refusal therefore precedes both authentication and the

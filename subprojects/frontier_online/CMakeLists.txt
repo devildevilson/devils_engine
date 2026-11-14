@@ -86,17 +86,26 @@ if (TARGET devils_engine::network_gns)
     include/net/player_intent_wire.h
     include/net/link.h
     include/net/protocol.h
+    include/net/canonical_action.h
     include/net/authority.h
     include/net/follower.h
+    include/net/live_runtime.h
+    include/net/secure_random.h
   )
   set(NET_SRC_LIST
     src/net/link.cpp
     src/net/protocol.cpp
     src/net/authority.cpp
     src/net/follower.cpp
+    src/net/live_runtime.cpp
+    src/net/secure_random.cpp
   )
   add_library(frontier_net STATIC ${NET_SRC_LIST} ${NET_HDR_LIST})
-  target_link_libraries(frontier_net PUBLIC frontier_causal devils_engine::network_gns)
+  # nonce и идентификатор сессии — из CSPRNG OpenSSL. GNS уже собран с ним, но зависимость
+  # объявляется здесь явно: транзитивная линковка через чужую цель — не контракт.
+  find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+  target_link_libraries(frontier_net PUBLIC frontier_causal devils_engine::network_gns
+                        PRIVATE OpenSSL::Crypto)
   target_include_directories(frontier_net PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 endif()
@@ -170,6 +179,32 @@ target_compile_definitions(frontier_online_server PRIVATE
   FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
 set_target_properties(frontier_online_server PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+if (UNIX AND NOT APPLE)
+  target_link_options(frontier_online_server PRIVATE -Wl,--as-needed)
+endif()
+# On this build host, libc injects an x86-64-v3 *needed* ELF note even into
+# baseline code. NETLAB01 measured the same issue and drops that note for its
+# baseline artifact. Keep the AVX build's note: that build really requires AVX.
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64" AND
+    DEVILS_ENGINE_ARCH STREQUAL "OFF" AND CMAKE_OBJCOPY)
+  add_custom_command(TARGET frontier_online_server POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} --remove-section=.note.gnu.property
+            $<TARGET_FILE:frontier_online_server>
+    COMMENT "Dropping the build host's inherited x86 ISA-level marker")
+endif()
+
+# A headless package is deliberately separate from the graphical client's resource copy.
+# Both Linux roles use this one executable; the Windows build of the same target supplies
+# the third machine's executable. The packaging script starts from an empty staging tree.
+add_custom_target(frontier_online_headless_package
+  COMMAND ${CMAKE_COMMAND}
+    "-DBINARY=$<TARGET_FILE:frontier_online_server>"
+    "-DRESOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/resources/modules"
+    "-DPACKAGE_DIR=${PROJECT_OUTPUT_DIRECTORY}/headless-package"
+    "-DRUNTIME_DLLS=$<JOIN:$<TARGET_RUNTIME_DLLS:frontier_online_server>,|>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_headless.cmake"
+  DEPENDS frontier_online_server
+  VERBATIM)
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 # Регрессионный минимум форка: два смока, охраняющие ДЕТЕРМИНИЗМ, на котором стоит вся сетевая
@@ -212,6 +247,14 @@ if (TARGET frontier_net)
     FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
   set_target_properties(frontier_live_tick_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
+  # Враждебные участники и замолчавший авторитет: слоты, сроки, нарушения, квоты, история.
+  add_executable(frontier_hardening_smoke hardening_smoke.cpp)
+  target_link_libraries(frontier_hardening_smoke frontier_net)
+  target_compile_definitions(frontier_hardening_smoke PRIVATE
+    FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
+  set_target_properties(frontier_hardening_smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 endif()
 
 add_executable(frontier_time_smoke time_smoke.cpp src/core/actor_batch.cpp ${FRONTIER_BRAIN_TEST_SOURCES})
@@ -238,16 +281,16 @@ set_target_properties(frontier_tick_smoke PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME frontier_resume_smoke COMMAND frontier_resume_smoke)
+  devils_add_test(NAME frontier_resume_smoke COMMAND frontier_resume_smoke)
   set_tests_properties(frontier_resume_smoke PROPERTIES LABELS devils_engine)
-  add_test(NAME frontier_time_smoke COMMAND frontier_time_smoke)
+  devils_add_test(NAME frontier_time_smoke COMMAND frontier_time_smoke)
   set_tests_properties(frontier_time_smoke PROPERTIES LABELS devils_engine)
-  add_test(NAME frontier_tick_smoke COMMAND frontier_tick_smoke)
+  devils_add_test(NAME frontier_tick_smoke COMMAND frontier_tick_smoke)
   set_tests_properties(frontier_tick_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
   # Авторитет обязан дойти до объявленного тика и напечатать корень. Он же — проверка раскола:
   # цель линкуется без графических библиотек, поэтому её падение здесь означает, что причинное
   # ядро снова чего-то от презентации захотело.
-  add_test(NAME frontier_server_headless COMMAND frontier_online_server --ticks=120 --verify)
+  devils_add_test(NAME frontier_server_headless COMMAND frontier_online_server --ticks=120 --verify)
   set_tests_properties(frontier_server_headless PROPERTIES LABELS devils_engine)
   # Два одинаковых прогона обязаны дать один причинный корень. Формулировка нарочно слабая:
   # именно она падала, пока полоса scratch выбиралась по потоку ОС.
@@ -255,19 +298,34 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   # выродилась ли в один класс. Первые два — контракт «чанк = функция (зерно, ключ)», без которого
   # нельзя считать землю на обеих сторонах вместо того, чтобы гонять её по сети. Третье ловит
   # сорванную калибровку: генератор отработал, а мира нет.
-  add_test(NAME frontier_terrain COMMAND frontier_online_server --terrain=8 --world-seed=20260911)
+  devils_add_test(NAME frontier_terrain COMMAND frontier_online_server --terrain=8 --world-seed=20260911)
   set_tests_properties(frontier_terrain PROPERTIES LABELS devils_engine)
   # Присоединение: настоящий транспорт, настоящее рукопожатие, сверка причинного корня двух
   # независимо загруженных миров — и отказ С ПРИЧИНОЙ на двух разных полях совместимости.
   if (TARGET frontier_join_smoke)
-    add_test(NAME frontier_join_smoke COMMAND frontier_join_smoke)
+    devils_add_test(NAME frontier_join_smoke COMMAND frontier_join_smoke)
     set_tests_properties(frontier_join_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
-    add_test(NAME frontier_live_tick_smoke COMMAND frontier_live_tick_smoke)
+    devils_add_test(NAME frontier_live_tick_smoke COMMAND frontier_live_tick_smoke)
     set_tests_properties(frontier_live_tick_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
-    add_test(NAME frontier_live_tick_1024_smoke COMMAND frontier_live_tick_smoke --actors=1024)
+    devils_add_test(NAME frontier_live_tick_1024_smoke COMMAND frontier_live_tick_smoke --actors=1024)
     set_tests_properties(frontier_live_tick_1024_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
+    devils_add_test(NAME frontier_hardening_smoke COMMAND frontier_hardening_smoke)
+    set_tests_properties(frontier_hardening_smoke PROPERTIES LABELS devils_engine TIMEOUT 180)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if (Python3_Interpreter_FOUND)
+      devils_add_test(NAME frontier_live_process_smoke
+        COMMAND ${Python3_EXECUTABLE}
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_live_process_smoke.py"
+          $<TARGET_FILE:frontier_online_server>)
+      set_tests_properties(frontier_live_process_smoke PROPERTIES LABELS devils_engine TIMEOUT 45)
+      devils_add_test(NAME frontier_live_process_1024_smoke
+        COMMAND ${Python3_EXECUTABLE}
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_live_process_smoke.py"
+          $<TARGET_FILE:frontier_online_server> 1024)
+      set_tests_properties(frontier_live_process_1024_smoke PROPERTIES LABELS devils_engine TIMEOUT 90)
+    endif()
   endif()
-  add_test(NAME frontier_server_reproducible
+  devils_add_test(NAME frontier_server_reproducible
     COMMAND ${CMAKE_COMMAND}
       -DFRONTIER_SERVER=$<TARGET_FILE:frontier_online_server>
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_reproducible.cmake")
@@ -291,6 +349,8 @@ endif()
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/ui
+  COMMAND ${CMAKE_COMMAND} -E rm -f
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/config/app.tavl
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     ${PROJECT_OUTPUT_DIRECTORY}/resources/modules/core/ui_states
   COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -13,7 +13,8 @@
 - `atomic_file.h` — same-directory transaction; не заменять проверенную atomic publication на
   запись прямо в destination. `fileio.h` сохраняет отдельную роль обычного I/O.
 - `simulation_time.h`, `timeline.h` — integer gameplay time; presentation/wall time не источник
-  authoritative ticks. `prng.h`/`shared.h` — единые hash/random primitives.
+  authoritative ticks. Шаги симуляции нумеруются с 1: `simulation_now() == 0` значит «ни одного
+  шага ещё не было» (начальное состояние), и ни событие, ни действие не адресует тик 0. `prng.h`/`shared.h` — единые hash/random primitives.
 - `geometry.h`, `kd_tree.h`, `grid.h`, `aabb_tree.h`: Vec — template-параметр; point stores и box store
   имеют разные правила попадания. Conservative overlap допускает лишние посещения, не пропуски.
 - `thread/mailbox.h`, `spsc_queue.h`, `byte_ring.h`, `payload_channel.h` — разные delivery/ownership

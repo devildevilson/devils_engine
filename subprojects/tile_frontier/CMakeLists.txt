@@ -214,15 +214,15 @@ set_target_properties(tile_frontier_time_smoke PROPERTIES
 # Регистрация в ctest под меткой devils_engine (ctest -L devils_engine). Плоский main → код
 # возврата 0/1 = pass/fail, без doctest-дискавери. Метка ставит их в один прогон с остальными.
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_test(NAME tile_frontier_snapshot_smoke COMMAND tile_frontier_snapshot_smoke)
+  devils_add_test(NAME tile_frontier_snapshot_smoke COMMAND tile_frontier_snapshot_smoke)
   set_tests_properties(tile_frontier_snapshot_smoke PROPERTIES LABELS devils_engine)
-  add_test(NAME tile_frontier_resume_smoke COMMAND tile_frontier_resume_smoke)
+  devils_add_test(NAME tile_frontier_resume_smoke COMMAND tile_frontier_resume_smoke)
   set_tests_properties(tile_frontier_resume_smoke PROPERTIES LABELS devils_engine)
-  add_test(NAME tile_frontier_checkpoint_audit COMMAND tile_frontier_checkpoint_audit)
+  devils_add_test(NAME tile_frontier_checkpoint_audit COMMAND tile_frontier_checkpoint_audit)
   set_tests_properties(tile_frontier_checkpoint_audit PROPERTIES LABELS devils_engine)
-  add_test(NAME tile_frontier_config_effect_smoke COMMAND tile_frontier_config_effect_smoke)
+  devils_add_test(NAME tile_frontier_config_effect_smoke COMMAND tile_frontier_config_effect_smoke)
   set_tests_properties(tile_frontier_config_effect_smoke PROPERTIES LABELS devils_engine)
-  add_test(NAME tile_frontier_time_smoke COMMAND tile_frontier_time_smoke)
+  devils_add_test(NAME tile_frontier_time_smoke COMMAND tile_frontier_time_smoke)
   set_tests_properties(tile_frontier_time_smoke PROPERTIES LABELS devils_engine)
 endif()
 include("${CMAKE_SOURCE_DIR}/cmake/devils_portable_runtime.cmake")
@@ -244,6 +244,8 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   # старые файлы, поэтому без этой очистки прежний engine/ui/entry.lua остается в build output.
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/ui
+  COMMAND ${CMAKE_COMMAND} -E rm -f
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/config/app.tavl
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     ${PROJECT_OUTPUT_DIRECTORY}/resources/modules/core/ui_states
   COMMAND ${CMAKE_COMMAND} -E copy_directory

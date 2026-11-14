@@ -1,3 +1,4 @@
+#include "devils_engine/utils/platform.h"
 #include <utility>
 
 #include <devils_engine/utils/core.h>

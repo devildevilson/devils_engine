@@ -159,12 +159,12 @@ inline void sha_string(utils::SHA256& hash, const std::string_view value) {
   return session_content_status::built;
 }
 
-// Wire codecs still own integer encoding and framing. handshake_format must be
-// checked before decoding any later-version fields. content_root is the strict
-// whole-installation identity above; the other fields give a useful refusal
-// instead of reducing every incompatibility to "hash differs".
+// Wire codecs still own integer encoding and framing; the grammar of the
+// handshake itself is named by the envelope version, not by a field here.
+// content_root is the strict whole-installation identity above; the other
+// fields give a useful refusal instead of reducing every incompatibility to
+// "hash differs".
 struct session_compatibility {
-  uint32_t handshake_format = 1;
   uint32_t protocol_version = 0;
   uint32_t state_schema_fingerprint = 0;
   uint32_t intent_schema_fingerprint = 0;
@@ -177,7 +177,6 @@ struct session_compatibility {
 
 enum class session_compatibility_status : uint8_t {
   compatible,
-  handshake_format_mismatch,
   protocol_version_mismatch,
   content_mismatch,
   state_schema_mismatch,
@@ -189,8 +188,6 @@ enum class session_compatibility_status : uint8_t {
 [[nodiscard]] constexpr session_compatibility_status compare_session_compatibility(
   const session_compatibility& local,
   const session_compatibility& remote) noexcept {
-  if (local.handshake_format != remote.handshake_format)
-    return session_compatibility_status::handshake_format_mismatch;
   if (local.protocol_version != remote.protocol_version)
     return session_compatibility_status::protocol_version_mismatch;
   if (local.content_root != remote.content_root)
@@ -208,7 +205,6 @@ enum class session_compatibility_status : uint8_t {
 
 enum class session_handshake_status : uint8_t {
   accepted,
-  handshake_format_mismatch,
   protocol_version_mismatch,
   content_mismatch,
   state_schema_mismatch,
@@ -235,8 +231,6 @@ constexpr session_handshake_status handshake_status(
   switch (status) {
     case session_compatibility_status::compatible:
       return session_handshake_status::accepted;
-    case session_compatibility_status::handshake_format_mismatch:
-      return session_handshake_status::handshake_format_mismatch;
     case session_compatibility_status::protocol_version_mismatch:
       return session_handshake_status::protocol_version_mismatch;
     case session_compatibility_status::content_mismatch:

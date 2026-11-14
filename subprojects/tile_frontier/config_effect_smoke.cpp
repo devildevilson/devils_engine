@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 // Live acceptance for config-loaded GOAP actions and structured TAVL FSM transitions.
 
 #include <algorithm>

@@ -28,12 +28,17 @@ namespace devils_engine::network {
 
 inline constexpr uint32_t session_wire_magic = UINT32_C(0x4853574e); // "NWSH"
 // Versions 1 and 2 have the same canonical payload grammar. Version 3 appends
-// the component wire-schema fingerprint to compatibility payloads. The range
-// is explicit so a new build may retain an old decoder without treating every
-// lower number as compatible. A handshake selects one version in its hello and
-// uses it for the whole exchange; an unknown version gets a current-version
-// refusal because emitting bytes in an unknown grammar would only guess.
-inline constexpr uint16_t session_wire_envelope_version = 3;
+// the component wire-schema fingerprint to compatibility payloads. Version 4
+// drops the handshake_format field (the envelope version already names the
+// handshake grammar) and encodes absent client_response optionals as reserved
+// zero values instead of presence flags: session 0 is "no session", anchor
+// tick 0 is "no anchor" (tick 0 is the initial state, never a proven
+// checkpoint). The range is explicit so a new build may retain an old decoder
+// without treating every lower number as compatible. A handshake selects one
+// version in its hello and uses it for the whole exchange; an unknown version
+// gets a current-version refusal because emitting bytes in an unknown grammar
+// would only guess.
+inline constexpr uint16_t session_wire_envelope_version = 4;
 inline constexpr uint16_t session_wire_oldest_compatible_envelope_version = 1;
 inline constexpr size_t session_wire_header_bytes = 12;
 inline constexpr size_t session_wire_max_payload_bytes = 512;
@@ -73,6 +78,8 @@ enum class session_wire_status : uint8_t {
 // itself was wrong; the rest name one compatibility field.
 enum class session_refusal_reason : uint8_t {
   none = 0,
+  // Retired with envelope v4, never emitted by this build; the number stays
+  // reserved because a v1-v3 peer may still send it.
   handshake_format_mismatch = 1,
   protocol_version_mismatch = 2,
   content_mismatch = 3,
@@ -161,11 +168,14 @@ inline void wire_begin(state_writer& w, const uint16_t version,
   return w.good() ? session_wire_status::ok : session_wire_status::buffer_too_small;
 }
 
+// Envelopes v1-v3 lead every compatibility block with a handshake_format field
+// whose only defined value is 1. It is written as that constant and checked on
+// read, so a retained old-grammar exchange keeps its exact bytes.
+inline constexpr uint32_t legacy_handshake_format = 1;
+
 inline void write_compatibility(state_writer& w, const session_compatibility& value,
                                 const uint16_t version) {
-  // handshake_format leads every message which carries compatibility, so a peer
-  // reaches a precise refusal before any field whose meaning that format fixes.
-  w.u32(value.handshake_format);
+  if (version < 4) w.u32(legacy_handshake_format);
   w.u32(value.protocol_version);
   w.u32(value.state_schema_fingerprint);
   w.u32(value.intent_schema_fingerprint);
@@ -174,15 +184,19 @@ inline void write_compatibility(state_writer& w, const session_compatibility& va
   if (version >= 3) w.u32(value.component_schema_fingerprint);
 }
 
-inline void read_compatibility(state_reader& r, session_compatibility& value,
-                               const uint16_t version) noexcept {
-  value.handshake_format = r.u32();
+// Returns false on a v1-v3 handshake_format other than 1: such a peer speaks a
+// grammar this build does not know, which is a malformed message, not a field
+// mismatch.
+[[nodiscard]] inline bool read_compatibility(state_reader& r, session_compatibility& value,
+                                             const uint16_t version) noexcept {
+  const bool known_format = version >= 4 || r.u32() == legacy_handshake_format;
   value.protocol_version = r.u32();
   value.state_schema_fingerprint = r.u32();
   value.intent_schema_fingerprint = r.u32();
   value.numeric_profile = r.u32();
   for (auto& byte : value.content_root) byte = r.u8();
   value.component_schema_fingerprint = version >= 3 ? r.u32() : 0;
+  return known_format;
 }
 
 inline void write_digest(state_writer& w, const utils::digest& value) {
@@ -252,6 +266,13 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
     return session_wire_status::too_large;
   if (message.confirmed.has_value() && !message.resumed_session.has_value())
     return session_wire_status::invalid_field;
+  // v4 spells "absent" as 0, so a present 0 has no encoding there. Refused on
+  // every version: session 0 and anchor tick 0 never name anything.
+  if ((message.resumed_session && *message.resumed_session == 0) ||
+      (message.confirmed && message.confirmed->tick == 0)) {
+    out.clear(); // a refused message leaves nothing behind, not a previous one
+    return session_wire_status::invalid_field;
+  }
   if (const auto status = detail::begin_encode(out, version); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
@@ -259,9 +280,9 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   detail::wire_begin(w, version, session_message_type::client_response, length_at);
   w.u32(uint32_t(message.credential.size()));
   w.bytes(message.credential);
-  w.u8(uint8_t(message.resumed_session.has_value()));
+  if (version < 4) w.u8(uint8_t(message.resumed_session.has_value()));
   w.u64(message.resumed_session.value_or(0));
-  w.u8(uint8_t(message.confirmed.has_value()));
+  if (version < 4) w.u8(uint8_t(message.confirmed.has_value()));
   w.u64(message.confirmed ? message.confirmed->tick : 0);
   detail::write_digest(w, message.confirmed ? message.confirmed->root : utils::digest{});
   return detail::wire_end(w, length_at);
@@ -271,6 +292,10 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
                                                      std::vector<std::byte>& out,
                                                      const uint16_t version =
                                                        session_wire_envelope_version) {
+  if (version >= 4 && message.session == 0) {
+    out.clear(); // a refused message leaves nothing behind, not a previous one
+    return session_wire_status::invalid_field;
+  }
   if (const auto status = detail::begin_encode(out, version); status != session_wire_status::ok)
     return status;
   state_writer w(out, false);
@@ -336,9 +361,10 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
                                                     const uint16_t version =
                                                       session_wire_envelope_version) noexcept {
   state_reader r(payload);
-  detail::read_compatibility(r, out.compatibility, version);
+  const bool known = detail::read_compatibility(r, out.compatibility, version);
   const auto nonce = r.take(session_nonce_bytes);
   if (!r.good()) return session_wire_status::truncated;
+  if (!known) return session_wire_status::invalid_field;
   std::copy(nonce.begin(), nonce.end(), out.client_nonce.begin());
   return detail::finish_decode(r);
 }
@@ -348,10 +374,11 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
                                                     const uint16_t version =
                                                       session_wire_envelope_version) noexcept {
   state_reader r(payload);
-  detail::read_compatibility(r, out.compatibility, version);
+  const bool known = detail::read_compatibility(r, out.compatibility, version);
   const auto nonce = r.take(session_nonce_bytes);
   const auto size = r.u32();
   if (!r.good()) return session_wire_status::truncated;
+  if (!known) return session_wire_status::invalid_field;
   if (size > session_wire_max_challenge_bytes) return session_wire_status::too_large;
   const auto challenge = r.take(size);
   if (!r.good()) return session_wire_status::truncated;
@@ -361,26 +388,35 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
 }
 
 [[nodiscard]] inline session_wire_status try_decode(const std::span<const std::byte> payload,
-                                                    client_response& out) noexcept {
+                                                    client_response& out,
+                                                    const uint16_t version =
+                                                      session_wire_envelope_version) noexcept {
   state_reader r(payload);
   const auto size = r.u32();
   if (!r.good()) return session_wire_status::truncated;
   if (size > session_wire_max_credential_bytes) return session_wire_status::too_large;
   const auto credential = r.take(size);
-  const auto has_session = r.u8();
+  const auto flag_session = version < 4 ? r.u8() : uint8_t(0);
   const auto session = r.u64();
-  const auto has_anchor = r.u8();
+  const auto flag_anchor = version < 4 ? r.u8() : uint8_t(0);
   const auto tick = r.u64();
   utils::digest root{};
   detail::read_digest(r, root);
   if (!r.good()) return session_wire_status::truncated;
+  // v1-v3 carry presence flags; v4 spells "absent" as the reserved value 0.
+  const bool has_session = version < 4 ? flag_session == 1 : session != 0;
+  const bool has_anchor = version < 4 ? flag_anchor == 1 : tick != 0;
   // Absent optionals must be encoded as zero. Accepting an ignored payload here
   // would let two encoders produce different bytes for one logical message.
-  if (has_session > 1 || has_anchor > 1) return session_wire_status::invalid_field;
+  if (flag_session > 1 || flag_anchor > 1) return session_wire_status::invalid_field;
   if (!has_session && session != 0) return session_wire_status::invalid_field;
   if (!has_anchor && (tick != 0 || root != utils::digest{}))
     return session_wire_status::invalid_field;
   if (has_anchor && !has_session) return session_wire_status::invalid_field;
+  // Present values must be ones that name something: a v1-v3 flag with a
+  // zero session or anchor tick is refused there too.
+  if ((has_session && session == 0) || (has_anchor && tick == 0))
+    return session_wire_status::invalid_field;
   out.credential = credential;
   out.resumed_session = has_session ? std::optional(session) : std::nullopt;
   out.confirmed = has_anchor
@@ -389,16 +425,25 @@ inline void read_digest(state_reader& r, utils::digest& value) noexcept {
   return detail::finish_decode(r);
 }
 
+// start_tick 0 is legal: it means the participant enters the initial state,
+// before the first step. session 0 is "no session" and cannot be granted; it is
+// refused from v4 on, where 0 became that reserved value.
 [[nodiscard]] inline session_wire_status try_decode(const std::span<const std::byte> payload,
-                                                    session_accepted& out) noexcept {
+                                                    session_accepted& out,
+                                                    const uint16_t version =
+                                                      session_wire_envelope_version) noexcept {
   state_reader r(payload);
-  out.session = r.u64();
-  out.local_peer = r.u64();
-  out.authority_peer = r.u64();
-  out.authority_epoch = r.u64();
-  out.start_tick = r.u64();
+  session_accepted value;
+  value.session = r.u64();
+  value.local_peer = r.u64();
+  value.authority_peer = r.u64();
+  value.authority_epoch = r.u64();
+  value.start_tick = r.u64();
   if (!r.good()) return session_wire_status::truncated;
-  return detail::finish_decode(r);
+  if (version >= 4 && value.session == 0) return session_wire_status::invalid_field;
+  const auto status = detail::finish_decode(r);
+  if (status == session_wire_status::ok) out = value;
+  return status;
 }
 
 [[nodiscard]] inline session_wire_status try_decode(const std::span<const std::byte> payload,
@@ -488,8 +533,6 @@ namespace detail {
   const session_compatibility_status status) noexcept {
   switch (status) {
     case session_compatibility_status::compatible: return session_refusal_reason::none;
-    case session_compatibility_status::handshake_format_mismatch:
-      return session_refusal_reason::handshake_format_mismatch;
     case session_compatibility_status::protocol_version_mismatch:
       return session_refusal_reason::protocol_version_mismatch;
     case session_compatibility_status::content_mismatch:
@@ -631,19 +674,20 @@ private:
   session_wire_status on_response(const std::span<const std::byte> payload,
                                   std::vector<std::byte>& reply, Policy& policy) {
     client_response response;
-    if (const auto status = try_decode(payload, response); status != session_wire_status::ok)
+    if (const auto status = try_decode(payload, response, envelope_version_);
+        status != session_wire_status::ok)
       return refuse(reply, session_refusal_reason::malformed_message, status);
 
     session_accepted granted;
     const auto reason = policy.admit(response, transcript_.seal(), granted);
     if (reason != session_refusal_reason::none)
       return refuse(reply, reason, session_wire_status::ok);
+    // A policy which grants something the wire cannot carry (session 0 from v4
+    // on) is refused like any other malformed outcome: the client gets one
+    // session_refused instead of silence or stale bytes.
     if (const auto status = try_encode(granted, reply, envelope_version_);
-        status != session_wire_status::ok) {
-      phase_ = handshake_phase::refused;
-      refusal_ = session_refusal_reason::malformed_message;
-      return status;
-    }
+        status != session_wire_status::ok)
+      return refuse(reply, session_refusal_reason::malformed_message, status);
     accepted_ = granted;
     phase_ = handshake_phase::established;
     return session_wire_status::ok;
@@ -786,7 +830,8 @@ private:
   session_wire_status on_accepted(const std::span<const std::byte> payload,
                                   std::vector<std::byte>& reply) {
     session_accepted granted;
-    if (const auto status = try_decode(payload, granted); status != session_wire_status::ok) {
+    if (const auto status = try_decode(payload, granted, envelope_version_);
+        status != session_wire_status::ok) {
       stop(session_refusal_reason::malformed_message);
       return status;
     }

@@ -109,11 +109,22 @@ public:
 
   // Consumer(peer, lane, payload). Аренда освобождается сразу после возврата потребителя, поэтому
   // содержимое не переживает вызов: кому нужно дольше — копирует.
+  //
+  // `max_messages` — бюджет ЭТОГО вызова. Непрочитанное остаётся в очереди GNS: так получатель,
+  // которому некуда класть, создаёт обратное давление, а не теряет сообщения и не падает.
   template <class Consumer>
-  size_t receive(Consumer&& consumer);
+  size_t receive(Consumer&& consumer, size_t max_messages = default_receive_budget);
+
+  static constexpr size_t default_receive_budget = 64;
 
   uint64_t superseded() const noexcept {
     return superseded_;
+  }
+
+  // Сколько соединений адаптер закрыл сам за сообщение не по контракту полос (чужая полоса,
+  // другая надёжность, превышен размер). Это поведение удалённой стороны, а не ошибка процесса.
+  uint64_t invalid_closed() const noexcept {
+    return invalid_closed_;
   }
 
   struct conditions {
@@ -126,21 +137,23 @@ public:
 
 private:
   size_t receive_batch(void* consumer, void (*invoke)(void*, network::gns_peer, uint16_t,
-                                                      std::span<const std::byte>));
+                                                      std::span<const std::byte>),
+                       size_t max_messages);
 
   struct state;
   std::unique_ptr<state> state_;
   network::gns_peer pending_;
   uint64_t superseded_ = 0;
+  uint64_t invalid_closed_ = 0;
 };
 
 template <class Consumer>
-size_t net_link::receive(Consumer&& consumer) {
+size_t net_link::receive(Consumer&& consumer, const size_t max_messages) {
   const auto invoke = [](void* context, const network::gns_peer peer, const uint16_t lane,
                          const std::span<const std::byte> payload) {
     (*static_cast<std::remove_reference_t<Consumer>*>(context))(peer, lane, payload);
   };
-  return receive_batch(static_cast<void*>(&consumer), invoke);
+  return receive_batch(static_cast<void*>(&consumer), invoke, max_messages);
 }
 
 } // namespace frontier_online::net

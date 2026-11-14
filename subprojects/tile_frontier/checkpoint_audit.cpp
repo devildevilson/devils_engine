@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 // PRE-02 checkpoint audit over the real tile_frontier actor slice.
 //
 // The executable measures full canonical write, hash, compression and load, then treats the existing

@@ -1,6 +1,7 @@
 #ifndef FRONTIER_ONLINE_NET_AUTHORITY_H
 #define FRONTIER_ONLINE_NET_AUTHORITY_H
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -42,12 +43,39 @@ struct authority_config {
   uint32_t max_peers = 8;
   bool verbose = true;
   bool keep_joined_connection = false; // the join-only harness still closes after its report
+
+  // СРОКИ ФАЗ. Участник, не дошедший до следующей фазы вовремя, закрывается: молчащее
+  // соединение иначе держит слот вечно (keepalive транспорта его не рвёт). 0 — срока нет.
+  // Срок отчёта растёт с размером состояния: 5 с плюс время передачи на объявленной
+  // минимальной скорости. Живая сессия своего срока тишины не имеет: участник без ввода
+  // законен, мёртвое соединение закрывает транспорт, а нечитающий отстаёт за историю.
+  std::chrono::milliseconds hello_timeout{2000};
+  std::chrono::milliseconds response_timeout{2000};
+  std::chrono::milliseconds report_timeout{5000};
+  uint32_t report_min_bytes_per_second = 64 * 1024;
+
+  // НАРУШЕНИЯ И КВОТЫ — на участника, а не на всех: общий бюджет позволил бы одному
+  // заглушить остальных. Сообщение сверх квоты не разбирается и считается нарушением.
+  uint32_t violation_limit = 16;
+  uint32_t messages_per_step = 32;
+  uint32_t intents_per_step = 4;
+
+  // Сколько живёт соединение после последнего слова авторитета (отказа): close без linger
+  // съел бы саму причину.
+  std::chrono::milliseconds close_linger{500};
 };
 
 struct authority_join {
   uint64_t peer_id = 0;
   join_report report;
   bool agreed = false; // корень клиента совпал с объявленным
+};
+
+// Почему и кого авторитет закрыл после рукопожатия. Журнал исходов, а не счётчик: «кто-то
+// отвалился» не объясняет, кто и за что.
+struct authority_termination {
+  uint64_t peer_id = 0;
+  termination_reason reason = termination_reason::violations;
 };
 
 // Owned bytes: the GNS receive lease ends before the simulation admits the proposal.
@@ -83,7 +111,18 @@ public:
   [[nodiscard]] std::vector<live_intent_packet> take_live_intents();
   [[nodiscard]] send_result send_canonical(uint64_t logical_peer,
                                            std::span<const std::byte> bytes);
+  [[nodiscard]] send_result send_catchup(uint64_t logical_peer, uint64_t tick);
   [[nodiscard]] uint64_t dropped_live_intents() const noexcept;
+
+  // Участник присоединился, подтверждён и всё ещё обслуживается.
+  [[nodiscard]] bool is_live_member(uint64_t logical_peer) const noexcept;
+  // Нарушение, найденное ПОТРЕБИТЕЛЕМ (например, непринятое предложение). Считается туда же,
+  // куда и транспортные; порог закрывает участника.
+  void note_violation(uint64_t logical_peer);
+  // Прекратить обслуживание участника с причиной (например, отстал за историю).
+  void terminate(uint64_t logical_peer, termination_reason reason);
+  [[nodiscard]] const std::vector<authority_termination>& terminations() const noexcept;
+  [[nodiscard]] uint64_t violations() const noexcept;
 
   void close_all();
 

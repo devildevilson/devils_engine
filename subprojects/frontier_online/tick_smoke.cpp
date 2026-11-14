@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 // A real actor world predicts an input which the authority never accepts.
 // Canonical tick messages close every tick; replay from the join checkpoint
 // removes that prediction and reaches the authority's full causal root.
@@ -41,13 +42,7 @@ void require(const bool condition, const char* why) {
 // quantized proposal still needs its project adapter and authority validation.
 std::vector<std::byte> food_action_bytes(const double x, const double y) {
   std::vector<std::byte> bytes;
-  bytes.reserve(25);
-  net::state_writer writer(bytes, false);
-  writer.u8(1); // spawn food
-  writer.u64(utils::string_hash("food"));
-  writer.u64(std::bit_cast<uint64_t>(x));
-  writer.u64(std::bit_cast<uint64_t>(y));
-  require(writer.good() && bytes.size() == 25, "food action did not encode");
+  require(fn::encode(fn::canonical_food_action{x, y}, bytes), "food action did not encode");
   return bytes;
 }
 
@@ -61,14 +56,9 @@ devils_engine::act::intent food_action(const double x, const double y) {
 }
 
 bool decode_and_enqueue(fo::actor_world_slice& actors, const std::span<const std::byte> bytes) {
-  net::state_reader reader(bytes);
-  const uint8_t kind = reader.u8();
-  const uint64_t prefab = reader.u64();
-  const double x = std::bit_cast<double>(reader.u64());
-  const double y = std::bit_cast<double>(reader.u64());
-  return reader.good() && reader.position() == reader.size() && kind == 1 &&
-         prefab == utils::string_hash("food") && std::isfinite(x) && std::isfinite(y) &&
-         actors.enqueue_player_intent(food_action(x, y));
+  fn::canonical_food_action action;
+  return fn::decode(bytes, action) &&
+         actors.enqueue_canonical_intent(food_action(action.x, action.y));
 }
 
 uint64_t root_of(const fo::actor_world_slice& actors, const utils::timelines& clocks) {
@@ -147,9 +137,8 @@ int main() {
 
     const auto layouts = fn::player_intent_layouts();
     const net::id_index_table empty_registry; // spawn_food has no indexed reference field
-    const std::array<int32_t, 2> base_cells{0, 0}; // session-derived player base
     net::intent proposal;
-    require(fn::encode_player_intent(food_action(12.0, 13.0), 2, 0, base_cells, proposal),
+    require(fn::encode_player_intent(food_action(12.0, 13.0), 2, 0, proposal),
             "project action did not fit the intent lattice");
     std::vector<std::byte> upstream;
     upstream.reserve(net::intent_batch_max_bytes);
@@ -157,13 +146,12 @@ int main() {
                                          upstream) == net::intent_wire_status::ok,
             "upstream intent did not encode");
     net::intent dropped_proposal;
-    require(fn::encode_player_intent(food_action(15.0, 13.0), 1, 0, base_cells,
-                                      dropped_proposal), "dropped action did not encode");
+    require(fn::encode_player_intent(food_action(15.0, 13.0), 1, 0, dropped_proposal), "dropped action did not encode");
     devils_engine::act::intent predicted_dropped;
-    require(fn::decode_player_intent(dropped_proposal, base_cells, predicted_dropped),
+    require(fn::decode_player_intent(dropped_proposal, predicted_dropped),
             "dropped prediction did not decode");
     devils_engine::act::intent predicted_accepted;
-    require(fn::decode_player_intent(proposal, base_cells, predicted_accepted),
+    require(fn::decode_player_intent(proposal, predicted_accepted),
             "accepted prediction did not decode");
 
     input_journal journal;
@@ -188,7 +176,7 @@ int main() {
               seen.classify(incoming.sequence_low) != net::sequence_classification::new_value)
             return false;
           devils_engine::act::intent action;
-          if (!fn::decode_player_intent(incoming, base_cells, action)) return false;
+          if (!fn::decode_player_intent(incoming, action)) return false;
           accepted_input record;
           record.tick = tick;
           record.origin_peer = authenticated_peer;
@@ -207,7 +195,7 @@ int main() {
       require(journal.seal() == net::tick_seal_result::sealed, "tick journal did not seal");
       auto sealed = journal.consume(tag);
       for (const auto& record : sealed.records())
-        require(authority.actors.enqueue_player_intent(record.action),
+        require(authority.actors.enqueue_canonical_intent(record.action),
                 "sealed action could not enter causal ECS");
       step(authority, tick);
       const auto root = root_of(authority.actors, authority.clocks);
@@ -250,7 +238,7 @@ int main() {
       if (!context.presentation_suppressed()) return false;
       std::array<net::canonical_tick_record_view, net::canonical_tick_max_records> storage{};
       net::canonical_tick_view view;
-      if (net::try_decode_canonical_tick(bytes, storage, view) !=
+      if (net::try_decode_canonical_tick(bytes, target.clocks.simulation_now().value, storage, view) !=
             net::canonical_tick_wire_status::ok || !view.state_root) return false;
       if (view.tick != target.clocks.simulation_now().value + 1) return false;
       target.pending_tick = view.tick;

@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 // TIME-02 acceptance: wall-time is only a fixed-step pacing source. Two deliberately different
 // presentation schedules must execute the same authoritative ticks and produce the same complete
 // frontier_online actor checkpoint.

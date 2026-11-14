@@ -22,8 +22,17 @@ namespace originator = devils_engine::originator;
 namespace prefab = devils_engine::prefab;
 namespace utils = devils_engine::utils;
 
+namespace {
+
+std::string directory_root(std::string value) {
+  if (!value.empty() && value.back() != '/' && value.back() != '\\') value += '/';
+  return value;
+}
+
+} // namespace
+
 causal_content::causal_content(std::string resource_root, std::string module_name)
-  : resource_root_(std::move(resource_root)), module_name_(std::move(module_name)),
+  : resource_root_(directory_root(std::move(resource_root))), module_name_(std::move(module_name)),
     modules_(resource_root_) {
   modules_.load_modules({demiurg::module_system::list_entry{module_name_ + "/", "", ""}});
   resources_.register_type<act::script_resource>("scripts", "tavl", &scripts_);

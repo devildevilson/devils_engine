@@ -1,7 +1,7 @@
 // frontier_online — headless-авторитет (SERVER-01).
 //
 // Отдельный процесс, который выполняет ПОЛНУЮ причинную симуляцию и не имеет ни окна, ни Vulkan,
-// ни звука, ни UI. Список библиотек в CMakeLists у этой цели — одна строка: `frontier_causal`.
+// ни звука, ни UI. Цель линкует `frontier_causal` и, когда доступен GNS, `frontier_net`.
 // Поэтому цель работает и как исполняемый файл, и как ПРОВЕРКА раскола: если презентационная
 // зависимость снова просочится в причинный код, сломается сборка, а не поведение в бою.
 //
@@ -42,6 +42,7 @@
 #ifdef FRONTIER_ONLINE_HAS_NETWORK
 #  include "net/authority.h"
 #  include "net/follower.h"
+#  include "net/live_runtime.h"
 #endif
 
 using namespace devils_engine;
@@ -83,6 +84,8 @@ struct options {
   // ─── сеть ───
   // Три режима, взаимоисключающие: считать в одиночку (по умолчанию), слушать, присоединиться.
   bool listen = false;
+  bool live = false;         // длительная headless-сессия с тиками и проверкой root
+  bool live_loopback = false;
   uint16_t listen_port = 0;   // 0 при --listen без числа — порт спрашивается у ОС
   std::string join;           // "host:port"
   uint32_t expect_joins = 1;  // сколько присоединений ждёт авторитет, прежде чем выйти
@@ -171,6 +174,14 @@ bool parse_options(const int argc, char** argv, options& out) {
     }
     if (arg == "--listen") {
       out.listen = true;
+      continue;
+    }
+    if (arg == "--live") {
+      out.live = true;
+      continue;
+    }
+    if (arg == "--live-loopback") {
+      out.live_loopback = true;
       continue;
     }
     if (const auto v = value_of("--listen="); !v.empty()) {
@@ -573,10 +584,35 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "frontier_online_server: --listen and --join are exclusive\n");
     return EXIT_FAILURE;
   }
+  if (opts.live && !opts.listen && opts.join.empty()) {
+    std::fprintf(stderr, "frontier_online_server: --live requires --listen=PORT or --join=HOST:PORT\n");
+    return EXIT_FAILURE;
+  }
+  if (opts.live_loopback && (!opts.live || !opts.listen)) {
+    std::fprintf(stderr, "frontier_online_server: --live-loopback requires --live --listen=PORT\n");
+    return EXIT_FAILURE;
+  }
 #ifdef FRONTIER_ONLINE_HAS_NETWORK
   // Занятый порт, недостижимый адрес, отсутствующий генератор — это обычные обстоятельства
   // оператора, а не нарушение инварианта. Сообщение и код возврата, а не terminate.
   try {
+    if (opts.live) {
+      fnet::live_run_options live;
+      live.port = opts.listen_port;
+      live.bind_loopback = opts.live_loopback;
+      live.endpoint = opts.join;
+      live.expected_peers = opts.expect_joins;
+      live.actors = opts.actors;
+      live.workers = opts.workers;
+      live.rate = opts.rate;
+      live.timeout_seconds = opts.timeout_s;
+      live.final_tick = opts.ticks;
+      live.world_seed = opts.world_seed;
+      live.generator = opts.generator;
+      live.prefab_cycle = opts.prefab_cycle;
+      if (opts.listen) return fnet::run_live_authority(live, content);
+      return fnet::run_live_follower(live, content);
+    }
     if (opts.listen) return serve_session(opts, content);
     if (!opts.join.empty()) return join_session(opts, content);
   } catch (const std::exception& error) {

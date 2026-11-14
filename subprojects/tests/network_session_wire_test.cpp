@@ -27,7 +27,7 @@ utils::digest digest_of(const uint8_t seed) {
 }
 
 net::session_compatibility compatibility() {
-  return net::session_compatibility{1, 7, 0xaaaa, 0xbbbb, 0xcccc, digest_of(3)};
+  return net::session_compatibility{7, 0xaaaa, 0xbbbb, 0xcccc, digest_of(3)};
 }
 
 std::vector<std::byte> prepared() {
@@ -326,10 +326,10 @@ TEST_CASE("network session wire refuses every malformed envelope") {
 TEST_CASE("network session wire refuses noncanonical and oversized payload fields") {
   auto buffer = prepared();
 
-  SUBCASE("an absent optional must be encoded as zero") {
+  SUBCASE("an absent optional must be encoded as zero (v1-v3 presence flags)") {
     const auto credential = blob(4, 1);
     const net::client_response sent{credential, std::nullopt, std::nullopt};
-    REQUIRE(net::try_encode(sent, buffer) == net::session_wire_status::ok);
+    REQUIRE(net::try_encode(sent, buffer, 3) == net::session_wire_status::ok);
     net::session_wire_message envelope;
     REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
     const size_t session_at = net::session_wire_header_bytes + 4 + credential.size() + 1;
@@ -340,15 +340,83 @@ TEST_CASE("network session wire refuses noncanonical and oversized payload field
     net::session_wire_message forged_envelope;
     REQUIRE(net::try_peek_session_message(forged, forged_envelope) ==
             net::session_wire_status::ok);
-    CHECK(net::try_decode(forged_envelope.payload, decoded) ==
+    CHECK(net::try_decode(forged_envelope.payload, decoded, 3) ==
           net::session_wire_status::invalid_field);
 
     auto flagged = buffer;
     flagged[session_at - 1] = std::byte(2); // Presence flags accept only zero or one.
     REQUIRE(net::try_peek_session_message(flagged, forged_envelope) ==
             net::session_wire_status::ok);
-    CHECK(net::try_decode(forged_envelope.payload, decoded) ==
+    CHECK(net::try_decode(forged_envelope.payload, decoded, 3) ==
           net::session_wire_status::invalid_field);
+
+    auto present_zero = buffer;
+    present_zero[session_at - 1] = std::byte(1); // Flag set, but session 0 names nothing.
+    REQUIRE(net::try_peek_session_message(present_zero, forged_envelope) ==
+            net::session_wire_status::ok);
+    CHECK(net::try_decode(forged_envelope.payload, decoded, 3) ==
+          net::session_wire_status::invalid_field);
+  }
+
+  SUBCASE("v4 spells absent as the reserved value zero and has no flags") {
+    const auto credential = blob(4, 1);
+    REQUIRE(net::try_encode(net::client_response{credential, std::nullopt, std::nullopt}, buffer) ==
+            net::session_wire_status::ok);
+    // header, credential length, credential, session, anchor tick, anchor root
+    CHECK(buffer.size() == net::session_wire_header_bytes + 4 + credential.size() + 8 + 8 + 32);
+    net::session_wire_message envelope;
+    REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
+    const size_t session_at = net::session_wire_header_bytes + 4 + credential.size();
+    const size_t tick_at = session_at + 8;
+    const size_t root_at = tick_at + 8;
+    net::client_response decoded;
+    net::session_wire_message forged_envelope;
+
+    auto anchor_alone = buffer; // an anchor without a session
+    anchor_alone[tick_at] = std::byte(5);
+    REQUIRE(net::try_peek_session_message(anchor_alone, forged_envelope) == net::session_wire_status::ok);
+    CHECK(net::try_decode(forged_envelope.payload, decoded) == net::session_wire_status::invalid_field);
+
+    auto stray_root = buffer; // no anchor, but root bytes
+    stray_root[session_at] = std::byte(9);
+    stray_root[root_at] = std::byte(1);
+    REQUIRE(net::try_peek_session_message(stray_root, forged_envelope) == net::session_wire_status::ok);
+    CHECK(net::try_decode(forged_envelope.payload, decoded) == net::session_wire_status::invalid_field);
+
+    auto resumed = buffer; // a nonzero session alone is a resume claim
+    resumed[session_at] = std::byte(9);
+    REQUIRE(net::try_peek_session_message(resumed, forged_envelope) == net::session_wire_status::ok);
+    REQUIRE(net::try_decode(forged_envelope.payload, decoded) == net::session_wire_status::ok);
+    CHECK(decoded.resumed_session == std::optional<uint64_t>(9));
+    CHECK_FALSE(decoded.confirmed.has_value());
+
+    // A present zero has no v4 encoding and is refused on every version.
+    for (const uint16_t version : {uint16_t(3), uint16_t(4)}) {
+      CHECK(net::try_encode(net::client_response{credential, std::optional<uint64_t>(0),
+                                                 std::nullopt}, buffer, version) ==
+            net::session_wire_status::invalid_field);
+      const net::recovery_anchor<uint64_t, utils::digest> initial{0, digest_of(1)};
+      CHECK(net::try_encode(net::client_response{credential, std::optional<uint64_t>(9), initial},
+                            buffer, version) == net::session_wire_status::invalid_field);
+    }
+  }
+
+  SUBCASE("v4 cannot grant session zero, but may start before the first tick") {
+    CHECK(net::try_encode(net::session_accepted{0, 2, 3, 4, 5}, buffer) ==
+          net::session_wire_status::invalid_field);
+    REQUIRE(net::try_encode(net::session_accepted{1, 2, 3, 4, 0}, buffer) ==
+            net::session_wire_status::ok);
+    net::session_wire_message envelope;
+    REQUIRE(net::try_peek_session_message(buffer, envelope) == net::session_wire_status::ok);
+    net::session_accepted decoded;
+    REQUIRE(net::try_decode(envelope.payload, decoded) == net::session_wire_status::ok);
+    CHECK(decoded.start_tick == 0);
+    auto forged = buffer;
+    for (size_t i = 0; i < 8; ++i) forged[net::session_wire_header_bytes + i] = std::byte{0};
+    REQUIRE(net::try_peek_session_message(forged, envelope) == net::session_wire_status::ok);
+    decoded = {};
+    CHECK(net::try_decode(envelope.payload, decoded) == net::session_wire_status::invalid_field);
+    CHECK(decoded.local_peer == 0); // nothing published on refusal
   }
 
   SUBCASE("an anchor without a session is not a legal claim") {
@@ -536,10 +604,7 @@ TEST_CASE("network session handshake refuses each incompatibility before any cre
     apply(copy);
     return copy;
   };
-  const std::array<field, 7> cases{
-    field{"handshake format",
-          altered([](net::session_compatibility& c) { c.handshake_format = 2; }),
-          net::session_refusal_reason::handshake_format_mismatch},
+  const std::array<field, 6> cases{
     field{"protocol version",
           altered([](net::session_compatibility& c) { c.protocol_version = 8; }),
           net::session_refusal_reason::protocol_version_mismatch},
@@ -788,4 +853,53 @@ TEST_CASE("network session transcript is order sensitive and sealed once") {
   net::session_transcript whole;
   whole.absorb(first);
   CHECK(repeated.seal() != whole.seal());
+}
+
+TEST_CASE("network session wire v4 drops handshake_format; v1-v3 keep it as the constant one") {
+  const net::client_hello sent{compatibility(), nonce_of(2)};
+  auto v3 = prepared(), v4 = prepared();
+  REQUIRE(net::try_encode(sent, v3, 3) == net::session_wire_status::ok);
+  REQUIRE(net::try_encode(sent, v4, 4) == net::session_wire_status::ok);
+  CHECK(v3.size() == net::session_wire_header_bytes + 56 + net::session_nonce_bytes);
+  CHECK(v4.size() == net::session_wire_header_bytes + 52 + net::session_nonce_bytes);
+  // v3 leads its compatibility block with handshake_format = 1 (LE).
+  CHECK(v3[net::session_wire_header_bytes] == std::byte{1});
+  CHECK(v3[net::session_wire_header_bytes + 4] == std::byte{7}); // protocol_version
+  CHECK(v4[net::session_wire_header_bytes] == std::byte{7});     // protocol_version first
+
+  net::session_wire_message envelope;
+  net::client_hello decoded;
+  REQUIRE(net::try_peek_session_message(v3, envelope) == net::session_wire_status::ok);
+  REQUIRE(net::try_decode(envelope.payload, decoded, 3) == net::session_wire_status::ok);
+  CHECK(decoded.compatibility == sent.compatibility);
+
+  // Any other v1-v3 format names a grammar this build does not know.
+  auto unknown = v3;
+  unknown[net::session_wire_header_bytes] = std::byte{2};
+  REQUIRE(net::try_peek_session_message(unknown, envelope) == net::session_wire_status::ok);
+  CHECK(net::try_decode(envelope.payload, decoded, 3) == net::session_wire_status::invalid_field);
+}
+
+TEST_CASE("network session authority refuses a grant the v4 wire cannot carry") {
+  net::authority_handshake authority(compatibility(), nonce_of(1));
+  net::client_handshake client(compatibility(), nonce_of(2));
+  authority_policy authority_side;
+  authority_side.grant.session = 0; // "no session" cannot be granted from v4 on
+  client_policy client_side;
+  auto to_authority = prepared(), to_client = prepared();
+  REQUIRE(client.start(to_authority) == net::session_wire_status::ok);
+  REQUIRE(authority.consume(to_authority, to_client, authority_side) ==
+          net::session_wire_status::ok);
+  REQUIRE(client.consume(to_client, to_authority, client_side) == net::session_wire_status::ok);
+  CHECK(authority.consume(to_authority, to_client, authority_side) ==
+        net::session_wire_status::invalid_field);
+  CHECK(authority.phase() == net::handshake_phase::refused);
+  CHECK(authority.refusal() == net::session_refusal_reason::malformed_message);
+  // The reply is one session_refused, never silence or the previous challenge.
+  net::session_wire_message envelope;
+  REQUIRE(net::try_peek_session_message(to_client, envelope) == net::session_wire_status::ok);
+  CHECK(envelope.type == net::session_message_type::session_refused);
+  REQUIRE(client.consume(to_client, to_authority, client_side) == net::session_wire_status::ok);
+  CHECK(client.phase() == net::handshake_phase::refused);
+  CHECK(client.refusal() == net::session_refusal_reason::malformed_message);
 }

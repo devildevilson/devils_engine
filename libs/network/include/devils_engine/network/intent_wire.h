@@ -49,7 +49,9 @@ enum class hot_message_type : uint8_t {
   relevant_set_update = 64,
   transform_frame = 65,
   relevant_set_full = 66,
-  canonical_tick = 67,
+  // 67 was the canonical tick carrying a full 64-bit tick. Refuse it rather
+  // than read its payload under the 16-bit grammar below.
+  canonical_tick = 68,
 };
 
 inline constexpr size_t intent_batch_header_bytes = 3;
@@ -83,17 +85,28 @@ enum class intent_wire_status : uint8_t {
 // here. Sizes follow from the declaration, which is what lets a batch omit
 // both a count and per-field presence flags.
 struct intent_field_layout {
-  uint8_t axes = 0;    // quantized world point: per axis a cell delta and a code
+  uint8_t axes = 0;    // quantized world point: per axis a cell and a code
   bool reference = false;   // dense registry index
   bool target = false;      // opaque entity reference, validated by the project
   bool turn = false;        // quantized direction, independent of any movement
+  // How the cell of each axis travels. By default it is an int8 delta from a base
+  // cell both sides already know (the actor's own cell), three bytes per axis. A
+  // project without such a shared base declares absolute cells instead: the full
+  // int32 key, six bytes per axis. The choice is part of the declaration, so it
+  // changes the layout fingerprint and never the reading of an existing layout.
+  bool absolute_cells = false;
 
   [[nodiscard]] constexpr bool valid() const noexcept {
     return axes <= intent_max_axes;
   }
 
+  [[nodiscard]] constexpr size_t axis_bytes() const noexcept {
+    return absolute_cells ? 6 : 3;
+  }
+
   [[nodiscard]] constexpr size_t wire_bytes() const noexcept {
-    return 3 + size_t(axes) * 3 + (reference ? 2 : 0) + (target ? 4 : 0) + (turn ? 2 : 0);
+    return 3 + size_t(axes) * axis_bytes() + (reference ? 2 : 0) + (target ? 4 : 0) +
+           (turn ? 2 : 0);
   }
 };
 
@@ -107,6 +120,9 @@ struct intent_kind_layout {
 // addressable without paying a full 32-bit key per axis and per tick.
 struct intent {
   uint32_t target = 0;
+  // Absolute cell keys, used only by layouts declaring `absolute_cells`; delta
+  // layouts carry `cell_delta` instead. The unused one is neither sent nor read.
+  std::array<int32_t, intent_max_axes> cell_key{};
   std::array<uint16_t, intent_max_axes> code{};
   uint16_t reference = 0;
   uint16_t turn = 0;
@@ -257,7 +273,8 @@ namespace detail {
     w.u8(uint8_t(value.kind | (value.tick_delta << intent_kind_bits)));
     w.u16(value.sequence_low);
     for (uint8_t axis = 0; axis < fields.axes; ++axis) {
-      w.u8(uint8_t(value.cell_delta[axis]));
+      if (fields.absolute_cells) w.u32(uint32_t(value.cell_key[axis]));
+      else w.u8(uint8_t(value.cell_delta[axis]));
       w.u16(value.code[axis]);
     }
     if (fields.reference) w.u16(value.reference);
@@ -322,7 +339,8 @@ namespace detail {
     value.sequence_low = r.u16();
 
     for (uint8_t axis = 0; axis < fields.axes; ++axis) {
-      value.cell_delta[axis] = int8_t(r.u8());
+      if (fields.absolute_cells) value.cell_key[axis] = int32_t(r.u32());
+      else value.cell_delta[axis] = int8_t(r.u8());
       value.code[axis] = r.u16();
     }
     if (fields.reference) {
@@ -383,13 +401,14 @@ namespace detail {
 // The absolute tick of one intent, reconstructed from what the receiver already
 // knows. A batch whose reconstructed tick lies in the future of the receiver is
 // the caller's decision to refuse; the library only performs the arithmetic, and
-// refuses only the case which has no answer at all — a delta reaching before the
-// first tick.
+// refuses only the cases which have no answer at all — a delta reaching to or
+// before tick 0. Simulation steps are numbered from 1; 0 names "no step yet"
+// (the initial state), so no action can target it.
 [[nodiscard]] inline std::optional<uint64_t> intent_absolute_tick(
   const uint64_t receiver_tick, const uint16_t base_tick_low,
   const uint8_t tick_delta) noexcept {
   const uint64_t base = widen_tick_low16(receiver_tick, base_tick_low);
-  if (base < uint64_t(tick_delta)) return std::nullopt;
+  if (base <= uint64_t(tick_delta)) return std::nullopt;
   return base - uint64_t(tick_delta);
 }
 

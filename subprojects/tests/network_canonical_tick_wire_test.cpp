@@ -28,7 +28,7 @@ TEST_CASE("network canonical tick closes an empty tick with or without a root") 
   CHECK(bytes.size() == net::canonical_tick_header_bytes);
   std::array<net::canonical_tick_record_view, 2> storage{};
   net::canonical_tick_view view;
-  REQUIRE(net::try_decode_canonical_tick(bytes, storage, view) ==
+  REQUIRE(net::try_decode_canonical_tick(bytes, 16, storage, view) ==
           net::canonical_tick_wire_status::ok);
   CHECK(view.tick == 17);
   CHECK_FALSE(view.state_root.has_value());
@@ -37,7 +37,7 @@ TEST_CASE("network canonical tick closes an empty tick with or without a root") 
   REQUIRE(net::try_encode_canonical_tick(18, UINT64_C(0x0123456789abcdef), {}, bytes) ==
           net::canonical_tick_wire_status::ok);
   CHECK(bytes.size() == net::canonical_tick_header_bytes + net::canonical_tick_root_bytes);
-  REQUIRE(net::try_decode_canonical_tick(bytes, storage, view) ==
+  REQUIRE(net::try_decode_canonical_tick(bytes, 17, storage, view) ==
           net::canonical_tick_wire_status::ok);
   CHECK(view.tick == 18);
   CHECK(view.state_root == UINT64_C(0x0123456789abcdef));
@@ -57,7 +57,7 @@ TEST_CASE("network canonical tick keeps origin and full sequence for each accept
                         first_payload.size() + second_payload.size());
   std::array<net::canonical_tick_record_view, 2> storage{};
   net::canonical_tick_view view;
-  REQUIRE(net::try_decode_canonical_tick(bytes, storage, view) ==
+  REQUIRE(net::try_decode_canonical_tick(bytes, 41, storage, view) ==
           net::canonical_tick_wire_status::ok);
   CHECK(view.tick == 42);
   CHECK(view.state_root == 123456);
@@ -89,7 +89,7 @@ TEST_CASE("network canonical tick refuses ambiguity before publication") {
           net::canonical_tick_wire_status::ok);
   std::array<net::canonical_tick_record_view, 1> storage{};
   net::canonical_tick_view view;
-  REQUIRE(net::try_decode_canonical_tick(bytes, storage, view) ==
+  REQUIRE(net::try_decode_canonical_tick(bytes, 0, storage, view) ==
           net::canonical_tick_wire_status::ok);
   const auto accepted = view;
   const auto record = storage[0];
@@ -97,12 +97,16 @@ TEST_CASE("network canonical tick refuses ambiguity before publication") {
   SUBCASE("old message class is not reinterpreted") {
     auto forged = bytes;
     forged[0] = std::byte{1};
-    CHECK(net::try_decode_canonical_tick(forged, storage, view) ==
+    CHECK(net::try_decode_canonical_tick(forged, 0, storage, view) ==
+          net::canonical_tick_wire_status::wrong_message_type);
+    // 67 carried a 64-bit tick; its bytes are never read under the 16-bit grammar.
+    forged[0] = std::byte{67};
+    CHECK(net::try_decode_canonical_tick(forged, 0, storage, view) ==
           net::canonical_tick_wire_status::wrong_message_type);
   }
   SUBCASE("truncation refuses every partial record") {
-    for (size_t length = 11; length < bytes.size(); ++length) {
-      CHECK(net::try_decode_canonical_tick(std::span(bytes).first(length), storage, view) ==
+    for (size_t length = net::canonical_tick_header_bytes; length < bytes.size(); ++length) {
+      CHECK(net::try_decode_canonical_tick(std::span(bytes).first(length), 0, storage, view) ==
             net::canonical_tick_wire_status::truncated);
     }
   }
@@ -115,25 +119,25 @@ TEST_CASE("network canonical tick refuses ambiguity before publication") {
       net::canonical_tick_record_header_bytes + payload.size() + 8;
     bytes[second_sequence] = std::byte{3};
     std::array<net::canonical_tick_record_view, 2> forged_storage{};
-    CHECK(net::try_decode_canonical_tick(bytes, forged_storage, view) ==
+    CHECK(net::try_decode_canonical_tick(bytes, 0, forged_storage, view) ==
           net::canonical_tick_wire_status::duplicate_input);
   }
   SUBCASE("a trailing byte is refused") {
     bytes.push_back(std::byte{0});
-    CHECK(net::try_decode_canonical_tick(bytes, storage, view) ==
+    CHECK(net::try_decode_canonical_tick(bytes, 0, storage, view) ==
           net::canonical_tick_wire_status::trailing_bytes);
   }
   SUBCASE("unprepared record storage is refused") {
-    CHECK(net::try_decode_canonical_tick(bytes, {}, view) ==
+    CHECK(net::try_decode_canonical_tick(bytes, 0, {}, view) ==
           net::canonical_tick_wire_status::capacity_exceeded);
   }
   SUBCASE("declared byte and record budgets are enforced before publication") {
     const std::vector<std::byte> oversized(net::canonical_tick_max_bytes + 1, std::byte{0});
-    CHECK(net::try_decode_canonical_tick(oversized, storage, view) ==
+    CHECK(net::try_decode_canonical_tick(oversized, 0, storage, view) ==
           net::canonical_tick_wire_status::too_large);
     auto forged = bytes;
-    forged[10] = std::byte{uint8_t(net::canonical_tick_max_records + 1)};
-    CHECK(net::try_decode_canonical_tick(forged, storage, view) ==
+    forged[4] = std::byte{uint8_t(net::canonical_tick_max_records + 1)}; // type, tick16, flags, count
+    CHECK(net::try_decode_canonical_tick(forged, 0, storage, view) ==
           net::canonical_tick_wire_status::too_many_records);
     const std::array<std::byte, net::canonical_tick_max_payload_bytes + 1> large_payload{};
     const std::array invalid{net::canonical_tick_record_view{7, 3, large_payload}};
@@ -145,4 +149,35 @@ TEST_CASE("network canonical tick refuses ambiguity before publication") {
   CHECK(view.records.data() == accepted.records.data());
   CHECK(storage[0].origin_peer == record.origin_peer);
   CHECK(storage[0].input_sequence == record.input_sequence);
+}
+
+TEST_CASE("network canonical tick carries sixteen bits and widens against the receiver") {
+  auto bytes = prepared();
+  // Empty tick with a root: type, tick16, flags, count, root.
+  REQUIRE(net::try_encode_canonical_tick(0x1'0005, UINT64_C(7), {}, bytes) ==
+          net::canonical_tick_wire_status::ok);
+  REQUIRE(bytes.size() == 13);
+  CHECK(bytes[0] == std::byte{68});
+  CHECK(bytes[1] == std::byte{0x05});
+  CHECK(bytes[2] == std::byte{0x00});
+  std::array<net::canonical_tick_record_view, 1> storage{};
+  net::canonical_tick_view view;
+  // The receiver is at the previous tick, across the 16-bit wrap.
+  REQUIRE(net::try_decode_canonical_tick(bytes, 0x1'0004, storage, view) ==
+          net::canonical_tick_wire_status::ok);
+  CHECK(view.tick == 0x1'0005);
+
+  REQUIRE(net::try_encode_canonical_tick(0x2'0000, UINT64_C(7), {}, bytes) ==
+          net::canonical_tick_wire_status::ok);
+  REQUIRE(net::try_decode_canonical_tick(bytes, 0x1'ffff, storage, view) ==
+          net::canonical_tick_wire_status::ok);
+  CHECK(view.tick == 0x2'0000);
+
+  // A tick whose low bits widen to 0 names no step and is refused.
+  REQUIRE(net::try_encode_canonical_tick(0x1'0000, UINT64_C(7), {}, bytes) ==
+          net::canonical_tick_wire_status::ok);
+  const auto before = view;
+  CHECK(net::try_decode_canonical_tick(bytes, 0, storage, view) ==
+        net::canonical_tick_wire_status::invalid_header);
+  CHECK(view.tick == before.tick);
 }

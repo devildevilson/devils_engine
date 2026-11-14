@@ -1,9 +1,11 @@
 #include "net/protocol.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 #include <devils_engine/utils/serialization.h>
+#include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/type_traits.h> // murmur_hash64A
 
 #include "core/actor_checkpoint.h"
@@ -22,7 +24,6 @@ network::session_compatibility local_compatibility(const core::causal_content& c
     throw std::logic_error("frontier_online component wire declarations are invalid");
   components.freeze();
   network::session_compatibility value;
-  value.handshake_format = 1;
   value.protocol_version = protocol_version;
   value.state_schema_fingerprint = core::actor_checkpoint_schema_fingerprint();
   value.intent_schema_fingerprint = player_intent_schema_fingerprint;
@@ -186,7 +187,7 @@ bool decode(const std::span<const std::byte> bytes, join_report& out) {
   value.world_fingerprint = r.u64();
   value.probe_root = r.u64();
   if (!r.good() || r.position() != r.size()) return false;
-  if (status > uint8_t(join_status::handshake_refused)) return false;
+  if (status > uint8_t(join_status::world_declaration_malformed)) return false;
   value.status = join_status(status);
   out = value;
   return true;
@@ -218,6 +219,49 @@ bool decode(const std::span<const std::byte> bytes, join_confirmation& out) {
   return true;
 }
 
+bool encode(const catchup_marker& value, std::vector<std::byte>& out) {
+  out.clear();
+  if (value.session == 0 || value.logical_peer == 0 || value.tick == 0) return false;
+  const size_t required = 1 + 8 * 3;
+  auto w = begin(out, required, message::live_caught_up);
+  w.u64(value.session);
+  w.u64(value.logical_peer);
+  w.u64(value.tick);
+  return finish(w, out, required);
+}
+
+bool decode(const std::span<const std::byte> bytes, catchup_marker& out) {
+  serial::state_reader r(bytes);
+  if (r.u8() != uint8_t(message::live_caught_up)) return false;
+  catchup_marker value;
+  value.session = r.u64();
+  value.logical_peer = r.u64();
+  value.tick = r.u64();
+  if (!r.good() || r.position() != r.size() || value.session == 0 ||
+      value.logical_peer == 0 || value.tick == 0) return false;
+  out = value;
+  return true;
+}
+
+bool encode(const session_terminated& value, std::vector<std::byte>& out) {
+  out.clear();
+  if (uint8_t(value.reason) == 0 || uint8_t(value.reason) > termination_reason_max) return false;
+  const size_t required = 1 + 1;
+  auto w = begin(out, required, message::session_terminated);
+  w.u8(uint8_t(value.reason));
+  return finish(w, out, required);
+}
+
+bool decode(const std::span<const std::byte> bytes, session_terminated& out) {
+  serial::state_reader r(bytes);
+  if (r.u8() != uint8_t(message::session_terminated)) return false;
+  const uint8_t reason = r.u8();
+  if (!r.good() || r.position() != r.size() || reason == 0 || reason > termination_reason_max)
+    return false;
+  out.reason = termination_reason(reason);
+  return true;
+}
+
 const char* describe(const join_status status) noexcept {
   switch (status) {
     case join_status::loaded: return "loaded";
@@ -227,6 +271,18 @@ const char* describe(const join_status status) noexcept {
     case join_status::world_probe_mismatch: return "same fingerprint, different land";
     case join_status::generator_missing: return "declared generator is not present";
     case join_status::handshake_refused: return "refused during the handshake";
+    case join_status::world_declaration_malformed: return "world declaration is malformed";
+  }
+  return "unknown";
+}
+
+const char* describe(const termination_reason reason) noexcept {
+  switch (reason) {
+    case termination_reason::violations: return "protocol violations";
+    case termination_reason::timeout: return "phase timeout";
+    case termination_reason::history_exhausted: return "fell behind the retained history";
+    case termination_reason::shutdown: return "authority shutdown";
+    case termination_reason::disagreement: return "join report disagrees with the sent state";
   }
   return "unknown";
 }

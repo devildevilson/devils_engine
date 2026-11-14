@@ -331,7 +331,12 @@ public:
   devils_engine::aesthetics::entityid_t spawn_prefab(std::string_view name, glm::vec2 pos) override;
   devils_engine::aesthetics::entityid_t spawn_prefab_at_point(
     std::string_view name, std::string_view point_group) override;
+  // Локальный ввод (UI): одно действие вида за тик, повтор того же вида отбрасывается.
   bool enqueue_player_intent(devils_engine::act::intent intent);
+  // Действие из КАНОНИЧЕСКОГО журнала тика. Дедупликации по виду нет: несколько участников
+  // законно делают одно и то же в одном тике, а тождество входа — (peer, sequence) — уже
+  // проверили журнал и canonical_tick_wire. Число записей ограничено журналом тика.
+  bool enqueue_canonical_intent(devils_engine::act::intent intent);
   devils_engine::aesthetics::entityid_t player_entity() const noexcept { return player_entity_; }
   // Tick задаёт session/host: слайс больше не изобретает локальную кадровую координату. game_delta
   // — целочисленная проекция этого fixed step в game-домен (пауза даёт 0, scale её меняет).

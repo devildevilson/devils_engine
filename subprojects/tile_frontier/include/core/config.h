@@ -1,6 +1,8 @@
 #ifndef TILE_FRONTIER_CORE_CONFIG_H
 #define TILE_FRONTIER_CORE_CONFIG_H
 
+#include "devils_engine/utils/log.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,7 +13,7 @@ class calendar_clock;
 }
 } // namespace devils_engine
 
-// Рантайм-конфиг приложения (resources/config/app.tavl).
+// Составное runtime-представление engine/project/debug documents.
 // Структуры намеренно остаются агрегатами — их читает tavl через рефлексию.
 
 namespace tile_frontier {
@@ -32,6 +34,8 @@ struct simulation_config {
   // Catch-up is bounded per main frame but debt is retained, never discarded.
   uint32_t max_steps_per_frame = 8;
   uint32_t sound_fps = 60;
+  std::string sound_mixing = "owner";
+  uint32_t sound_output_buffer_ms = 50;
   uint32_t render_fps = 60;
   uint32_t assets_fps = 60;
   // Тумблер звукового потока (топологическая настройка → требует перезапуска движка, как render.enabled).
@@ -159,8 +163,8 @@ struct app_config {
   ui_config ui;
 };
 
-// Единственная схема, которую standard runtime пишет в пользовательский settings.tavl.
-// Project/engine topology (simulation/render/time/create_on_start) остаётся в bundled app.tavl.
+// Player-facing settings.tavl; logging/metrics сохраняются отдельно в debug.tavl.
+// Project/engine topology (simulation/render/time/create_on_start) остаётся в bundled engine/project documents.
 struct user_window_config {
   uint32_t width = 1280;
   uint32_t height = 720;
@@ -171,8 +175,6 @@ struct user_window_config {
 struct user_settings {
   user_window_config window;
   sound_config sound;
-  metrics_config metrics;
-  logging_config logging;
   ui_config ui;
 };
 

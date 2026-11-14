@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 // A real loopback GNS connection survives join and carries project input up,
 // then every canonical tick down. The client predicts locally and replays only
 // the bytes it actually received over that connection.
@@ -118,25 +119,16 @@ devils_engine::act::intent food_action(const double x, const double y) {
 
 std::vector<std::byte> action_payload(const devils_engine::act::intent& action) {
   std::vector<std::byte> bytes;
-  bytes.reserve(25);
-  net::state_writer writer(bytes, false);
-  writer.u8(1);
-  writer.u64(action.payload.spawn.prefab);
-  writer.u64(std::bit_cast<uint64_t>(action.payload.spawn.target.x));
-  writer.u64(std::bit_cast<uint64_t>(action.payload.spawn.target.y));
-  require(writer.good() && bytes.size() == 25, "canonical project action did not encode");
+  require(fn::encode(fn::canonical_food_action{action.payload.spawn.target.x,
+                                               action.payload.spawn.target.y}, bytes),
+          "canonical project action did not encode");
   return bytes;
 }
 
 bool enqueue_payload(host& target, const std::span<const std::byte> bytes) {
-  net::state_reader reader(bytes);
-  const uint8_t kind = reader.u8();
-  const uint64_t prefab = reader.u64();
-  const double x = std::bit_cast<double>(reader.u64());
-  const double y = std::bit_cast<double>(reader.u64());
-  return reader.good() && reader.position() == reader.size() && kind == 1 &&
-         prefab == utils::string_hash("food") && std::isfinite(x) && std::isfinite(y) &&
-         target.actors.enqueue_player_intent(food_action(x, y));
+  fn::canonical_food_action action;
+  return fn::decode(bytes, action) &&
+         target.actors.enqueue_canonical_intent(food_action(action.x, action.y));
 }
 
 struct wire_tick {
@@ -234,9 +226,8 @@ int main(const int argc, const char* const* argv) {
 
     const auto layouts = fn::player_intent_layouts();
     const net::id_index_table empty_registry;
-    const std::array<int32_t, 2> base_cells{0, 0};
     net::intent proposal;
-    require(fn::encode_player_intent(food_action(12.0, 13.0), 2, 0, base_cells, proposal),
+    require(fn::encode_player_intent(food_action(12.0, 13.0), 2, 0, proposal),
             "player intent did not quantize");
     std::vector<std::byte> upstream;
     upstream.reserve(net::intent_batch_max_bytes);
@@ -270,16 +261,16 @@ int main(const int argc, const char* const* argv) {
     require(seen.classify(decoded[0].sequence_low) == net::sequence_classification::new_value,
             "live proposal sequence was stale");
     devils_engine::act::intent accepted;
-    require(fn::decode_player_intent(decoded[0], base_cells, accepted),
+    require(fn::decode_player_intent(decoded[0], accepted),
             "project refused the live proposal");
     require(seen.observe(decoded[0].sequence_low) == net::sequence_classification::new_value,
             "live proposal sequence did not commit");
 
     net::intent absent;
-    require(fn::encode_player_intent(food_action(15.0, 13.0), 1, 0, base_cells, absent),
+    require(fn::encode_player_intent(food_action(15.0, 13.0), 1, 0, absent),
             "local-only prediction did not quantize");
     devils_engine::act::intent wrong_prediction;
-    require(fn::decode_player_intent(absent, base_cells, wrong_prediction),
+    require(fn::decode_player_intent(absent, wrong_prediction),
             "local-only prediction did not decode");
 
     std::vector<wire_tick> received_ticks;
@@ -302,7 +293,7 @@ int main(const int argc, const char* const* argv) {
               "live tick journal did not seal");
       auto sealed = journal.consume(tag);
       for (const auto& record : sealed.records())
-        require(authoritative.actors.enqueue_player_intent(record.action),
+        require(authoritative.actors.enqueue_canonical_intent(record.action),
                 "accepted input could not enter authority world");
       step(authoritative, tick);
 
@@ -355,7 +346,7 @@ int main(const int argc, const char* const* argv) {
       if (!context.presentation_suppressed()) return false;
       std::array<net::canonical_tick_record_view, net::canonical_tick_max_records> storage{};
       net::canonical_tick_view view;
-      if (net::try_decode_canonical_tick(bytes, storage, view) !=
+      if (net::try_decode_canonical_tick(bytes, target.clocks.simulation_now().value, storage, view) !=
             net::canonical_tick_wire_status::ok || !view.state_root ||
           view.tick != target.clocks.simulation_now().value + 1) return false;
       target.pending_tick = view.tick;

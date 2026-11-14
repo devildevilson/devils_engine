@@ -107,7 +107,10 @@
     логическую историю.
 13. **Tick и sequence — разные порядки.** History/checkpoints используют обычный strict order.
     Модульный wrap и half-range ambiguity принадлежат только sequence windows. Не применять modular
-    сравнение к simulation tick.
+    сравнение к simulation tick. Шаги нумеруются с 1: тик 0 не адресуется ни bundle, ни действием
+    (`canonical_tick_wire`, `intent_absolute_tick` его отвергают). «Состояние после 0 тиков» — это
+    начальное состояние: `start_tick == 0` означает вход до первого шага, а якорь восстановления с
+    тиком 0 — отсутствие якоря (начальное состояние доказывать незачем).
 14. **Три вида hash не смешиваются.** Schema/layout fingerprint — короткая compatibility metadata;
     state digest — корень канонического causal state; credential MAC — authentication policy.
     Ни Murmur root, ни content hash не превращаются в доказательство личности.
@@ -242,6 +245,10 @@ boundary на localhost; in-memory тесты — детерминированн
 
 ## 5. Ловушки
 
+- Little-endian на проводе держится только потому, что `utils::serial::writer/reader` собирают
+  целые сдвигами. Многобайтовое значение писать через `u16/u32/u64/f32/f64` поэлементно; memcpy
+  или `raw()`/`bytes()` массива POD (ради скорости) сериализует порядок байт хоста и молча ломает
+  big-endian. `raw()` — только для последовательностей байт: строк, nonce, digest.
 - `state_schema.h` больше не владеет сериализацией. Исправление canonical reader/writer/section
   composition обычно принадлежит `libs/utils`, после чего нужны и utils-, и network-тесты.
 - `network.h` специально не включает `gns_transport.h`. Не считать это пропуском.

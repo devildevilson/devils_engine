@@ -1,8 +1,10 @@
 #ifndef FRONTIER_ONLINE_NET_FOLLOWER_H
 #define FRONTIER_ONLINE_NET_FOLLOWER_H
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -40,6 +42,24 @@ enum class follower_phase : uint8_t {
   failed,
 };
 
+// Почему ведомый прекратил сессию по СВОЕЙ инициативе. Локальная причина, на провод не идёт:
+// авторитету о неудачном присоединении сообщает `join_report`.
+enum class follower_fault : uint8_t {
+  none,
+  connect_timeout,      // соединение не установилось в срок
+  handshake_timeout,    // рукопожатие не завершилось в срок
+  world_timeout,        // объявление мира не пришло в срок
+  transfer_stalled,     // передача состояния остановилась: нет новых байт дольше срока
+  confirmation_timeout, // после отчёта нет подтверждения присоединения
+  live_silence,         // живая сессия: авторитет молчит дольше срока
+  connection_closed,    // авторитет закрыл соединение
+  protocol_violation,   // авторитет прислал сообщение не своей фазы
+  insane_authority,     // авторитет прислал противоречивое: session 0, тик состояния не тот
+  terminated,           // авторитет прекратил обслуживание и назвал причину (см. termination())
+};
+
+[[nodiscard]] const char* describe(follower_fault fault) noexcept;
+
 struct follower_config {
   uint32_t host = 0x7f000001;
   uint16_t port = 0;
@@ -50,6 +70,20 @@ struct follower_config {
   bool corrupt_content_root = false;
   bool corrupt_intent_schema = false;
   bool corrupt_component_schema = false;
+
+  // СРОКИ — базовая проверка на вшивость авторитета: сервер, который замолчал посреди фазы, не
+  // должен держать клиента вечно. 0 — срока нет. Авторитет шлёт bundle каждый тик, поэтому
+  // секунды тишины в живой сессии — это уже беда, а не задержка.
+  std::chrono::milliseconds connect_timeout{5000};
+  std::chrono::milliseconds handshake_timeout{5000};
+  std::chrono::milliseconds world_timeout{5000};
+  std::chrono::milliseconds transfer_stall_timeout{5000};
+  std::chrono::milliseconds confirmation_timeout{5000};
+  std::chrono::milliseconds live_silence_timeout{5000};
+
+  // Сколько канонических тиков ведомый держит непрочитанными. Это ёмкость, а не предел ошибки:
+  // заполнив её, ведомый перестаёт забирать сообщения из транспорта, и они ждут в очереди GNS.
+  size_t canonical_capacity = 32;
 };
 
 class follower {
@@ -84,6 +118,10 @@ public:
   [[nodiscard]] bool live_ready() const noexcept;
   [[nodiscard]] bool live_terminal() const noexcept;
   [[nodiscard]] bool live_fault() const noexcept;
+  [[nodiscard]] follower_fault fault() const noexcept;
+  // Причина, которую авторитет назвал в `session_terminated`, если назвал.
+  [[nodiscard]] std::optional<termination_reason> termination() const noexcept;
+  [[nodiscard]] uint64_t catchup_tick() const noexcept;
 
 private:
   struct state;

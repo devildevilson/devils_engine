@@ -1,7 +1,8 @@
+#include "devils_engine/utils/log.h"
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/utils/core.h>
-#include <tavl/deserialize.h>
+#include <devils_engine/simul/configuration_layers.h>
 
 #include "app_config_resource.h"
 
@@ -16,28 +17,25 @@ app_config_resource::app_config_resource() {
   set_flag(demiurg::resource_flags::binary, false);
 }
 
+namespace {
+std::span<const std::string_view> sections(std::string_view id) {
+  static constexpr std::array<std::string_view, 1> project_sections{"time"};
+  if (id == "config/engine") return simul::engine_configuration_sections;
+  if (id == "config/debug") return simul::debug_configuration_sections;
+  if (id == "config/project") return project_sections;
+  utils::error{}("configuration '{}': expected config/engine, config/project or config/debug; migrate app.tavl", id);
+  return {};
+}
+} // namespace
+
 void app_config_resource::load_cold(const utils::safe_handle_t&) {
-  const std::string content = module->load_text(path);
+  app_config candidate{};
+  simul::deserialize_configuration_layer(module->load_text(path), id, sections(id), candidate);
+  cfg = std::move(candidate);
+}
 
-  tavl::parser parser;
-  parser.add_default_operator();
-  parser.flush(content);
-  parser.finish();
-
-  tavl::ct_context ctx;
-  cfg = app_config{}; // дефолты для полей, которых нет в файле
-  tavl::deserialize(parser, ctx, cfg);
-
-  if (!ctx.diagnostics.empty()) {
-    utils::warn("app_config_resource '{}': {} tavl diagnostics", id, ctx.diagnostics.size());
-    for (const auto& d : ctx.diagnostics) {
-      utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
-                  tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
-    }
-  }
-
-  DE_LOG(catalogue::log_domain::resource, flow, "app_config_resource '{}': parsed (window {}x{}, render config '{}')",
-         id, cfg.window.width, cfg.window.height, cfg.render.config_folder);
+void app_config_resource::apply_to(app_config& target) const {
+  simul::apply_configuration_sections(target, cfg, sections(id));
 }
 
 void app_config_resource::load_warm(const utils::safe_handle_t&) {}

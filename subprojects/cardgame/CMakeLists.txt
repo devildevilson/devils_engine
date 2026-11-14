@@ -28,21 +28,21 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   target_link_libraries(cardgame_effect_program_test PRIVATE cardgame::core devils_engine::options)
   set_target_properties(cardgame_effect_program_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
-  add_test(NAME cardgame_effect_program_test COMMAND cardgame_effect_program_test)
+  devils_add_test(NAME cardgame_effect_program_test COMMAND cardgame_effect_program_test)
   set_tests_properties(cardgame_effect_program_test PROPERTIES LABELS devils_engine)
 
   add_executable(cardgame_follow_up_test follow_up_test.cpp)
   target_link_libraries(cardgame_follow_up_test PRIVATE cardgame::core devils_engine::options)
   set_target_properties(cardgame_follow_up_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
-  add_test(NAME cardgame_follow_up_test COMMAND cardgame_follow_up_test)
+  devils_add_test(NAME cardgame_follow_up_test COMMAND cardgame_follow_up_test)
   set_tests_properties(cardgame_follow_up_test PROPERTIES LABELS devils_engine)
 
   add_executable(cardgame_action_pipeline_test action_pipeline_test.cpp)
   target_link_libraries(cardgame_action_pipeline_test PRIVATE cardgame::core devils_engine::options)
   set_target_properties(cardgame_action_pipeline_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
-  add_test(NAME cardgame_action_pipeline_test COMMAND cardgame_action_pipeline_test)
+  devils_add_test(NAME cardgame_action_pipeline_test COMMAND cardgame_action_pipeline_test)
   set_tests_properties(cardgame_action_pipeline_test PROPERTIES LABELS devils_engine)
 
   add_executable(cardgame_typed_effect_test typed_effect_test.cpp)
@@ -51,7 +51,7 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     CARDGAME_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/")
   set_target_properties(cardgame_typed_effect_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
-  add_test(NAME cardgame_typed_effect_test COMMAND cardgame_typed_effect_test)
+  devils_add_test(NAME cardgame_typed_effect_test COMMAND cardgame_typed_effect_test)
   set_tests_properties(cardgame_typed_effect_test PROPERTIES LABELS devils_engine)
 
   add_executable(cardgame_combat_script_test combat_script_test.cpp)
@@ -60,7 +60,7 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     CARDGAME_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/")
   set_target_properties(cardgame_combat_script_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
-  add_test(NAME cardgame_combat_script_test COMMAND cardgame_combat_script_test)
+  devils_add_test(NAME cardgame_combat_script_test COMMAND cardgame_combat_script_test)
   set_tests_properties(cardgame_combat_script_test PROPERTIES LABELS devils_engine)
 
   add_executable(cardgame_execution_report_script_test execution_report_script_test.cpp)
@@ -70,7 +70,7 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     CARDGAME_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/")
   set_target_properties(cardgame_execution_report_script_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
-  add_test(NAME cardgame_execution_report_script_test
+  devils_add_test(NAME cardgame_execution_report_script_test
     COMMAND cardgame_execution_report_script_test)
   set_tests_properties(cardgame_execution_report_script_test PROPERTIES
     LABELS devils_engine)
@@ -81,6 +81,6 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     CARDGAME_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/")
   set_target_properties(cardgame_headless_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
-  add_test(NAME cardgame_headless_smoke COMMAND cardgame_headless_smoke)
+  devils_add_test(NAME cardgame_headless_smoke COMMAND cardgame_headless_smoke)
   set_tests_properties(cardgame_headless_smoke PROPERTIES LABELS devils_engine)
 endif()

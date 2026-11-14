@@ -9,6 +9,7 @@
 #include <devils_engine/network/session_wire.h>
 
 #include "core/causal_content.h"
+#include "net/canonical_action.h"
 
 // СОБСТВЕННЫЕ КЛАССЫ СООБЩЕНИЙ СТЕНДА — то, чего нет в библиотеке, потому что оно проектное.
 // Рукопожатие целиком берётся из `network/session_wire.h`: второй, «свой» netcode рядом с уже
@@ -25,7 +26,7 @@ namespace frontier_online::net {
 namespace network = devils_engine::network;
 
 // Версия протокола стенда. Растёт при ЛЮБОМ изменении байтов ниже.
-inline constexpr uint32_t protocol_version = 2;
+inline constexpr uint32_t protocol_version = 4;
 
 // Числовой профиль. Пока это «родной float, профиль не зафиксирован»: NUM-01..04 ещё не пройдены,
 // поэтому совпадение поля означает только, что обе стороны ЗАЯВИЛИ одно и то же, и не является
@@ -45,6 +46,8 @@ enum class message : uint8_t {
   checkpoint_chunk = 3,  // авторитет -> клиент, объёмная полоса
   join_report = 4,       // клиент -> авторитет, управляющая полоса
   join_confirmed = 5,    // авторитет -> клиент, live mode: отчёт принят
+  live_caught_up = 6,    // авторитет -> клиент: все bundles до этого тика уже в control lane
+  session_terminated = 7, // авторитет -> клиент, управляющая полоса: почему обслуживание прекращено
 };
 
 // Budget for the complete causal document, not for one GNS message. The
@@ -127,6 +130,9 @@ enum class join_status : uint8_t {
   // умолчание: «загрузчик отверг документ» и «документа никто не присылал» — разные вещи, и
   // печатать вторую как первую значит врать в отчёте.
   handshake_refused = 6,
+  // Объявление мира не разобралось. Отдельно от `generator_missing`: «генератора нет» и «сообщение
+  // битое» — разные беды, и отчёт не должен выдавать одну за другую.
+  world_declaration_malformed = 7,
 };
 
 struct join_report {
@@ -152,7 +158,42 @@ struct join_confirmation {
 [[nodiscard]] bool encode(const join_confirmation& value, std::vector<std::byte>& out);
 [[nodiscard]] bool decode(std::span<const std::byte> bytes, join_confirmation& out);
 
+struct catchup_marker {
+  uint64_t session = 0;
+  uint64_t logical_peer = 0;
+  uint64_t tick = 0;
+};
+
+[[nodiscard]] bool encode(const catchup_marker& value, std::vector<std::byte>& out);
+[[nodiscard]] bool decode(std::span<const std::byte> bytes, catchup_marker& out);
+
+// Payload канонической записи (`canonical_food_action`) — в "net/canonical_action.h".
+
+// Почему авторитет прекратил обслуживать участника ПОСЛЕ рукопожатия. Отказ рукопожатия называет
+// себя `session_refusal_reason`; всё, что случилось позже, — это. Нумерация стабильна: значение
+// поедет по проводу в `session_terminated`.
+enum class termination_reason : uint8_t {
+  violations = 1,        // превышен порог нарушений протокола
+  timeout = 2,           // фаза не завершилась в объявленный срок
+  history_exhausted = 3, // участник отстал за начало удерживаемой истории
+  shutdown = 4,          // авторитет завершает работу
+  disagreement = 5,      // отчёт о присоединении не совпал с отправленным состоянием
+};
+
+inline constexpr uint8_t termination_reason_max = uint8_t(termination_reason::disagreement);
+
+// ЗАВЕРШЕНИЕ СЕССИИ. Последнее слово авторитета перед закрытием соединения: отказ обязан
+// назваться и после рукопожатия. Шлётся только установленному участнику (до рукопожатия у него
+// нет грамматики проектных сообщений) и по управляющей полосе, после всего уже поставленного.
+struct session_terminated {
+  termination_reason reason = termination_reason::violations;
+};
+
+[[nodiscard]] bool encode(const session_terminated& value, std::vector<std::byte>& out);
+[[nodiscard]] bool decode(std::span<const std::byte> bytes, session_terminated& out);
+
 [[nodiscard]] const char* describe(join_status status) noexcept;
+[[nodiscard]] const char* describe(termination_reason reason) noexcept;
 [[nodiscard]] const char* describe(network::session_refusal_reason reason) noexcept;
 
 } // namespace frontier_online::net

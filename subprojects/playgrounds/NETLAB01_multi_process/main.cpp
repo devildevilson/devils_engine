@@ -82,7 +82,6 @@ struct options {
 std::string_view compatibility_name(const lab_compatibility_variant value) noexcept {
   switch (value) {
     case lab_compatibility_variant::compatible: return "compatible";
-    case lab_compatibility_variant::handshake_format: return "handshake-format";
     case lab_compatibility_variant::protocol: return "protocol";
     case lab_compatibility_variant::content: return "content";
     case lab_compatibility_variant::state_schema: return "state-schema";
@@ -94,7 +93,6 @@ std::string_view compatibility_name(const lab_compatibility_variant value) noexc
 
 lab_compatibility_variant parse_compatibility(const std::string_view value) {
   if (value == "compatible") return lab_compatibility_variant::compatible;
-  if (value == "handshake-format") return lab_compatibility_variant::handshake_format;
   if (value == "protocol") return lab_compatibility_variant::protocol;
   if (value == "content") return lab_compatibility_variant::content;
   if (value == "state-schema") return lab_compatibility_variant::state_schema;
@@ -1014,7 +1012,7 @@ void print_usage(const char* self) {
     "  --ticket PATH     where a follower keeps its reconnect ticket.\n"
     "  --resume          rejoin using a persisted ticket.\n"
     "  --scenario NAME   continuous (default) or killed.\n"
-    "  --compatibility V compatible (default), handshake-format, protocol, content,\n"
+    "  --compatibility V compatible (default), protocol, content,\n"
     "                    state-schema, intent-schema or numeric-profile.\n"
     "  --wire-version V  current (default), previous or breaking.\n"
     "  --quiet\n"
@@ -1037,7 +1035,7 @@ int run_verify(const std::string& self, const options& opts) {
   verify.require(current_root == previous_root,
                  "the previous compatible wire version produced a different state root");
   static constexpr std::array incompatible = {
-    lab_compatibility_variant::handshake_format, lab_compatibility_variant::protocol,
+    lab_compatibility_variant::protocol,
     lab_compatibility_variant::content,
     lab_compatibility_variant::state_schema, lab_compatibility_variant::intent_schema,
     lab_compatibility_variant::numeric_profile};

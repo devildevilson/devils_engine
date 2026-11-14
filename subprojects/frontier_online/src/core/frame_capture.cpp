@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 #include "frame_capture.h"
 
 #include <algorithm>

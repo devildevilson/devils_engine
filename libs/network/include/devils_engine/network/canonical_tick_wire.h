@@ -14,12 +14,18 @@
 // with no accepted external actions. Payload bytes belong to the project;
 // this envelope owns their tick, origin and bounded framing. The optional root
 // is the causal state AFTER stepping this tick, never a transform-frame digest.
+//
+// The tick travels as its low 16 bits and is widened against the receiver's
+// own tick, as in every hot class. The lane is reliable and ordered and every
+// tick has a bundle, so the receiver always knows the previous tick: the field
+// is a check, not information, and 16 bits keep that check exact while saving
+// six bytes on every tick of every peer. Tick 0 is not a step and is refused.
 namespace devils_engine::network {
 
 inline constexpr size_t canonical_tick_max_bytes = 1024;
 inline constexpr size_t canonical_tick_max_records = 32;
 inline constexpr size_t canonical_tick_max_payload_bytes = 256;
-inline constexpr size_t canonical_tick_header_bytes = 1 + 8 + 1 + 1;
+inline constexpr size_t canonical_tick_header_bytes = 1 + 2 + 1 + 1;
 inline constexpr size_t canonical_tick_root_bytes = 8;
 inline constexpr size_t canonical_tick_record_header_bytes = 8 + 8 + 2;
 
@@ -86,7 +92,7 @@ namespace detail {
 
   state_writer writer(out, false);
   writer.u8(uint8_t(hot_message_type::canonical_tick));
-  writer.u64(tick);
+  writer.u16(uint16_t(tick & 0xffffu));
   writer.u8(state_root ? 1 : 0);
   writer.u8(uint8_t(records.size()));
   if (state_root) writer.u64(*state_root);
@@ -106,15 +112,17 @@ namespace detail {
 // `storage` receives views into `bytes` only after the whole message validates.
 // Both outputs stay untouched on refusal. The caller keeps bytes alive while
 // consuming the view, and validates each project payload before stepping.
+// `receiver_tick` is the receiver's own committed tick; a follower expects the
+// decoded tick to be exactly receiver_tick + 1, and checks that itself.
 [[nodiscard]] inline canonical_tick_wire_status try_decode_canonical_tick(
-  const std::span<const std::byte> bytes, const std::span<canonical_tick_record_view> storage,
-  canonical_tick_view& out) noexcept {
+  const std::span<const std::byte> bytes, const uint64_t receiver_tick,
+  const std::span<canonical_tick_record_view> storage, canonical_tick_view& out) noexcept {
   if (bytes.size() > canonical_tick_max_bytes) return canonical_tick_wire_status::too_large;
   if (bytes.size() < canonical_tick_header_bytes) return canonical_tick_wire_status::truncated;
   state_reader reader(bytes);
   if (reader.u8() != uint8_t(hot_message_type::canonical_tick))
     return canonical_tick_wire_status::wrong_message_type;
-  const uint64_t tick = reader.u64();
+  const uint64_t tick = widen_tick_low16(receiver_tick, reader.u16());
   const uint8_t flags = reader.u8();
   const uint8_t count = reader.u8();
   if (!reader.good()) return canonical_tick_wire_status::truncated;

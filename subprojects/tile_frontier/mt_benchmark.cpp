@@ -1,3 +1,4 @@
+#include "devils_engine/utils/log.h"
 // Full tile_frontier actor-pipeline scaling benchmark. Every worker-count run starts from the same
 // deterministic world, executes the same number of ticks, and must produce byte-identical world data.
 // Timing excludes init, warmup and serialization/hash verification.
