@@ -35,11 +35,5 @@ target_link_libraries(devils_visage
           msdf-atlas-gen::msdf-atlas-gen glm::glm)
 target_include_directories(devils_visage PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>" "$<BUILD_INTERFACE:${nuklear_SOURCE_DIR}>")
 target_include_directories(devils_visage PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/visage>" "${nuklear_SOURCE_DIR}")
-target_link_directories(devils_visage PRIVATE ${FREETYPE_LIBRARY_DIR})
-target_include_directories(devils_visage PRIVATE ${FREETYPE_INCLUDE_DIRS})
-
-if(MSVC)
-  target_include_directories(devils_visage PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54/include)
-endif()
 
 add_library(devils_engine::visage ALIAS devils_visage)

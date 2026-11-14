@@ -148,13 +148,7 @@ add_library(devils_engine::originator_device ALIAS devils_originator_device)
 
 # Скриптовый слой — ОТДЕЛЬНАЯ цель: ядро генератора не должно тянуть lua за собой, а потребителю,
 # которому нужен только пайплайн на C++, незачем линковать интерпретатор.
-if (MSVC)
-  set(DEVILS_ORIGINATOR_LUA_LIBRARIES lua54)
-else()
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(originator_lua54 REQUIRED IMPORTED_TARGET lua5.4)
-  set(DEVILS_ORIGINATOR_LUA_LIBRARIES PkgConfig::originator_lua54)
-endif()
+set(DEVILS_ORIGINATOR_LUA_LIBRARIES devils_engine::lua54)
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/originator/algorithms.lua")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/originator/algorithms.lua" ORIGINATOR_ALGORITHMS_SOURCE)
@@ -177,10 +171,5 @@ target_link_libraries(devils_originator_lua
   # считают ОДНИМ хешем. Цель `bindings_base` намеренно без интерфейса — генератор headless.
   PRIVATE devils_engine::options devils_engine::utils devils_engine::bindings_base
 )
-
-if (WIN32)
-  target_link_directories(devils_originator_lua PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54)
-  target_include_directories(devils_originator_lua PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54/include)
-endif()
 
 add_library(devils_engine::originator_lua ALIAS devils_originator_lua)

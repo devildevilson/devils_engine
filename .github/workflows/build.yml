@@ -1,0 +1,103 @@
+name: build
+
+on:
+  push:
+    branches: [main, ci]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # scripts/ is not committed yet; these three tests run Python scripts from it.
+  UNTRACKED_SCRIPT_TESTS: "^(module_profile_migration|test_build_dependencies_contract|project_task_ids_contract)$"
+
+jobs:
+  linux:
+    # Ubuntu 26.04 LTS in a container: GCC 15, GLFW 3.4 and Lua 5.4 from the distribution.
+    # (24.04 ships GLFW 3.3, and its GCC 14.2 has an internal compiler error on qlibs/reflect.)
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    timeout-minutes: 240
+    steps:
+      - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git g++ cmake ninja-build pkg-config ccache python3 \
+            liblua5.4-dev libzstd-dev libssl-dev libglfw3-dev \
+            libvulkan-dev libshaderc-dev glslang-dev glslang-tools spirv-tools \
+            mesa-vulkan-drivers xvfb xauth
+
+      - uses: actions/checkout@v4
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-${{ github.sha }}
+          restore-keys: ccache-linux-
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: |
+          ccache --max-size=3G
+          cmake --build build --parallel 4
+          ccache --show-stats
+
+      - name: Test
+        # lavapipe (mesa-vulkan-drivers) is the Vulkan device; xvfb is the display for GLFW.
+        run: >
+          xvfb-run -a ctest --test-dir build -L devils_engine
+          -E "$UNTRACKED_SCRIPT_TESTS" --output-on-failure --parallel 2
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 300
+    env:
+      VCPKG_COMMIT: 4702e381dbbd9b54d3f7e1eb565cd8981c1814cd
+      VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
+      VCPKG_CACHE: ${{ github.workspace }}\..\vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_CACHE }}
+          key: vcpkg-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-windows-${{ env.VCPKG_COMMIT }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" checkout $env:VCPKG_COMMIT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force "$env:VCPKG_CACHE" | Out-Null
+          "VCPKG_BINARY_SOURCES=clear;files,$env:VCPKG_CACHE,readwrite" >> $env:GITHUB_ENV
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        shell: pwsh
+        run: >
+          ctest --test-dir build -C Release -L devils_engine
+          -E "$env:UNTRACKED_SCRIPT_TESTS" --output-on-failure --parallel 2

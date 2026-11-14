@@ -11,15 +11,17 @@ project(
 # tiny_ktx? https://github.com/DeanoC/tiny_ktx
 # ktx? https://github.com/KhronosGroup/KTX-Software
 
+# Vulkan headers come from FetchContent and the loader is resolved at run time, so only shaderc
+# is a link dependency. Windows: vcpkg. Its headers are part of painter's (and simul's) public
+# surface, so on Windows the target is propagated; on Linux they live in /usr/include.
 if (WIN32)
-  set(SHADERC_LIBRARY_NAME shaderc_shared)
-  set(VULKAN_LIBRARY_NAME vulkan-1)
+  find_package(unofficial-shaderc CONFIG REQUIRED GLOBAL)
+  set(SHADERC_LIBRARY_NAME unofficial::shaderc::shaderc)
 else()
   find_package(Vulkan REQUIRED)
   find_library(SHADERC_LIB NAMES shaderc_combined shaderc)
   find_package(glslang REQUIRED)
   set(SHADERC_LIBRARY_NAME ${SHADERC_LIB} glslang::glslang)
-  set(VULKAN_LIBRARY_NAME Vulkan::Vulkan)
 endif()
 
 set(SRC_LIST
@@ -95,9 +97,8 @@ target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_S
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>")
 target_include_directories(devils_painter PRIVATE "${stb_SOURCE_DIR}") # stb_image.h для texture_resource
 
-if (MSVC)
-  target_link_directories(devils_painter PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan)
-  target_include_directories(devils_painter PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan/Include)
+if (WIN32)
+  target_link_libraries(devils_painter PUBLIC ${SHADERC_LIBRARY_NAME})
 endif()
 
 add_library(devils_engine::painter ALIAS devils_painter)

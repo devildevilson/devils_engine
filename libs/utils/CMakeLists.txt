@@ -120,7 +120,9 @@ target_compile_options(engine_c_part1 PRIVATE
 )
 
 target_link_libraries(devils_utils
-  PUBLIC atomic_queue::atomic_queue Threads::Threads spdlog::spdlog gtl #ReflexLibStatic #alpaca::alpaca
+  # glm: the public header utils/shared.h uses glm types. Without the target its consumers found
+  # glm only when the system happened to have it installed.
+  PUBLIC atomic_queue::atomic_queue Threads::Threads spdlog::spdlog gtl glm::glm #ReflexLibStatic #alpaca::alpaca
   PRIVATE engine_c_part1 ${ZSTD_TARGET} ZLIB::ZLIB devils_engine::options cpuinfo
 )
 

@@ -8,46 +8,10 @@ project(
   LANGUAGES CXX C
 )
 
-if (WIN32)
-  if (MSVC_TOOLSET_VERSION EQUAL 120)
-    set(GLFW3_FOLDER_NAME lib-vc2013)
-  elseif (MSVC_TOOLSET_VERSION EQUAL 140)
-    set(GLFW3_FOLDER_NAME lib-vc2015)
-  elseif (MSVC_TOOLSET_VERSION EQUAL 141)
-    set(GLFW3_FOLDER_NAME lib-vc2017)
-  elseif (MSVC_TOOLSET_VERSION EQUAL 142)
-    set(GLFW3_FOLDER_NAME lib-vc2019)
-  elseif (MSVC_TOOLSET_VERSION EQUAL 143)
-    set(GLFW3_FOLDER_NAME lib-vc2022)
-  elseif (MINGW)
-    set(GLFW3_FOLDER_NAME lib-mingw-w64)
-  endif()
-
-  add_library(glfw SHARED IMPORTED GLOBAL)
-
-  if (MSVC)
-  set_target_properties(glfw PROPERTIES
-    IMPORTED_LOCATION
-      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/glfw3.dll"
-    IMPORTED_IMPLIB
-      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/glfw3dll.lib"
-    INTERFACE_INCLUDE_DIRECTORIES
-      "${glfw3_SOURCE_DIR}/include"
-  )
-  else(MINGW)
-  set_target_properties(glfw PROPERTIES
-    IMPORTED_LOCATION
-      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/glfw3.dll"
-    IMPORTED_IMPLIB
-      "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}/libglfw3dll.a"
-    INTERFACE_INCLUDE_DIRECTORIES
-      "${glfw3_SOURCE_DIR}/include"
-  )
-  endif()
-
-else()
-  find_package(glfw3 REQUIRED)
-endif()
+# GLFW: the distribution's package on Linux, vcpkg on Windows. 3.4 is the floor: core.cpp uses
+# glfwInitVulkanLoader and glfwGetWindowTitle (Ubuntu 24.04 ships 3.3). GLOBAL because
+# devils_input is a static library: its consumers link `glfw` from their own directories.
+find_package(glfw3 3.4 REQUIRED GLOBAL)
 
 set(SRC_LIST
   src/input/bindings.cpp
@@ -65,16 +29,11 @@ set(HDR_LIST
 
 add_library(devils_input ${SRC_LIST} ${HDR_LIST})
 target_link_libraries(devils_input PUBLIC devils_engine::options devils_engine::utils PRIVATE glfw Vulkan::Headers)
+# The engine renders with Vulkan only. Without GLFW_INCLUDE_NONE glfw3.h also pulls in GL/gl.h,
+# which a machine without OpenGL development headers does not have.
+target_compile_definitions(devils_input PRIVATE GLFW_INCLUDE_NONE)
 target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_input PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/input>")
-
-#target_include_directories(devils_input SYSTEM PRIVATE
-#  "${glfw3_SOURCE_DIR}/include"
-#)
-
-#target_link_directories(devils_input PUBLIC
-#  "${glfw3_SOURCE_DIR}/${GLFW3_FOLDER_NAME}"
-#)
 
 #if (MSVC)
 #  target_include_directories(devils_input PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan/Include)

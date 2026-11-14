@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <string_view>
 #include <devils_engine/demiurg/module_profile.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/modules_listing.h>
@@ -13,9 +15,12 @@
 
 using namespace devils_engine;
 namespace {
+// CTest runs each doctest case as its own process, in parallel under -j. A directory shared by all
+// cases let one case remove_all the tree another was writing into, so each case owns its own.
 struct temporary_root {
-  std::filesystem::path path = std::filesystem::temp_directory_path() / "devils_engine_profile_test";
-  temporary_root() {
+  std::filesystem::path path;
+  explicit temporary_root(const std::string_view name)
+    : path(std::filesystem::temp_directory_path() / ("devils_engine_profile_test_" + std::string(name))) {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
   }
@@ -44,7 +49,7 @@ void make_zip(const std::filesystem::path& path) {
 }
 } // namespace
 TEST_CASE("TAVL module profiles are shared by listing and module system") {
-  temporary_root root;
+  temporary_root root("listing");
   std::filesystem::create_directories(root.path / "core");
   std::filesystem::create_directories(root.path / "other");
   demiurg::modules_listing listing(root.path.generic_string());
@@ -72,7 +77,7 @@ TEST_CASE("TAVL module profiles are shared by listing and module system") {
   CHECK_THROWS_AS(listing.load_list("missing"), utils::critical_error);
 }
 TEST_CASE("profile codec validates version paths types duplicates and preserves escaped strings") {
-  temporary_root root;
+  temporary_root root("codec");
   const auto path = root.path / "profile.tavl";
   demiurg::module_profile input{1, {{"core/", "", "quote\" slash\\ newline\n"}}};
   demiurg::write_module_profile(path, input);
@@ -90,7 +95,7 @@ TEST_CASE("profile codec validates version paths types duplicates and preserves 
   CHECK(demiurg::read_module_profile(path).modules.empty());
 }
 TEST_CASE("ZIP entry reads accept byte counts including empty and reject CRC errors") {
-  temporary_root root;
+  temporary_root root("zip");
   const auto path = root.path / "data.zip";
   make_zip(path);
   {

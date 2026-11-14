@@ -1,0 +1,16 @@
+{
+  "$comment": "Windows system dependencies (Linux takes them from the distribution). Configure with -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake. Lua is pinned to 5.4: sol2 does not support 5.5.",
+  "name": "devils-engine",
+  "version-string": "0.1.1",
+  "builtin-baseline": "4702e381dbbd9b54d3f7e1eb565cd8981c1814cd",
+  "dependencies": [
+    { "name": "lua", "platform": "windows" },
+    { "name": "zstd", "platform": "windows" },
+    { "name": "openssl", "platform": "windows" },
+    { "name": "glfw3", "platform": "windows" },
+    { "name": "shaderc", "platform": "windows" }
+  ],
+  "overrides": [
+    { "name": "lua", "version": "5.4.8" }
+  ]
+}
