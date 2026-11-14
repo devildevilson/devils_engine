@@ -577,10 +577,11 @@ add_library(Freetype::Freetype ALIAS freetype-interface)
 # make global 23 later
 if (MSVC AND NOT DEFINED CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
-  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  FetchContent_MakeAvailable(absl)
+  unset(CMAKE_CXX_STANDARD)
+else()
+  FetchContent_MakeAvailable(absl)
 endif()
-
-FetchContent_MakeAvailable(absl)
 FetchContent_MakeAvailable(protobuf)
 
 include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
