@@ -484,7 +484,8 @@ endforeach()
 
 if(Python3_Interpreter_FOUND)
   devils_add_test(NAME test_build_dependencies_contract
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_test_build_dependencies.py ${CMAKE_BINARY_DIR})
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_test_build_dependencies.py ${CMAKE_BINARY_DIR}
+      --manifest "${DEVILS_ENGINE_TEST_ARTIFACTS}" --config "$<CONFIG>" --ctest "${CMAKE_CTEST_COMMAND}")
   set_tests_properties(test_build_dependencies_contract PROPERTIES LABELS devils_engine)
 endif()
 
