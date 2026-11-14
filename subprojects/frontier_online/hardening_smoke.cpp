@@ -457,6 +457,9 @@ void inputs_survive_loss_exactly_once(fnet::net_runtime& runtime, const fo::caus
     SteamNetworkingUtils()->SetGlobalConfigValueFloat(
       k_ESteamNetworkingConfig_FakePacketLoss_Send, 20.0f);
     const uint64_t first = authority.tick() + 8;
+    // Диагностика для медленных машин (CI): отставание ведомого и реальная длительность окна.
+    const uint64_t lag_at_proposal = authority.tick() - client.tick();
+    const auto window_start = std::chrono::steady_clock::now();
     for (uint64_t i = 0; i < 5; ++i)
       CHECK(client.propose_food(10.0 + double(i), 11.0 + double(i), first + i));
     // Настоящий период тика (60 Гц): соотношение задержек GNS и срока цели — часть проверки.
@@ -471,14 +474,19 @@ void inputs_survive_loss_exactly_once(fnet::net_runtime& runtime, const fo::caus
       }
       std::this_thread::sleep_for(1ms);
     }
+    const auto window_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - window_start).count();
     SteamNetworkingUtils()->SetGlobalConfigValueFloat(
       k_ESteamNetworkingConfig_FakePacketLoss_Send, 0.0f);
     CHECK(drive(runtime, [&] { authority.service(); client.service(); },
                 [&] { return client.tick() == authority.tick(); }, 15000ms));
-    std::printf("loss: applied %u, own %u, rejected %u, duplicates %llu, roots %s\n",
+    std::printf("loss: applied %u, own %u, rejected %u, duplicates %llu, dropped %llu, "
+                "lag %llu ticks, window %lld ms, roots %s\n",
                 authority.stats().applied_inputs, client.stats().own_inputs,
                 client.stats().rejected_inputs,
                 static_cast<unsigned long long>(authority.stats().duplicate_inputs),
+                static_cast<unsigned long long>(authority.stats().dropped_inputs),
+                static_cast<unsigned long long>(lag_at_proposal), static_cast<long long>(window_ms),
                 client.root() == authority.root() ? "equal" : "DIFFER");
     CHECK(authority.stats().applied_inputs == 5);
     CHECK(client.stats().own_inputs == 5);

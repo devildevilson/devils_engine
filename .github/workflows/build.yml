@@ -120,7 +120,8 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build --config Release --parallel 4 2>&1 | Tee-Object -FilePath ci-logs\build.log
+          # /Wall floods the console with warnings; errors also go to their own file for the report.
+          cmake --build build --config Release --parallel 4 -- "/flp:ErrorsOnly;LogFile=ci-logs\msbuild-errors.log" 2>&1 | Tee-Object -FilePath ci-logs\build.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Test
@@ -132,7 +133,7 @@ jobs:
       - name: Report errors
         if: failure()
         run: |
-          $logs = @("ci-logs\configure.log", "ci-logs\build.log", "ci-logs\test.log")
+          $logs = @("ci-logs\configure.log", "ci-logs\msbuild-errors.log", "ci-logs\build.log", "ci-logs\test.log")
           # vcpkg writes the failing port's own logs under buildtrees; include them too.
           $logs += Get-ChildItem -Path "$env:VCPKG_ROOT\buildtrees" -Recurse -Filter "*-err.log" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
           python .github/scripts/report_errors.py @logs

@@ -7,11 +7,15 @@ import re
 import sys
 from pathlib import Path
 
+# "error:" must not be followed by another ':' (utils::error::error in MSVC warning text).
 PATTERNS = re.compile(
-    r"(CMake Error|error:|error [A-Z]+\d+|fatal error|FAILED:|\*\*\*Failed|\*\*\*Exception|"
-    r"Timeout|LNK\d+|undefined reference|internal compiler error|error\(s\))"
+    r"(CMake Error|\berror(?: [A-Z]+\d+)?:(?!:)|fatal error|FAILED:|\*\*\*Failed|\*\*\*Exception|"
+    r"Timeout|error LNK\d+|undefined reference|internal compiler error|[1-9]\d* Error\(s\))"
 )
+# MSVC /Wall prints thousands of warnings whose text mentions functions named error.
+IGNORED = re.compile(r"warning [A-Z]+\d+:")
 CONTEXT_AFTER = 8
+TEST_CONTEXT_AFTER = 40
 MAX_ANNOTATIONS = 10
 MAX_MESSAGE = 3500
 
@@ -29,13 +33,15 @@ for name in sys.argv[1:]:
     lines = path.read_text(errors="replace").splitlines()
     i = 0
     while i < len(lines):
-        if PATTERNS.search(lines[i]):
-            block = lines[i:i + 1 + CONTEXT_AFTER]
+        if PATTERNS.search(lines[i]) and not IGNORED.search(lines[i]):
+            # A failed test's own output follows its ctest line: keep more of it.
+            after = TEST_CONTEXT_AFTER if "***" in lines[i] else CONTEXT_AFTER
+            block = lines[i:i + 1 + after]
             key = lines[i].strip()
             if key not in seen:
                 seen.add(key)
                 blocks.append(f"[{path.name}:{i + 1}]\n" + "\n".join(block))
-            i += 1 + CONTEXT_AFTER
+            i += 1 + after
         else:
             i += 1
 
