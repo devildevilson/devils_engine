@@ -22,6 +22,15 @@ else()
   find_library(SHADERC_LIB NAMES shaderc_combined shaderc)
   find_package(glslang REQUIRED)
   set(SHADERC_LIBRARY_NAME ${SHADERC_LIB} glslang::glslang)
+  # Debian/Ubuntu ship libshaderc_combined.a WITHOUT SPIRV-Tools (separate static archives there);
+  # Arch's combined archive is self-contained and its SPIRV-Tools are shared libraries only.
+  # Archives appended at the end resolve only what is still undefined, so where the combined
+  # archive already has the symbols the link does not change.
+  find_library(SPIRV_TOOLS_OPT_STATIC NAMES libSPIRV-Tools-opt.a)
+  find_library(SPIRV_TOOLS_STATIC NAMES libSPIRV-Tools.a)
+  if (SHADERC_LIB MATCHES "\\.a$" AND SPIRV_TOOLS_OPT_STATIC AND SPIRV_TOOLS_STATIC)
+    list(APPEND SHADERC_LIBRARY_NAME ${SPIRV_TOOLS_OPT_STATIC} ${SPIRV_TOOLS_STATIC})
+  endif()
 endif()
 
 set(SRC_LIST
