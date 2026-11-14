@@ -41,8 +41,13 @@ target_compile_definitions(devils_playground_chunk_viewer PRIVATE
   PLAYGROUND_COMMON_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources")
 add_library(devils_engine::playground_chunk_viewer ALIAS devils_playground_chunk_viewer)
 
+# Python is a test-only dependency: no build artifact runs it. Without an interpreter these two
+# script contracts are not registered, like the other Python-driven tests in the tree.
 if (DEVILS_ENGINE_BUILD_TESTS)
-  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+endif()
+
+if (DEVILS_ENGINE_BUILD_TESTS AND Python3_Interpreter_FOUND)
   devils_add_test(NAME playground_cli_contract
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_contract.py
       $<TARGET_FILE:GN01_generator_contract> $<TARGET_FILE:GN05_constraint_collapse>)
@@ -54,6 +59,9 @@ if(DEVILS_ENGINE_BUILD_TESTS)
   target_link_libraries(playground_cli_values PRIVATE devils_engine::playground_cli)
   devils_add_test(NAME playground_cli_values COMMAND playground_cli_values)
   set_tests_properties(playground_cli_values PROPERTIES LABELS devils_engine)
+endif()
+
+if (DEVILS_ENGINE_BUILD_TESTS AND Python3_Interpreter_FOUND)
   devils_add_test(NAME playground_cli_migration_contract
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_migration_contract.py
       $<TARGET_FILE:GN02_planet_generator> $<TARGET_FILE:GN03_streaming_volume>
