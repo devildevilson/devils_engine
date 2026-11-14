@@ -84,8 +84,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: vcpkg binary cache
-        uses: actions/cache@v4
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.VCPKG_CACHE }}
           key: vcpkg-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
@@ -107,6 +108,15 @@ jobs:
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows 2>&1 | Tee-Object -FilePath ci-logs\configure.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # vcpkg builds its ports during configure. Save them even when a later step fails, so the
+      # next run does not rebuild OpenSSL and shaderc from scratch.
+      - name: Save vcpkg binary cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_CACHE }}
+          key: vcpkg-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Build
         run: |

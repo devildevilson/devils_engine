@@ -728,8 +728,17 @@ include("${CMAKE_SOURCE_DIR}/cmake/devils_tests.cmake")
 add_library(devils_lua54 INTERFACE)
 if (WIN32)
   find_package(Lua REQUIRED)
-  if (NOT LUA_VERSION_MAJOR EQUAL 5 OR NOT LUA_VERSION_MINOR EQUAL 4)
-    message(FATAL_ERROR "Lua 5.4 is required (sol2 does not support ${LUA_VERSION_STRING}); vcpkg.json pins it")
+  # Read the version from lua.h directly: since 5.4.7 it is defined as LUA_VERSION_MAJOR_N /
+  # MINOR_N (the string macros are built from them), and FindLua then reports no version at all.
+  file(STRINGS "${LUA_INCLUDE_DIR}/lua.h" _devils_lua_version
+       REGEX "^#define[ \t]+LUA_VERSION_(MAJOR|MINOR)(_N)?[ \t]+\"?[0-9]+")
+  string(REGEX MATCH "LUA_VERSION_MAJOR(_N)?[ \t]+\"?([0-9]+)" _ "${_devils_lua_version}")
+  set(_devils_lua_major "${CMAKE_MATCH_2}")
+  string(REGEX MATCH "LUA_VERSION_MINOR(_N)?[ \t]+\"?([0-9]+)" _ "${_devils_lua_version}")
+  set(_devils_lua_minor "${CMAKE_MATCH_2}")
+  if (NOT _devils_lua_major EQUAL 5 OR NOT _devils_lua_minor EQUAL 4)
+    message(FATAL_ERROR "Lua 5.4 is required (sol2 does not support 5.5); found "
+                        "'${_devils_lua_major}.${_devils_lua_minor}' in ${LUA_INCLUDE_DIR}. vcpkg.json pins 5.4")
   endif()
   target_include_directories(devils_lua54 INTERFACE ${LUA_INCLUDE_DIR})
   target_link_libraries(devils_lua54 INTERFACE ${LUA_LIBRARIES})
