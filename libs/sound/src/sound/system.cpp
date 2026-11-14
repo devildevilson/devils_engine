@@ -5,7 +5,9 @@
 #include <cmath>
 #include <cstring>
 
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #define WIN32_LEAN_AND_MEAN
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>

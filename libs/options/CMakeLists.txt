@@ -91,6 +91,9 @@ target_compile_definitions(devils_engine_options INTERFACE
   $<$<STREQUAL:${DEVILS_ENGINE_ARCH},OFF>:GLM_FORCE_PURE>
   DEVILS_ENGINE_PROJECT_NAME="${PROJECT_NAME}"
   DEVILS_ENGINE_ENGINE_NAME="${DEVILS_ENGINE_NAME}"
+  # <windows.h> defines function-like min/max macros, which break every later utils::min/max and
+  # std::min/max in the same TU. Declared once for the whole engine instead of per source file.
+  $<$<PLATFORM_ID:Windows>:NOMINMAX>
 )
 
 set(_de_lto_cfg "$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>,$<CONFIG:RelWithDebInfo>>")
