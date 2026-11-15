@@ -17,25 +17,35 @@
 namespace devils_engine {
 namespace act {
 
+// Поля перебираются через std::index_sequence и шаблоны функций, а не reflect::for_each с generic
+// lambda: MSVC (VS 2026) падал с internal compiler error C1001 в каждом TU с этим заголовком, а индекс
+// из лямбды (`constexpr I = decltype(Idx)::value`) уходил здесь в аргументы шаблонов. Порядок
+// регистрации тот же: comma-fold идёт по индексам слева направо, как for_each.
 namespace stats_detail {
+
+template <typename StatsT, std::size_t I>
+using field_t = std::remove_cvref_t<decltype(reflect::get<I>(std::declval<StatsT&>()))>;
+
+template <typename T>
+inline constexpr bool numeric_field_v =
+  (std::is_integral_v<T> && !std::is_same_v<T, bool>) || std::is_floating_point_v<T>;
+
+template <typename T, std::size_t... I>
+consteval bool all_fields_numeric(std::index_sequence<I...>) {
+  return (numeric_field_v<field_t<T, I>> && ...);
+}
 
 template <typename T>
 consteval bool valid_aggregate() {
   if constexpr (!std::is_aggregate_v<T>) {
     return false;
   } else {
-    bool valid = true;
-    reflect::for_each<T>([&](auto Idx) {
-      using field_t = std::remove_cvref_t<decltype(reflect::get<decltype(Idx)::value>(std::declval<T&>()))>;
-      valid = valid && ((std::is_integral_v<field_t> && !std::is_same_v<field_t, bool>) ||
-                        std::is_floating_point_v<field_t>);
-    });
-    return valid;
+    return all_fields_numeric<T>(std::make_index_sequence<reflect::size<T>()>{});
   }
 }
 
-template <typename StatsT, std::size_t I>
-using field_t = std::remove_cvref_t<decltype(reflect::get<I>(std::declval<StatsT&>()))>;
+template <typename T>
+using field_indices = std::make_index_sequence<reflect::size<T>()>;
 
 template <typename StatsT, typename Scope, auto Getter, std::size_t I>
 field_t<StatsT, I> read(Scope s) {
@@ -58,6 +68,16 @@ consteval auto add_name() {
     field.value[i] = f[i];
   }
   return utils::template_string_concat(utils::template_string_t("add_"), field);
+}
+
+template <typename StatsT, std::size_t I>
+inline constexpr auto add_name_v = add_name<StatsT, I>();
+
+template <typename StatsT, typename Initializer, std::size_t... I>
+constexpr void initialize_fields(StatsT& out, Initializer& init, std::index_sequence<I...>) {
+  ((reflect::get<I>(out) = static_cast<field_t<StatsT, I>>(
+      std::invoke(init, std::integral_constant<std::size_t, I>{}, reflect::member_name<I, StatsT>()))),
+   ...);
 }
 
 } // namespace stats_detail
@@ -89,6 +109,30 @@ stat_scope<StatsT> enter(ParentScope s) noexcept {
   }
   return stat_scope<StatsT>{id, Getter(s)};
 }
+
+template <typename StatsT, std::size_t I>
+void register_reader(devils_script::system& sys) {
+  sys.register_function<&read<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>>(
+    std::string(reflect::member_name<I, StatsT>()));
+}
+
+template <typename StatsT, std::size_t... I>
+void register_readers(devils_script::system& sys, std::index_sequence<I...>) {
+  (register_reader<StatsT, I>(sys), ...);
+}
+
+template <typename StatsT, auto Domain, std::size_t I>
+void register_writer(devils_script::system& sys) {
+  using traits = typename catalogue::domain<Domain>::template fn_traits<
+    &add<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>, add_name_v<StatsT, I>,
+    utils::template_string_t("scope"), utils::template_string_t("value")>;
+  sys.register_function<traits::fn_ptr>("add_" + std::string(reflect::member_name<I, StatsT>()));
+}
+
+template <typename StatsT, auto Domain, std::size_t... I>
+void register_writers(devils_script::system& sys, std::index_sequence<I...>) {
+  (register_writer<StatsT, Domain, I>(sys), ...);
+}
 } // namespace stats_detail
 
 template <numeric_stats_aggregate StatsT, typename... Args>
@@ -109,12 +153,7 @@ constexpr StatsT initialize_stats() noexcept(noexcept(StatsT{})) {
 template <numeric_stats_aggregate StatsT, typename Initializer>
 constexpr StatsT initialize_stats(Initializer&& init) {
   StatsT out{};
-  reflect::for_each<StatsT>([&](auto Idx) {
-    constexpr size_t I = decltype(Idx)::value;
-    using field_t = stats_detail::field_t<StatsT, I>;
-    reflect::get<I>(out) = static_cast<field_t>(
-      std::invoke(init, Idx, reflect::member_name<I, StatsT>()));
-  });
+  stats_detail::initialize_fields(out, init, stats_detail::field_indices<StatsT>{});
   return out;
 }
 
@@ -122,29 +161,14 @@ constexpr StatsT initialize_stats(Initializer&& init) {
 // где прямое изменение компонента обошло бы authoritative outcome/commit слой.
 template <numeric_stats_aggregate StatsT>
 void register_stat_readers(devils_script::system& sys) {
-  reflect::for_each<StatsT>([&](auto Idx) {
-    constexpr std::size_t I = decltype(Idx)::value;
-    const std::string field(reflect::member_name<I, StatsT>());
-    sys.register_function<
-      &stats_detail::read<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>>(
-      field);
-  });
+  stats_detail::register_readers<StatsT>(sys, stats_detail::field_indices<StatsT>{});
 }
 
 // Регистрирует только локальные add_<field> writers. Публичный register_stats ниже сохраняет
 // прежнее поведение readers+writes; разделение нужно не для его замены, а для явного opt-out.
 template <numeric_stats_aggregate StatsT, auto Domain>
 void register_stat_writers(devils_script::system& sys) {
-  reflect::for_each<StatsT>([&](auto Idx) {
-    constexpr std::size_t I = decltype(Idx)::value;
-    const std::string field(reflect::member_name<I, StatsT>());
-
-    using traits = typename catalogue::domain<Domain>::template fn_traits<
-      &stats_detail::add<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>,
-      stats_detail::add_name<StatsT, I>(), utils::template_string_t("scope"),
-      utils::template_string_t("value")>;
-    sys.register_function<traits::fn_ptr>("add_" + field);
-  });
+  stats_detail::register_writers<StatsT, Domain>(sys, stats_detail::field_indices<StatsT>{});
 }
 
 // Регистрирует локальные readers и writers типа stats-scope. Одинаковые имена полей разных

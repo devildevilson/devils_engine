@@ -7,6 +7,11 @@
 #    define WIN32_LEAN_AND_MEAN
 #  endif
 #  include <windows.h>
+// minwindef.h определяет IN/OUT (параметры шаблона devils_script::subblock) и near/far.
+#  undef IN
+#  undef OUT
+#  undef near
+#  undef far
 #endif
 
 #include "runtime.h"
