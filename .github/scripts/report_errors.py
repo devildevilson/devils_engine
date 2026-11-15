@@ -25,6 +25,9 @@ def escape(text: str) -> str:
     return text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
 
 
+PROJECT = re.compile(r"\[[^\]]*[\\/]([^\\/\]]+)\.vcxproj\]")
+PER_PROJECT = 2
+
 blocks = []
 seen = set()
 for name in sys.argv[1:]:
@@ -32,6 +35,20 @@ for name in sys.argv[1:]:
     if not path.is_file():
         continue
     lines = path.read_text(errors="replace").splitlines()
+    if path.name == "msbuild-errors.log":
+        # Only errors here: the first few distinct ones of every failing project give the breadth.
+        per_project = {}
+        for line in lines:
+            match = PROJECT.search(line)
+            project = match.group(1) if match else "?"
+            text = re.sub(r"^\s*\d+>", "", NOISE.sub("", line)).strip()
+            found = per_project.setdefault(project, [])
+            if text and text not in found and len(found) < PER_PROJECT:
+                found.append(text)
+        for project, found in per_project.items():
+            seen.update(found)
+            blocks.append(f"[{project}]\n" + "\n".join(found))
+        continue
     i = 0
     while i < len(lines):
         if PATTERNS.search(lines[i]) and not IGNORED.search(lines[i]):
@@ -39,7 +56,7 @@ for name in sys.argv[1:]:
             after = TEST_CONTEXT_AFTER if "***" in lines[i] else CONTEXT_AFTER
             block = lines[i:i + 1 + after]
             # One error repeated per object file or per project is reported once.
-            key = NOISE.sub("", lines[i]).strip()
+            key = re.sub(r"^\s*\d+>", "", NOISE.sub("", lines[i])).strip()
             if key not in seen:
                 seen.add(key)
                 blocks.append(f"[{path.name}:{i + 1}]\n" + "\n".join(block))

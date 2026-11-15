@@ -360,6 +360,8 @@ consteval std::string_view scalar_tag() noexcept {
   }
 }
 
+// Fold lambdas below are consteval explicitly: MSVC does not propagate consteval into lambdas
+// (P2564), so a call to canon inside a plain lambda is not a constant expression there.
 template <typename T, std::size_t Depth = 0>
 consteval std::uint32_t canon(std::uint32_t hash) {
   using U = std::remove_cvref_t<T>;
@@ -390,13 +392,13 @@ consteval std::uint32_t canon(std::uint32_t hash) {
       canon<typename U::first_type, Depth + 1>(hash_str(hash, "pair")));
   else if constexpr (is_tuple<U>::value) {
     hash = hash_str(hash, "tup");
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       ((hash = canon<std::tuple_element_t<I, U>, Depth + 1>(hash)), ...);
     }(std::make_index_sequence<std::tuple_size_v<U>>());
     return hash;
   } else if constexpr (is_variant<U>::value) {
     hash = hash_str(hash, "var");
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       ((hash = canon<std::variant_alternative_t<I, U>, Depth + 1>(hash)), ...);
     }(std::make_index_sequence<std::variant_size_v<U>>());
     return hash;
@@ -407,7 +409,7 @@ consteval std::uint32_t canon(std::uint32_t hash) {
     return canon<typename U::value_type, Depth + 1>(hash_str(hash, "seq"));
   else if constexpr (std::is_aggregate_v<U>) {
     hash = hash_str(hash, "{");
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       ((hash = canon<std::remove_cvref_t<decltype(reflect::get<I>(std::declval<U&>()))>,
                      Depth + 1>(hash)),
        ...);

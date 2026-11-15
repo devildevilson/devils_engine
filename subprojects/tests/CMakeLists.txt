@@ -11,11 +11,14 @@ set(TEST_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/tests")
 function(devils_add_doctest target)
   add_executable(${target} doctest_main.cpp ${ARGN})
   target_link_libraries(${target} PRIVATE devils_engine::options doctest::doctest)
+  # Without it doctest only forward-declares std::basic_ostream; MSVC then instantiates its
+  # string_view operator<< for CHECK(a == b) on an incomplete stream type.
+  target_compile_definitions(${target} PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
   set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
 
   if (WIN32)
     add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      COMMAND ${CMAKE_COMMAND} -E $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:${target}>>,copy_if_different,true>
         $<TARGET_RUNTIME_DLLS:${target}>
         $<TARGET_FILE_DIR:${target}>
       COMMAND_EXPAND_LISTS
@@ -451,7 +454,7 @@ foreach(library IN ITEMS demiurg input sound visage)
   target_link_libraries(public_link_${library} PRIVATE devils_engine::${library})
   if(WIN32)
     add_custom_command(TARGET public_link_${library} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      COMMAND ${CMAKE_COMMAND} -E $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:public_link_${library}>>,copy_if_different,true>
         $<TARGET_RUNTIME_DLLS:public_link_${library}>
         $<TARGET_FILE_DIR:public_link_${library}>
       COMMAND_EXPAND_LISTS)
