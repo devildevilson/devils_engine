@@ -41,12 +41,15 @@ for name in sys.argv[1:]:
         for line in lines:
             match = PROJECT.search(line)
             project = match.group(1) if match else "?"
-            text = re.sub(r"^\s*\d+>", "", NOISE.sub("", line)).strip()
-            found = per_project.setdefault(project, [])
-            if text and text not in found and len(found) < PER_PROJECT:
+            # The key ignores object/library names; the shown text keeps them (LNK2005 names both).
+            key = re.sub(r"^\s*\d+>", "", NOISE.sub("", line)).strip()
+            text = re.sub(r"^\s*\d+>", "", PROJECT.sub("", line)).strip()
+            keys, found = per_project.setdefault(project, ([], []))
+            if key and key not in keys and len(found) < PER_PROJECT:
+                keys.append(key)
                 found.append(text)
-        for project, found in per_project.items():
-            seen.update(found)
+        for project, (keys, found) in per_project.items():
+            seen.update(keys)
             blocks.append(f"[{project}]\n" + "\n".join(found))
         continue
     i = 0
@@ -54,7 +57,8 @@ for name in sys.argv[1:]:
         if PATTERNS.search(lines[i]) and not IGNORED.search(lines[i]):
             # A failed test's own output follows its ctest line: keep more of it.
             after = TEST_CONTEXT_AFTER if "***" in lines[i] else CONTEXT_AFTER
-            block = lines[i:i + 1 + after]
+            # /Wall warnings interleave with the error's own context lines: drop them.
+            block = [lines[i]] + [l for l in lines[i + 1:i + 1 + after] if not IGNORED.search(l)]
             # One error repeated per object file or per project is reported once.
             key = re.sub(r"^\s*\d+>", "", NOISE.sub("", lines[i])).strip()
             if key not in seen:

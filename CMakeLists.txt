@@ -177,7 +177,14 @@ set(MZ_LIBBSD OFF CACHE BOOL "Disable libbsd crypto-random dependency in minizip
 set(MZ_ZLIB OFF CACHE BOOL "" FORCE)
 set(MZ_ZLIB_NG ON CACHE BOOL "" FORCE)
 set(MZ_FORCE_FETCH_LIBS ON CACHE BOOL "" FORCE)
-#set(MZ_FETCH_LIBS OFF CACHE BOOL "" FORCE)
+# With FORCE_FETCH minizip-ng never looks for zstd: it fetches its own (an unpinned `release` branch
+# unless ZSTD_TAG is set) or, with MZ_FETCH_LIBS OFF, silently drops zstd support. That static
+# libzstd is the one zstd of the build: utils links the same target (libs/utils/CMakeLists.txt), so
+# no binary carries two copies (LNK2005 on MSVC, silently duplicated symbols on Linux).
+set(MZ_FETCH_LIBS ON CACHE BOOL "" FORCE)
+set(ZSTD_TAG v1.5.7)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(MZ_ZSTD ON CACHE BOOL "" FORCE)
 set(MZ_BZIP2 OFF CACHE BOOL "" FORCE)
 set(MZ_LZMA OFF CACHE BOOL "" FORCE)

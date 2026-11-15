@@ -39,10 +39,10 @@ jobs:
             libvulkan-dev libshaderc-dev glslang-dev glslang-tools spirv-tools \
             mesa-vulkan-drivers xvfb xauth
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-linux-${{ github.sha }}
@@ -82,11 +82,11 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_CACHE }}
           key: vcpkg-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
@@ -113,7 +113,7 @@ jobs:
       # next run does not rebuild OpenSSL and shaderc from scratch.
       - name: Save vcpkg binary cache
         if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.VCPKG_CACHE }}
           key: vcpkg-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
