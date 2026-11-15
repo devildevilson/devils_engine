@@ -121,7 +121,7 @@ jobs:
       - name: Build
         run: |
           # /Wall floods the console with warnings; errors also go to their own file for the report.
-          cmake --build build --config Release --parallel 4 -- "/flp:ErrorsOnly;LogFile=ci-logs\msbuild-errors.log" 2>&1 | Tee-Object -FilePath ci-logs\build.log
+          cmake --build build --config Release --parallel 4 -- "/flp:ErrorsOnly;LogFile=$PWD\ci-logs\msbuild-errors.log" 2>&1 | Tee-Object -FilePath ci-logs\build.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Test

@@ -14,6 +14,7 @@ PATTERNS = re.compile(
 )
 # MSVC /Wall prints thousands of warnings whose text mentions functions named error.
 IGNORED = re.compile(r"warning [A-Z]+\d+:")
+NOISE = re.compile(r"\w+\.lib\([^)]*\)|\[[^\]]*\.vcxproj\]")
 CONTEXT_AFTER = 8
 TEST_CONTEXT_AFTER = 40
 MAX_ANNOTATIONS = 10
@@ -37,7 +38,8 @@ for name in sys.argv[1:]:
             # A failed test's own output follows its ctest line: keep more of it.
             after = TEST_CONTEXT_AFTER if "***" in lines[i] else CONTEXT_AFTER
             block = lines[i:i + 1 + after]
-            key = lines[i].strip()
+            # One error repeated per object file or per project is reported once.
+            key = NOISE.sub("", lines[i]).strip()
             if key not in seen:
                 seen.add(key)
                 blocks.append(f"[{path.name}:{i + 1}]\n" + "\n".join(block))
