@@ -126,6 +126,9 @@ set(MSDF_ATLAS_BUILD_STANDALONE OFF CACHE BOOL "Do not build the msdf-atlas-gen 
 set(MSDF_ATLAS_USE_VCPKG OFF CACHE BOOL "Do not let msdf-atlas-gen configure vcpkg" FORCE)
 set(MSDF_ATLAS_USE_SKIA OFF CACHE BOOL "Do not build msdf-atlas-gen with Skia" FORCE)
 set(MSDF_ATLAS_NO_ARTERY_FONT ON CACHE BOOL "Do not require the artery-font-format submodule" FORCE)
+# Both default to the static MSVC runtime (/MT); the engine links the DLL runtime (/MD).
+set(MSDFGEN_DYNAMIC_RUNTIME ON CACHE BOOL "" FORCE)
+set(MSDF_ATLAS_DYNAMIC_RUNTIME ON CACHE BOOL "" FORCE)
 
 set(SPDLOG_BUILD_EXAMPLE OFF)
 set(SPDLOG_BUILD_TESTS OFF)
@@ -210,6 +213,7 @@ set(protobuf_BUILD_EXPORT OFF CACHE BOOL "" FORCE) # Not an option in protobuf 3
 set(protobuf_WITH_ZLIB ON CACHE BOOL "Enable zlib support in Protobuf" FORCE)
 set(Protobuf_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
 set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
+set(protobuf_MSVC_STATIC_RUNTIME OFF CACHE BOOL "Same DLL runtime (/MD) as the engine" FORCE)
 set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 
 set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)

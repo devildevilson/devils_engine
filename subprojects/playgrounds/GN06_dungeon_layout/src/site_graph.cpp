@@ -18,6 +18,10 @@
 #include <tuple>
 #include <vector>
 
+#if defined(_MSC_VER) && !defined(__SIZEOF_INT128__)
+#include <intrin.h>
+#endif
+
 #include <tavl/tavl.h>
 
 #include "devils_engine/originator/motif_layout.h"
@@ -1621,8 +1625,30 @@ struct rational {
   int64_t denominator = 1; // always positive
 };
 
+// Exact product of two int64 values. GCC/Clang have __int128; MSVC has no 128-bit integer, only
+// the _mul128 intrinsic. Signed 128-bit order is (signed high, unsigned low).
+struct wide_product {
+  int64_t high = 0;
+  uint64_t low = 0;
+};
+
+wide_product multiply(const int64_t a, const int64_t b) {
+#if defined(__SIZEOF_INT128__)
+  const __int128 product = __int128(a) * b;
+  return {int64_t(product >> 64), uint64_t(product)};
+#else
+  int64_t high = 0;
+  const uint64_t low = uint64_t(_mul128(a, b, &high));
+  return {high, low};
+#endif
+}
+
+bool operator<(const wide_product a, const wide_product b) {
+  return a.high < b.high || (a.high == b.high && a.low < b.low);
+}
+
 bool less_than(const rational a, const rational b) {
-  return __int128(a.numerator) * b.denominator < __int128(b.numerator) * a.denominator;
+  return multiply(a.numerator, b.denominator) < multiply(b.numerator, a.denominator);
 }
 
 struct ray_interval { rational first, last; };
@@ -1841,8 +1867,8 @@ std::vector<uint8_t> projected_route_mask(const projection& image) {
           near = rx * rx + ry * ry <= int64_t(site_precision / 2) * (site_precision / 2);
         } else {
           const auto area = px * dy - py * dx;
-          near = __int128(area) * area <=
-            __int128(site_precision / 2) * (site_precision / 2) * length_squared;
+          near = !(multiply(int64_t(site_precision / 2) * (site_precision / 2), int64_t(length_squared)) <
+                   multiply(int64_t(area), int64_t(area)));
         }
         if (near) mask[cell] = 1;
       }

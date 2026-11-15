@@ -1,8 +1,12 @@
 #include <array>
 #include <bit>
+#include <cstddef>
 #include <cstdlib>
 #include <limits>
 #include <new>
+#ifdef _WIN32
+#include <malloc.h>
+#endif
 
 #include <devils_engine/network/network.h>
 #include <devils_engine/utils/float_bits.h>
@@ -21,10 +25,24 @@ thread_local std::size_t allocations = 0;
 void* allocate(const std::size_t size, const std::size_t alignment = 0) {
   if (count_allocations) ++allocations;
   const auto amount = size == 0 ? 1 : size;
+#ifdef _WIN32
+  // MSVC has no std::aligned_alloc, and _aligned_malloc memory needs _aligned_free: every
+  // allocation of this executable goes through the same pair.
+  void* ptr = _aligned_malloc(amount, alignment == 0 ? alignof(std::max_align_t) : alignment);
+#else
   void* ptr = alignment == 0 ? std::malloc(amount)
                              : std::aligned_alloc(alignment, ((amount + alignment - 1) / alignment) * alignment);
+#endif
   if (!ptr) std::abort();
   return ptr;
+}
+
+void release(void* ptr) noexcept {
+#ifdef _WIN32
+  _aligned_free(ptr);
+#else
+  std::free(ptr);
+#endif
 }
 
 void start_measurement() {
@@ -50,28 +68,28 @@ void* operator new[](std::size_t n, std::align_val_t a) {
   return allocate(n, std::size_t(a));
 }
 void operator delete(void* p) noexcept {
-  std::free(p);
+  release(p);
 }
 void operator delete[](void* p) noexcept {
-  std::free(p);
+  release(p);
 }
 void operator delete(void* p, std::size_t) noexcept {
-  std::free(p);
+  release(p);
 }
 void operator delete[](void* p, std::size_t) noexcept {
-  std::free(p);
+  release(p);
 }
 void operator delete(void* p, std::align_val_t) noexcept {
-  std::free(p);
+  release(p);
 }
 void operator delete[](void* p, std::align_val_t) noexcept {
-  std::free(p);
+  release(p);
 }
 void operator delete(void* p, std::size_t, std::align_val_t) noexcept {
-  std::free(p);
+  release(p);
 }
 void operator delete[](void* p, std::size_t, std::align_val_t) noexcept {
-  std::free(p);
+  release(p);
 }
 
 namespace {

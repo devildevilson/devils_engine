@@ -179,6 +179,7 @@ bool parse_options(const int argc, char** argv, options& out) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view argument = argv[i];
     std::string value;
+    bool matched = true;
 
     if (argument == "--render") {
       out.requested = action::render;
@@ -329,7 +330,14 @@ bool parse_options(const int argc, char** argv, options& out) {
     } else if (read_prefixed(argument, "--cloud-speed=", value)) {
       out.view.cloud_advection_speed_m_s = std::stod(value);
       out.view.cloud_speed_overridden = true;
-    } else if (read_prefixed(argument, "--cloud-range=", value)) {
+    } else {
+      matched = false;
+    }
+    if (matched) continue;
+
+    // MSVC limits how deep one if/else-if chain may nest (C1061, ~128 links): the options
+    // continue in a second chain.
+    if (read_prefixed(argument, "--cloud-range=", value)) {
       out.view.cloud_range_m = std::stod(value);
     } else if (read_prefixed(argument, "--precip-coverage=", value)) {
       out.view.precipitation_coverage = std::stod(value);

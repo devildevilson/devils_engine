@@ -52,6 +52,9 @@ target_link_libraries(devils_simul
   # devils_script транзитивно: осознанно, simul становится слоем, где живёт геймплейный пайплайн.
   PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue devils_engine::demiurg
          devils_engine::act devils_engine::aesthetics tavl
+  # render_config.h names Vulkan formats (header only, no loader). On Linux the system headers
+  # hid the missing dependency; on Windows there are none.
+  PUBLIC Vulkan::Headers
 )
 
 add_library(devils_engine::simul ALIAS devils_simul)

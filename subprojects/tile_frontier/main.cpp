@@ -2,6 +2,10 @@
 #include <locale>
 
 #ifdef _WIN32
+// Без LEAN_AND_MEAN windows.h тянет objbase.h с макросом `interface`, а он ломает simul::interface.
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
 #  include <windows.h>
 #endif
 

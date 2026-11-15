@@ -115,7 +115,7 @@ void framebuffer_callback(GLFWwindow*, const int width, const int height) noexce
 // Последовательность Халтона: низкодискрепансный набор субпиксельных смещений. Случайный джиттер сходился бы
 // хуже — точки сбиваются в кучки и часть площади пикселя не сэмплируется вовсе, а регулярная сетка даёт
 // видимую периодичность. Основания 2 и 3 взаимно просты, поэтому пара координат не коррелирует.
-float halton(uint index, const uint base) {
+float halton(uint32_t index, const uint32_t base) {
   float result = 0.0f;
   float inverse = 1.0f / float(base);
   while (index > 0u) {

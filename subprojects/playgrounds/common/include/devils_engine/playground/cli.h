@@ -18,10 +18,12 @@
 #include <CLI/CLI.hpp>
 
 #ifdef _WIN32
-// CLI11 на Windows включает windows.h, а тот объявляет пустые макросы IN и OUT. Они стирают
-// одноимённые параметры шаблонов в заголовках, подключённых после (devils_script::subblock).
+// CLI11 на Windows включает windef.h, а тот объявляет пустые макросы IN, OUT, near и far. Они
+// стирают одноимённые параметры шаблонов (devils_script::subblock) и локальные переменные.
 #undef IN
 #undef OUT
+#undef near
+#undef far
 #endif
 
 // Общая граница CLI лабораторий. Схема аргументов и предметные ограничения принадлежат

@@ -34,7 +34,7 @@ void write(const std::filesystem::path& path, const std::string& text) {
 }
 void make_zip(const std::filesystem::path& path) {
   void* writer = mz_zip_writer_create();
-  REQUIRE(mz_zip_writer_open_file(writer, path.c_str(), 0, 0) == MZ_OK);
+  REQUIRE(mz_zip_writer_open_file(writer, path.string().c_str(), 0, 0) == MZ_OK);
   for (const auto& [name, text] : std::vector<std::pair<std::string, std::string>>{{"data.txt", "hello"}, {"empty.txt", ""}}) {
     mz_zip_file info{};
     info.filename = name.c_str();
