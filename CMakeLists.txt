@@ -491,7 +491,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   devils_script
   GIT_REPOSITORY https://github.com/devildevilson/devils_script.git
-  GIT_TAG        v1.4.0
+  GIT_TAG        v1.4.1
   OVERRIDE_FIND_PACKAGE
 )
 

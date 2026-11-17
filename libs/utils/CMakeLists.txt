@@ -45,6 +45,7 @@ set(SRC_LIST
   src/utils/process_memory.cpp
   src/utils/atomic_file.cpp
   src/utils/fileio.cpp
+  src/utils/root.cpp
   src/utils/time.cpp
   src/utils/timeline.cpp
   src/utils/string_id.cpp

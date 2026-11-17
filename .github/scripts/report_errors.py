@@ -14,6 +14,8 @@ PATTERNS = re.compile(
 )
 # MSVC /Wall prints thousands of warnings whose text mentions functions named error.
 IGNORED = re.compile(r"warning [A-Z]+\d+:")
+# Lines dropped from an error's context: compiler warnings and the engine's own log warnings.
+CONTEXT_NOISE = re.compile(r"warning [A-Z]+\d+:|\] \[warning\] ")
 NOISE = re.compile(r"\w+\.lib\([^)]*\)|\[[^\]]*\.vcxproj\]")
 CONTEXT_AFTER = 8
 TEST_CONTEXT_AFTER = 40
@@ -35,6 +37,15 @@ for name in sys.argv[1:]:
     if not path.is_file():
         continue
     lines = path.read_text(errors="replace").splitlines()
+    # ctest's closing list of every failed test goes first: the annotations below are capped.
+    if "The following tests FAILED:" in lines:
+        start = lines.index("The following tests FAILED:")
+        summary = []
+        for line in lines[start:]:
+            if summary and not line.strip():
+                break
+            summary.append(line)
+        blocks.append(f"[{path.name}: summary]\n" + "\n".join(summary))
     if path.name == "msbuild-errors.log":
         # Only errors here: the first few distinct ones of every failing project give the breadth.
         per_project = {}
@@ -58,7 +69,7 @@ for name in sys.argv[1:]:
             # A failed test's own output follows its ctest line: keep more of it.
             after = TEST_CONTEXT_AFTER if "***" in lines[i] else CONTEXT_AFTER
             # /Wall warnings interleave with the error's own context lines: drop them.
-            block = [lines[i]] + [l for l in lines[i + 1:i + 1 + after] if not IGNORED.search(l)]
+            block = [lines[i]] + [l for l in lines[i + 1:i + 1 + after] if not CONTEXT_NOISE.search(l)]
             # One error repeated per object file or per project is reported once.
             key = re.sub(r"^\s*\d+>", "", NOISE.sub("", lines[i])).strip()
             if key not in seen:

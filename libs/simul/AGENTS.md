@@ -17,6 +17,10 @@
 - Immutable draw intents/scene state передаются через commit/publication boundary; render не
   применяет gameplay effects. `interaction_commit.h` — общая фаза, политика игры остаётся в project.
 - Lua require/request идёт через demiurg, engine владеет разрешением путей и module cache.
+- Файловые пути из bootstrap и настроек (settings/debug/key bindings, log, cache, resource_root)
+  разрешаются `project_path` внутри `engine.project_root` (пусто — папка бинарника) через
+  `utils::root`; абсолютный путь или `..` за корень — критическая ошибка с ключом. Тест задаёт
+  корень временной папкой, а не абсолютные имена файлов.
 - Streaming priority/cancellation/epoch publication — будущий runtime owner. Не переносить
   скрытый scheduler внутрь originator tools ради нужд viewer.
 

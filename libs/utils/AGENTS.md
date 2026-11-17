@@ -12,6 +12,9 @@
   ECS-проекция остаётся в aesthetics, сетевой state projection — в network. Не копировать codec.
 - `atomic_file.h` — same-directory transaction; не заменять проверенную atomic publication на
   запись прямо в destination. `fileio.h` сохраняет отдельную роль обычного I/O.
+- `root.h` — единственное место абсолютного пути: `root::open(abs)` проверяет корень, `resolve`
+  пускает только относительные пути внутри него. Абсолютный путь любой платформы (`/`, `C:`,
+  `\\server`), `..` за корень и `:` отвергаются статусом на всех платформах; `\` — разделитель.
 - `simulation_time.h`, `timeline.h` — integer gameplay time; presentation/wall time не источник
   authoritative ticks. Шаги симуляции нумеруются с 1: `simulation_now() == 0` значит «ни одного
   шага ещё не было» (начальное состояние), и ни событие, ни действие не адресует тик 0. `prng.h`/`shared.h` — единые hash/random primitives.
@@ -25,7 +28,7 @@
 
 ## Проверка
 
-`utils_contract_test`, `utils_serialization_test`, `utils_general_test`, `thread_general_test`,
+`utils_contract_test`, `utils_serialization_test`, `utils_general_test`, `utils_root_test`, `thread_general_test`,
 `simulation_time_test`, `timeline_test` — выбирать по изменению. После изменения codec/schema
 добавить `aesthetics_serialization_test` и соответствующие network checkpoint/digest tests.
 CMake проверяет зависимости zstd/ZLIB; не предполагать единственное имя системной zstd-цели.

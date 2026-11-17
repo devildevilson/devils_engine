@@ -35,6 +35,7 @@
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/fileio.h>
+#include <devils_engine/utils/root.h>
 #include <devils_engine/utils/time-utils.hpp>
 #include <tavl/deserialize.h>
 #include <tavl/serialize.h>
@@ -93,34 +94,34 @@ void import_persisted_settings(Bootstrap& boot) {
 
 size_t frame_time_from_fps(uint32_t fps) noexcept;
 size_t thread_start_gap(size_t frame_time, uint32_t divisor) noexcept;
-std::string project_path(std::string path);
+// Корень проекта: явный абсолютный project_root или папка бинарника. Отказ — критическая ошибка.
+utils::root open_project_root(std::string_view project_root);
+// Путь внутри корня. key называет ключ конфига, из которого пришёл путь: отказ (абсолютный путь,
+// выход через `..`) — критическая ошибка с этим ключом и значением.
+std::string project_path(const utils::root& root, std::string_view key, std::string_view path);
+
+template <typename Bootstrap>
+std::string project_path(const Bootstrap& boot, const std::string_view key, const std::string_view path) {
+  return project_path(open_project_root(boot.engine.project_root), key, path);
+}
 std::string source_line(uint32_t line);
 
 template <typename Bootstrap>
 std::string settings_path(const Bootstrap& boot) {
-  if (boot.engine.settings_file.empty()) {
-    return utils::project_folder() + "settings.tavl";
-  }
-  if (boot.engine.settings_file.front() == '/') {
-    return boot.engine.settings_file;
-  }
-  return utils::project_folder() + boot.engine.settings_file;
+  return project_path(boot, "engine.settings_file",
+                      boot.engine.settings_file.empty() ? "settings.tavl" : boot.engine.settings_file);
 }
 
 template <typename Bootstrap>
 std::string debug_settings_path(const Bootstrap& boot) {
-  return project_path(boot.engine.debug_settings_file.empty() ? "debug.tavl" : boot.engine.debug_settings_file);
+  return project_path(boot, "engine.debug_settings_file",
+                      boot.engine.debug_settings_file.empty() ? "debug.tavl" : boot.engine.debug_settings_file);
 }
 
 template <typename Bootstrap>
 std::string key_bindings_path(const Bootstrap& boot) {
-  if (boot.engine.key_bindings_file.empty()) {
-    return utils::project_folder() + "key_bingings.tavl";
-  }
-  if (boot.engine.key_bindings_file.front() == '/') {
-    return boot.engine.key_bindings_file;
-  }
-  return utils::project_folder() + boot.engine.key_bindings_file;
+  return project_path(boot, "engine.key_bindings_file",
+                      boot.engine.key_bindings_file.empty() ? "key_bingings.tavl" : boot.engine.key_bindings_file);
 }
 
 inline input::bindings_config standard_key_bindings() {
@@ -235,10 +236,10 @@ void sync_engine_boot_config(Bootstrap& boot) {
 }
 
 template <typename LoggingConfig>
-void setup_logging(const LoggingConfig& log_cfg) {
+void setup_logging(const utils::root& root, const LoggingConfig& log_cfg) {
   std::string file;
   if (!log_cfg.file.empty()) {
-    file = utils::project_folder() + log_cfg.file;
+    file = project_path(root, "logging.file", log_cfg.file);
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(file).parent_path(), ec);
   }
@@ -371,7 +372,8 @@ void init_standard_bootstrap(Bootstrap& boot) {
   boot.engine_resources = std::make_unique<demiurg::resource_system>();
   register_standard_engine_resources<AppConfigResource>(boot);
 
-  boot.engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + boot.engine.resource_root);
+  boot.engine_modules = std::make_unique<demiurg::module_system>(
+    project_path(boot, "engine.resource_root", boot.engine.resource_root));
   boot.engine_modules->load_modules({demiurg::module_system::list_entry{boot.engine.engine_module, "", ""}});
   boot.engine_resources->parse_resources(boot.engine_modules.get());
 
@@ -411,7 +413,7 @@ void init_standard_bootstrap(Bootstrap& boot) {
     write_tavl_file(boot.bindings, bindings_file, "key bindings");
   }
 
-  setup_logging(boot.settings.logging);
+  setup_logging(open_project_root(boot.engine.project_root), boot.settings.logging);
 
   const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
   uint32_t reserved_threads = boot.engine.worker_threads_reserved;
@@ -493,11 +495,12 @@ struct standard_app_runtime_traits {
 template <typename Bootstrap>
 void prepare_pipeline_cache(Bootstrap& boot, const std::string& pipeline_cache_id) {
   const std::string cache_module = boot.settings.render.cache_folder + "/painter";
-  file_io::create_directory(project_path(boot.settings.render.cache_folder));
-  file_io::create_directory(project_path(cache_module));
-  file_io::create_directory(project_path(cache_module + "/pipeline_cache"));
+  const auto root = open_project_root(boot.engine.project_root);
+  file_io::create_directory(project_path(root, "render.cache_folder", boot.settings.render.cache_folder));
+  file_io::create_directory(project_path(root, "render.cache_folder", cache_module));
+  file_io::create_directory(project_path(root, "render.cache_folder", cache_module + "/pipeline_cache"));
 
-  boot.cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
+  boot.cache_modules = std::make_unique<demiurg::module_system>(root.path());
   boot.cache_modules->load_modules({demiurg::module_system::list_entry{cache_module, "", ""}});
   boot.engine_resources->append_resources(boot.cache_modules.get());
   if (auto* pc = boot.engine_resources->template get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
@@ -514,7 +517,7 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
 
   const auto render_ft = frame_time_from_fps(boot.engine.render_fps);
   const std::string pipeline_cache_id = "pipeline_cache/main";
-  const std::string pipeline_cache_path = project_path(boot.settings.render.cache_folder + "/painter/pipeline_cache/main.bin");
+  const std::string pipeline_cache_path = project_path(boot, "render.cache_folder", boot.settings.render.cache_folder + "/painter/pipeline_cache/main.bin");
   prepare_pipeline_cache(boot, pipeline_cache_id);
 
   render_system_config render_cfg;
@@ -524,7 +527,7 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
   render_cfg.cache_registry = boot.engine_resources.get();
   render_cfg.pipeline_cache_id = pipeline_cache_id;
   render_cfg.pipeline_cache_path = pipeline_cache_path;
-  render_cfg.shader_cache_directory = project_path(boot.settings.render.cache_folder + "/painter/spirv");
+  render_cfg.shader_cache_directory = project_path(boot, "render.cache_folder", boot.settings.render.cache_folder + "/painter/spirv");
   render_cfg.app_name = std::move(app_name);
   render_cfg.headless = boot.engine.headless;
   render_cfg.vulkan_debug = boot.engine.vulkan_debug;

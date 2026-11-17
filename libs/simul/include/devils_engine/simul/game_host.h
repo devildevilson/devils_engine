@@ -151,7 +151,7 @@ public:
   }
 
   void host_runtime_settings_reloaded() {
-    simul::setup_logging(bootstrap_->settings.logging);
+    simul::setup_logging(simul::open_project_root(bootstrap_->engine.project_root), bootstrap_->settings.logging);
     auto& c = derived().state();
     apply_window_settings(c, bootstrap_->settings);
     apply_sound_settings();

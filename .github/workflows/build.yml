@@ -133,6 +133,15 @@ jobs:
           cmake --build build --config Release --parallel 4 -- "/flp:ErrorsOnly;LogFile=$PWD\ci-logs\msbuild-errors.log" 2>&1 | Tee-Object -FilePath ci-logs\build.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
+      - name: Disable crash dialogs
+        # A crashing process otherwise waits on a Windows Error Reporting dialog nobody closes, and
+        # the test reads as a timeout instead of a crash with its exit code.
+        run: |
+          $wer = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+          New-Item -Path $wer -Force | Out-Null
+          Set-ItemProperty -Path $wer -Name DontShowUI -Value 1 -Type DWord
+          Set-ItemProperty -Path $wer -Name Disabled -Value 1 -Type DWord
+
       - name: Test
         # A step over its own limit FAILS (the report runs); a job over its limit is cancelled.
         timeout-minutes: 150
@@ -144,6 +153,14 @@ jobs:
       - name: Slowest tests
         if: always()
         run: python .github/scripts/slow_tests.py ci-logs\test.log
+
+      - name: Probe hangs
+        # Iteration 11: these playgrounds timed out even on --help. Stacks show where they wait.
+        if: failure()
+        run: |
+          foreach ($name in @("GN02_planet_generator", "GN03_streaming_volume", "GN06_dungeon_layout")) {
+            & .github/scripts/probe_hang.ps1 -Exe "build\subprojects\playgrounds\$name\bin\Release\$name.exe" -Arguments "--help"
+          }
 
       - name: Report errors
         if: failure() || cancelled()

@@ -6,6 +6,8 @@
 #include "devils_engine/simul/main_runtime.h"
 #include "devils_engine/simul/render_runtime.h"
 #include "devils_engine/simul/resource_access_scope.h"
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/root.h"
 
 namespace devils_engine {
 namespace simul {
@@ -19,14 +21,21 @@ size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) noexcep
   return utils::round(double(frame_time) / double(valid_divisor));
 }
 
-std::string project_path(std::string path) {
-  if (path.empty()) {
-    return utils::project_folder();
+utils::root open_project_root(const std::string_view project_root) {
+  const std::string base = project_root.empty() ? utils::project_folder() : std::string(project_root);
+  auto root = utils::root::open(base);
+  if (!root) {
+    utils::error{}("project root '{}' (engine.project_root): {}", base, utils::to_string(root.error()));
   }
-  if (path.front() == '/') {
-    return path;
+  return std::move(*root);
+}
+
+std::string project_path(const utils::root& root, const std::string_view key, const std::string_view path) {
+  auto resolved = root.resolve(path);
+  if (!resolved) {
+    utils::error{}("'{}' = '{}' under project root '{}': {}", key, path, root.path(), utils::to_string(resolved.error()));
   }
-  return utils::project_folder() + path;
+  return std::move(*resolved);
 }
 
 std::string source_line(const uint32_t line) {

@@ -11,6 +11,10 @@ namespace simul {
 
 struct engine_boot_config {
   std::string app_name = "devils_app";
+  // Абсолютный путь корня проекта; пусто — utils::project_folder() (папка бинарника без bin/).
+  // Это единственный абсолютный путь: файлы ниже и пути из настроек разрешаются только ВНУТРИ
+  // него (utils::root), абсолютный путь или выход через `..` в них — критическая ошибка.
+  std::string project_root;
   std::string resource_root = "resources/";
   std::string engine_module = "engine";
   std::string engine_config_id = "config/engine";

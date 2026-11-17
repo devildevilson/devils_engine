@@ -181,7 +181,7 @@ struct user_settings {
 // Конфиг грузится как demiurg-ресурс (app_config_resource) из движкового реестра —
 // см. simulation::init. Прежний load_app_config(file_io) удалён (demiurg 1a, Q3).
 
-// Резолв путей относительно project_folder(): абсолютные ('/...') оставляем как есть.
+// Резолв путей ВНУТРИ project_folder() (utils::root): абсолютный путь или `..` за корень — ошибка.
 std::string make_project_path(std::string path);
 // То же, но гарантирует завершающий '/' (нужно парсеру render-конфига).
 std::string make_project_folder_path(std::string path);
