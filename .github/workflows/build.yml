@@ -59,9 +59,10 @@ jobs:
             2>&1 | tee ci-logs/configure.log
 
       - name: Build
+        # nproc is the runner's CPU count (4 on a standard public-repo runner).
         run: |
           ccache --max-size=3G
-          cmake --build build --parallel 4 -- -k 0 2>&1 | tee ci-logs/build.log
+          cmake --build build --parallel "$(nproc)" -- -k 0 2>&1 | tee ci-logs/build.log
           ccache --show-stats
 
       - name: Test
@@ -81,17 +82,48 @@ jobs:
 
   windows:
     runs-on: windows-2025
-    # Configure ~30 min + build ~2 h + tests (own step limit below); hosted runners stop at 6 h.
+    # Configure ~25 min + build + tests (own step limit below); hosted runners stop at 6 h.
     timeout-minutes: 340
     env:
       VCPKG_COMMIT: 4702e381dbbd9b54d3f7e1eb565cd8981c1814cd
       VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
       VCPKG_CACHE: ${{ github.workspace }}\..\vcpkg-cache
+      CCACHE_DIR: ${{ github.workspace }}\..\ccache
+      CCACHE_VERSION: "4.14.2"
+      CCACHE_SHA256: 6993ce645e53192cec592ee23186200b574ac4c59097ecde8d9cfd681b47ae84
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v7
+
+      - name: MSVC environment
+        # Ninja runs cl.exe directly, so the Visual Studio developer environment (compiler, SDK,
+        # INCLUDE/LIB) must be in every later step: take what vcvars64 changes and export it.
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Write-Output "Visual Studio: $vs"
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+      - name: Install ccache
+        run: |
+          $zip = "$env:RUNNER_TEMP\ccache.zip"
+          Invoke-WebRequest "https://github.com/ccache/ccache/releases/download/v$env:CCACHE_VERSION/ccache-$env:CCACHE_VERSION-windows-x86_64.zip" -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $env:CCACHE_SHA256) { throw "ccache archive hash mismatch" }
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+          "$env:RUNNER_TEMP\ccache-$env:CCACHE_VERSION-windows-x86_64" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-windows-${{ github.sha }}
+          restore-keys: ccache-windows-
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
@@ -112,8 +144,12 @@ jobs:
       - name: Configure
         run: |
           New-Item -ItemType Directory -Force ci-logs | Out-Null
-          # No -G: CMake takes the newest Visual Studio on the image (2026 on windows-2025 now).
-          cmake -S . -B build -A x64 `
+          # Ninja schedules single files of all targets across the cores; the Visual Studio generator
+          # ran whole projects in parallel and compiled each project's files one by one (no /MP).
+          # cl is named explicitly: the image also has MinGW gcc on PATH.
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows 2>&1 | Tee-Object -FilePath ci-logs\configure.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -128,10 +164,14 @@ jobs:
           key: vcpkg-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Build
+        # NUMBER_OF_PROCESSORS is the runner's CPU count (4 on a standard public-repo runner).
         run: |
-          # /Wall floods the console with warnings; errors also go to their own file for the report.
-          cmake --build build --config Release --parallel 4 -- "/flp:ErrorsOnly;LogFile=$PWD\ci-logs\msbuild-errors.log" 2>&1 | Tee-Object -FilePath ci-logs\build.log
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ccache --max-size=3G
+          ccache --zero-stats
+          cmake --build build --parallel $env:NUMBER_OF_PROCESSORS -- -k 0 2>&1 | Tee-Object -FilePath ci-logs\build.log
+          $code = $LASTEXITCODE
+          ccache --show-stats
+          if ($code) { exit $code }
 
       - name: Disable crash dialogs
         # A crashing process otherwise waits on a Windows Error Reporting dialog nobody closes, and
@@ -141,12 +181,15 @@ jobs:
           New-Item -Path $wer -Force | Out-Null
           Set-ItemProperty -Path $wer -Name DontShowUI -Value 1 -Type DWord
           Set-ItemProperty -Path $wer -Name Disabled -Value 1 -Type DWord
+          # A missing DLL is a different dialog (a system hard error, not WER): without ErrorMode=2
+          # the loader waits on "code execution cannot proceed" and the test times out after 300 s.
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Windows" -Name ErrorMode -Value 2 -Type DWord
 
       - name: Test
         # A step over its own limit FAILS (the report runs); a job over its limit is cancelled.
         timeout-minutes: 150
         run: |
-          ctest --test-dir build -C Release -L devils_engine -E "$env:UNTRACKED_SCRIPT_TESTS" `
+          ctest --test-dir build -L devils_engine -E "$env:UNTRACKED_SCRIPT_TESTS" `
             --timeout $env:TEST_TIMEOUT --output-on-failure --parallel 2 2>&1 | Tee-Object -FilePath ci-logs\test.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
@@ -159,13 +202,13 @@ jobs:
         if: failure()
         run: |
           foreach ($name in @("GN02_planet_generator", "GN03_streaming_volume", "GN06_dungeon_layout")) {
-            & .github/scripts/probe_hang.ps1 -Exe "build\subprojects\playgrounds\$name\bin\Release\$name.exe" -Arguments "--help"
+            & .github/scripts/probe_hang.ps1 -Exe "build\subprojects\playgrounds\$name\bin\$name.exe" -Arguments "--help"
           }
 
       - name: Report errors
         if: failure() || cancelled()
         run: |
-          $logs = @("ci-logs\configure.log", "ci-logs\msbuild-errors.log", "ci-logs\build.log", "ci-logs\test.log")
+          $logs = @("ci-logs\configure.log", "ci-logs\build.log", "ci-logs\test.log")
           # vcpkg writes the failing port's own logs under buildtrees; include them too.
           $logs += Get-ChildItem -Path "$env:VCPKG_ROOT\buildtrees" -Recurse -Filter "*-err.log" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
           python .github/scripts/report_errors.py @logs

@@ -25,7 +25,19 @@ $process = Start-Process @start
 $null = $process.Handle  # without a cached handle ExitCode reads empty after the exit
 if ($process.WaitForExit($Seconds * 1000)) {
   $tail = (Get-Content $out -Tail 5) -join "`n"
-  Publish "notice" "hang probe $name" ("exited with 0x{0:X8} in under ${Seconds} s`n{1}" -f $process.ExitCode, $tail)
+  $code = $process.ExitCode
+  if ($code -eq -1073741515) {
+    # 0xC0000135 STATUS_DLL_NOT_FOUND: name the imports found neither beside the exe nor on PATH.
+    $dir = Split-Path $Exe -Parent
+    $imports = & dumpbin /nologo /dependents $Exe | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+    $search = @($dir) + ($env:PATH -split ';' | Where-Object { $_ })
+    # api-ms-win-*/ext-ms-* are API sets the loader maps itself; no file stands behind them.
+    $missing = $imports | Where-Object { $_ -notmatch '^(api|ext)-ms-' } | Where-Object {
+      $dll = $_; -not ($search | Where-Object { Test-Path (Join-Path $_ $dll) } | Select-Object -First 1)
+    }
+    $tail = "missing DLL: " + ($missing -join ", ")
+  }
+  Publish "notice" "hang probe $name" ("exited with 0x{0:X8} in under ${Seconds} s`n{1}" -f $code, $tail)
   exit 0
 }
 

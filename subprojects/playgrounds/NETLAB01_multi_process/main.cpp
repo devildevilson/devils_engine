@@ -801,7 +801,14 @@ std::string quoted(const std::string& value) {
 }
 
 FILE* spawn(const std::string& command) {
+#ifdef _WIN32
+  // _popen runs `cmd /c <command>`, and cmd strips the first and the last quote of a line that
+  // starts with one and holds more than two: "exe" --rendezvous "dir" became exe" ... "dir.
+  // The outer pair is the one cmd removes.
+  FILE* stream = LAB_POPEN(("\"" + command + "\"").c_str(), "r");
+#else
   FILE* stream = LAB_POPEN(command.c_str(), "r");
+#endif
   if (stream == nullptr) utils::error{}("NET-LAB-01: cannot spawn '{}'", command);
   return stream;
 }

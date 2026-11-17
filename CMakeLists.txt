@@ -110,7 +110,10 @@ set(ZLIB_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(ZLIBNG_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(ZLIBNG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 set(WITH_GTEST ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
-set(PNG_STATIC OFF)
+# Static: libpng was the only FetchContent library built shared. Linux found it through RPATH, but on
+# Windows libpng16.dll stayed in _deps and every playground with fonts failed to start (0xC0000135).
+set(PNG_SHARED OFF)
+set(PNG_STATIC ON)
 set(PNG_TOOLS OFF)
 set(PNG_EXECUTABLES OFF)
 set(PNG_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
@@ -595,7 +598,7 @@ endif()
 FetchContent_MakeAvailable(PNG)
 
 # workarounds for other libs
-add_library(PNG::PNG ALIAS png_shared)
+add_library(PNG::PNG ALIAS png_static)
 
 FetchContent_MakeAvailable(freetype)
 
