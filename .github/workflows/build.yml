@@ -13,6 +13,9 @@ concurrency:
 env:
   # scripts/ is not committed yet; these three tests run Python scripts from it.
   UNTRACKED_SCRIPT_TESTS: "^(module_profile_migration|test_build_dependencies_contract|project_task_ids_contract)$"
+  # Seconds per test without its own TIMEOUT property. Without it ctest waits forever, and one hung
+  # test silently ate the whole Windows job limit (iteration 10).
+  TEST_TIMEOUT: "300"
 
 # Every step tees its output into ci-logs/; on failure report_errors.py turns the error lines into
 # annotations, which (unlike job logs) can be read without signing in.
@@ -63,17 +66,23 @@ jobs:
 
       - name: Test
         # lavapipe (mesa-vulkan-drivers) is the Vulkan device; xvfb is the display for GLFW.
+        timeout-minutes: 90
         run: |
-          xvfb-run -a ctest --test-dir build -L devils_engine \
-            -E "$UNTRACKED_SCRIPT_TESTS" --output-on-failure --parallel 2 2>&1 | tee ci-logs/test.log
+          xvfb-run -a ctest --test-dir build -L devils_engine -E "$UNTRACKED_SCRIPT_TESTS" \
+            --timeout "$TEST_TIMEOUT" --output-on-failure --parallel 2 2>&1 | tee ci-logs/test.log
+
+      - name: Slowest tests
+        if: always()
+        run: python3 .github/scripts/slow_tests.py ci-logs/test.log
 
       - name: Report errors
-        if: failure()
+        if: failure() || cancelled()
         run: python3 .github/scripts/report_errors.py ci-logs/configure.log ci-logs/build.log ci-logs/test.log
 
   windows:
     runs-on: windows-2025
-    timeout-minutes: 300
+    # Configure ~30 min + build ~2 h + tests (own step limit below); hosted runners stop at 6 h.
+    timeout-minutes: 340
     env:
       VCPKG_COMMIT: 4702e381dbbd9b54d3f7e1eb565cd8981c1814cd
       VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
@@ -125,13 +134,19 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Test
+        # A step over its own limit FAILS (the report runs); a job over its limit is cancelled.
+        timeout-minutes: 150
         run: |
           ctest --test-dir build -C Release -L devils_engine -E "$env:UNTRACKED_SCRIPT_TESTS" `
-            --output-on-failure --parallel 2 2>&1 | Tee-Object -FilePath ci-logs\test.log
+            --timeout $env:TEST_TIMEOUT --output-on-failure --parallel 2 2>&1 | Tee-Object -FilePath ci-logs\test.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
+      - name: Slowest tests
+        if: always()
+        run: python .github/scripts/slow_tests.py ci-logs\test.log
+
       - name: Report errors
-        if: failure()
+        if: failure() || cancelled()
         run: |
           $logs = @("ci-logs\configure.log", "ci-logs\msbuild-errors.log", "ci-logs\build.log", "ci-logs\test.log")
           # vcpkg writes the failing port's own logs under buildtrees; include them too.
