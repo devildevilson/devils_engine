@@ -44,8 +44,8 @@ jobs:
 
       - uses: actions/checkout@v7
 
-      - name: ccache
-        uses: actions/cache@v6
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ccache
           key: ccache-linux-${{ github.sha }}
@@ -59,11 +59,21 @@ jobs:
             2>&1 | tee ci-logs/configure.log
 
       - name: Build
+        id: build
         # nproc is the runner's CPU count (4 on a standard public-repo runner).
         run: |
           ccache --max-size=3G
           cmake --build build --parallel "$(nproc)" -- -k 0 2>&1 | tee ci-logs/build.log
           ccache --show-stats
+
+      # Saved right after the build, whatever the result: the combined cache action saves only when
+      # the whole job succeeds, so every run after a failed one started from an empty cache.
+      - name: Save ccache
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-${{ github.sha }}
 
       - name: Test
         # lavapipe (mesa-vulkan-drivers) is the Vulkan device; xvfb is the display for GLFW.
@@ -121,8 +131,8 @@ jobs:
           Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
           "$env:RUNNER_TEMP\ccache-$env:CCACHE_VERSION-windows-x86_64" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      - name: ccache
-        uses: actions/cache@v6
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-windows-${{ github.sha }}
@@ -167,6 +177,7 @@ jobs:
           key: vcpkg-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Build
+        id: build
         # NUMBER_OF_PROCESSORS is the runner's CPU count (4 on a standard public-repo runner).
         run: |
           ccache --max-size=3G
@@ -175,6 +186,13 @@ jobs:
           $code = $LASTEXITCODE
           ccache --show-stats
           if ($code) { exit $code }
+
+      - name: Save ccache
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-windows-${{ github.sha }}
 
       - name: Disable crash dialogs
         # A crashing process otherwise waits on a Windows Error Reporting dialog nobody closes, and

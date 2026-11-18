@@ -1703,12 +1703,21 @@ int main_verify(const options& opts) {
   // 16. ПАМЯТЬ МИРА. Проверяется главное свойство модели «выводимое + отличие»: соединение это
   // ФУНКЦИЯ от (выводимые сущности, склад), и ничего кроме. Иначе «вернулся — а стало иначе» ловилось
   // бы только глазами и только иногда.
-  {
-    const originator::chunk_key key{4, 0, -2};
+  // Лямбда ради `return`: без сущностей проверять нечего, а ниже берётся derived.front().
+  [&] {
+    // Пробный чанк ИЩЕТСЯ, а не назначается: есть ли в нём сущности, решает мир, и при другом зерне
+    // шагов (так было на Windows, где std::hash другой) {4, 0, -2} оказался пустым, а проверка
+    // продолжала читать за концом пустого списка.
+    originator::chunk_key key{4, 0, -2};
     gn03::chunk_mesh mesh;
-    worker.generate(key, mesh);
+    for (int64_t attempt = 0; attempt < 16; ++attempt) {
+      key = originator::chunk_key{4 + attempt, 0, -2};
+      worker.generate(key, mesh);
+      if (!mesh.props.empty()) break;
+    }
     const auto derived = mesh.props;
     checks.check(!derived.empty(), "the memory probe chunk has entities to remember");
+    if (derived.empty()) return;
 
     gn03::world_memory memory;
     std::vector<gn03::world_memory::joined_prop> visible;
@@ -1812,7 +1821,7 @@ int main_verify(const options& opts) {
                 memory.size(), first_bytes.size());
     std::filesystem::remove(path);
     std::filesystem::remove(twin_path);
-  }
+  }();
 
   // 17. ОТПЕЧАТОК ЭТАЛОННЫХ ЧАНКОВ. Это ДИАГНОСТИКА, а не критерий, и разница принципиальная: как
   // только меняется правило поля или хеш, отпечаток меняется целиком, и проверять его равенство

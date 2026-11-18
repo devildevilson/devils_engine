@@ -139,6 +139,26 @@ TEST_CASE("murmur3 hashes canonical binary bytes [utils::hash]") {
     utils::murmur_hash3_32(std::string_view{chars.data(), chars.size()}));
 }
 
+TEST_CASE("libstdcxx_string_hash gives the same numbers with every standard library [utils::hash]") {
+  // Числа сняты с libstdc++ std::hash<std::string>; на них стоят зёрна шагов originator.
+  static_assert(utils::libstdcxx_string_hash("") == UINT64_C(0x553e93901e462a6e));
+  static_assert(utils::libstdcxx_string_hash("a") == UINT64_C(0x454ddee488c1ed6b));
+  static_assert(utils::libstdcxx_string_hash("elevation") == UINT64_C(0xdcb5be305438c3aa));
+  static_assert(utils::libstdcxx_string_hash("chunk_seed_step_name_17") == UINT64_C(0xbf6b7d2aaec38b15));
+  // Старший бит байта: load обязан брать unsigned char, иначе знак размажется по слову.
+  CHECK(utils::libstdcxx_string_hash("\xff\x80") != utils::libstdcxx_string_hash("\x7f\x00"));
+
+#if defined(__GLIBCXX__) && SIZE_MAX == UINT64_MAX
+  // Там, где есть оригинал, сверка со всеми остатками длины по модулю 8.
+  std::string text;
+  for (int length = 0; length < 40; ++length) {
+    CAPTURE(length);
+    CHECK(utils::libstdcxx_string_hash(text) == std::hash<std::string>{}(text));
+    text.push_back(char(0x41 + length * 37 % 190));
+  }
+#endif
+}
+
 TEST_CASE("string_pool keeps stable dense ids and supports lookup [utils::string_id]") {
   utils::string_pool<1002> pool;
 

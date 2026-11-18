@@ -156,6 +156,38 @@ constexpr uint32_t murmur_hash3_32(
   return detail::murmur_hash3_x86_32(bytes, seed);
 }
 
+// --- хеш строки, совпадающий с libstdc++ ---
+
+// Байт в байт `std::hash<std::string>` из libstdc++ на 64-битной платформе (_Hash_bytes: MurmurHash2
+// по 8 байт, зерно 0xc70f6907), записанный явно. Стандарт алгоритм НЕ фиксирует: у MSVC это FNV-1a,
+// и зерно шага originator, выведенное из имени через std::hash, на Windows было другим — земля
+// frontier_online уходила под воду целиком. Существующие миры и эталоны посчитаны этим алгоритмом,
+// поэтому он сохранён, а не заменён на string_hash: замена переписала бы каждый мир.
+[[nodiscard]] constexpr uint64_t libstdcxx_string_hash(const std::string_view text) noexcept {
+  constexpr uint64_t mul = (uint64_t(0xc6a4a793u) << 32) + uint64_t(0x5bd1e995u);
+  constexpr auto shift_mix = [](const uint64_t v) { return v ^ (v >> 47); };
+  // Слово читается little-endian, как unaligned_load на x86-64 и AArch64.
+  const auto load = [&](const size_t at, const size_t count) {
+    uint64_t result = 0;
+    for (size_t i = count; i-- > 0;) result = (result << 8) + uint64_t(static_cast<unsigned char>(text[at + i]));
+    return result;
+  };
+
+  const size_t len = text.size();
+  const size_t aligned = len & ~size_t(7);
+  uint64_t hash = uint64_t(0xc70f6907u) ^ (uint64_t(len) * mul);
+  for (size_t at = 0; at != aligned; at += 8) {
+    hash ^= shift_mix(load(at, 8) * mul) * mul;
+    hash *= mul;
+  }
+  if ((len & 7) != 0) {
+    hash ^= load(aligned, len & 7);
+    hash *= mul;
+  }
+  hash = shift_mix(hash) * mul;
+  return shift_mix(hash);
+}
+
 } // namespace utils
 } // namespace devils_engine
 

@@ -15,6 +15,9 @@
 - `root.h` — единственное место абсолютного пути: `root::open(abs)` проверяет корень, `resolve`
   пускает только относительные пути внутри него. Абсолютный путь любой платформы (`/`, `C:`,
   `\\server`), `..` за корень и `:` отвергаются статусом на всех платформах; `\` — разделитель.
+- `hash.h`: `std::hash` и `std::*_distribution` не годятся для зёрен и канонических байтов — алгоритм у
+  каждой стандартной библиотеки свой (MSVC: FNV-1a). Зёрна шагов originator считает
+  `libstdcxx_string_hash` — явная копия прежнего libstdc++ `std::hash<std::string>`, чтобы миры не сдвинулись.
 - `simulation_time.h`, `timeline.h` — integer gameplay time; presentation/wall time не источник
   authoritative ticks. Шаги симуляции нумеруются с 1: `simulation_now() == 0` значит «ни одного
   шага ещё не было» (начальное состояние), и ни событие, ни действие не адресует тик 0. `prng.h`/`shared.h` — единые hash/random primitives.
