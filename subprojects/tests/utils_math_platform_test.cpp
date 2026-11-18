@@ -150,6 +150,7 @@ uint64_t seed_of(const std::string_view name) {
 } // namespace
 
 TEST_CASE("transcendental functions give the same bits as the Linux reference [utils][math][platform]") {
+  std::string names; // сначала короткий список: он гарантированно влезает в отчёт CI
   std::string differing;
   for (const auto& expected : reference) {
     for (const bool single : {false, true}) {
@@ -157,15 +158,16 @@ TEST_CASE("transcendental functions give the same bits as the Linux reference [u
                                  : run_named<double>(expected.name, seed_of(expected.name));
       const uint64_t want = single ? expected.f32 : expected.f64;
       const char* type = single ? "float" : "double";
-      // Строка для пересъёмки эталона: печатается всегда, видна с --success.
-      MESSAGE(std::format("{} {} 0x{:016x}", expected.name, type, result.digest));
+      // Печатаются только расхождения: отчёт CI обрезает блок теста (~3500 символов),
+      // и 42 строки дайджестов вытесняли из него само расхождение.
       if (result.digest != want) {
+        names += std::format(" {}<{}>", expected.name, type);
         differing += std::format("\n{}<{}> digest 0x{:016x} (reference 0x{:016x}); first samples:", expected.name,
                                  type, result.digest, want);
         for (const auto& line : result.head) differing += "\n    " + line;
       }
     }
   }
-  INFO("functions whose bits differ from GCC/glibc x86-64:" << differing);
+  INFO("functions whose bits differ from GCC/glibc x86-64:" << names << "\ndetails:" << differing);
   CHECK(differing.empty());
 }
