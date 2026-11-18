@@ -1,4 +1,5 @@
 #include "devils_engine/utils/log.h"
+#include "devils_engine/act/script_math.h"
 #include <cstdint>
 #include <string>
 #include <tuple>
@@ -54,7 +55,7 @@ static devils_script::system::options make_options() {
 
 script_environment::script_environment() : sys(make_options()) {
   sys.init_basic_functions();
-  sys.init_math();
+  devils_engine::act::init_deterministic_math(sys); // не init_math: libm у платформ расходится
 
   // ds-словарь gameplay building blocks (deferred-эффекты + аксессоры восприятия + spawn_at) —
   // один декларативный список в actor_simulation.cpp; здесь только его ds-часть.

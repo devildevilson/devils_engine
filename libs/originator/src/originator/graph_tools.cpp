@@ -10,6 +10,7 @@
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/deterministic_math.h"
 #include "devils_engine/utils/kd_tree.h"
 
 // Инструменты замкнутой поверхности и графа соседства.
@@ -71,9 +72,9 @@ void tool_sphere_points(const tool_call& call, const size_t begin, const size_t 
     const double ring = std::sqrt(std::max(0.0, 1.0 - along * along));
     const double angle = 2.0 * std::numbers::pi * std::fmod(double(i) * golden, 1.0);
 
-    target.set(i, radius * ring * std::cos(angle), uint32_t(first));
+    target.set(i, radius * ring * utils::deterministic::cos(angle), uint32_t(first));
     target.set(i, radius * along, uint32_t(up));
-    target.set(i, radius * ring * std::sin(angle), uint32_t(second));
+    target.set(i, radius * ring * utils::deterministic::sin(angle), uint32_t(second));
   }
 }
 

@@ -1,4 +1,5 @@
 #include "script_math.h"
+#include "devils_engine/act/script_math.h"
 #include "script_ast.h"
 #include "devils_engine/originator/script_translate.h"
 
@@ -853,7 +854,7 @@ std::expected<translation, std::string> try_translate_to_glsl(const std::string_
   // их список разъехался бы с первым молча.
   ds::system system;
   system.init_basic_functions();
-  system.init_math();
+  act::init_deterministic_math(system); // тот же набор имён, что у VM
   detail::add_generation_math(system);
 
   tavl::parser parser;

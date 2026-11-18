@@ -43,6 +43,7 @@ target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_eng
 devils_add_doctest(utils_contract_test utils_contract_test.cpp)
 # Межплатформенная математика: сверка битов libm с эталоном GCC/glibc (см. заголовок файла).
 devils_add_doctest(utils_math_platform_test utils_math_platform_test.cpp)
+target_link_libraries(utils_math_platform_test PRIVATE devils_engine::utils)
 target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 
 devils_add_doctest(utils_serialization_test utils_serialization_test.cpp)
@@ -144,6 +145,7 @@ if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)
   devils_add_test(NAME utils_deterministic_cross_compiler_probe
     COMMAND ${CMAKE_COMMAND}
       -DPROBE_SOURCE=${CMAKE_CURRENT_LIST_DIR}/utils_deterministic_corpus.cpp
+      -DPROBE_EXTRA_SOURCE=${CMAKE_SOURCE_DIR}/libs/utils/src/utils/deterministic_math.cpp
       -DPROBE_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/libs/utils/include
       -DPROBE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/utils_deterministic_probe
       -DGXX=${DEVILS_NETWORK_GXX}
@@ -233,6 +235,8 @@ target_link_libraries(mood_diagnostics_test PRIVATE devils_engine::mood devils_e
 
 devils_add_doctest(act_call_context_test act_call_context_test.cpp)
 target_link_libraries(act_call_context_test PRIVATE devils_engine::act devils_script)
+devils_add_doctest(act_script_math_test act_script_math_test.cpp)
+target_link_libraries(act_script_math_test PRIVATE devils_engine::act devils_script)
 
 devils_add_doctest(act_packer_test act_packer_test.cpp)
 target_link_libraries(act_packer_test PRIVATE devils_engine::act devils_script)

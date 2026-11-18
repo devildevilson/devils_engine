@@ -52,12 +52,17 @@
 ### Хеши, id и случайные числа
 
 - `hash.h` содержит constexpr-миксеры и Murmur3 x86 32-bit для строковых id.
-- `deterministic_math.h` содержит scalar `sin/cos/sin_cos`, адаптированные из Jolt Physics 5.6.0
-  с сохранённой MIT attribution. Они не зовут platform libm и побитово сверяются с Jolt corpus;
-  `devils_engine::options` отключает FP contraction у всех C++ consumers. Cody-Waite reduction
-  принимает только конечные углы с `abs(angle) <= 100000`; вне диапазона возвращается canonical
-  NaN, а caller должен сначала нормализовать угол. Это начало численного контракта, не обещание,
-  что произвольная floating-point функция уже детерминирована.
+- `deterministic_math.h` — функции с одинаковыми битами на всех платформах, в отличие от libm
+  (glibc 2.39 / 2.41–2.43 / 2.44 дают три разных набора, MSVC CRT — четвёртый):
+  - float `sin/cos/sin_cos` адаптированы из Jolt Physics 5.6.0 (MIT attribution сохранена) и
+    побитово сверяются с Jolt corpus. Cody-Waite reduction принимает только конечные углы с
+    `abs(angle) <= 100000`; вне диапазона — canonical NaN, caller сначала нормализует угол;
+  - double `sin cos tan asin acos atan atan2 exp pow hypot` в `src/utils/deterministic_math.cpp` —
+    дословный порт musl 1.2.5 (fdlibm/FreeBSD msun и ARM optimized-routines; MIT и уведомление Sun),
+    побитово равен libm musl. Полный диапазон аргументов, < 1 ULP; любой NaN на выходе — один
+    canonical NaN. Float-аргумент выбирает перегрузки Jolt, double — порт.
+  `devils_engine::options` отключает FP contraction у всех C++ consumers — без этого контракта нет.
+  Остальные функции libm (cbrt, sinh, log, ...) пока не перенесены.
 - `deterministic_sort.h` содержит фиксированную quicksort/insertion-sort реализацию из Jolt вместо
   platform-dependent `std::sort`. Она намеренно не stable: canonical caller обязан добавить
   tie-breaker, если эквивалентные элементы различимы. Каноническая сериализация map уже использует её.

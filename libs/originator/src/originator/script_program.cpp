@@ -1,4 +1,5 @@
 #include "script_math.h"
+#include "devils_engine/act/script_math.h"
 #include "devils_engine/utils/type_traits.h"
 #include "devils_engine/originator/script_program.h"
 #include "devils_engine/originator/script_column.h"
@@ -182,7 +183,7 @@ std::unique_ptr<script_program> script_program::compile(const std::string_view& 
 
   try {
     impl.system.init_basic_functions();
-    impl.system.init_math();
+    act::init_deterministic_math(impl.system); // не init_math: libm у платформ расходится
     impl.system.register_function<&read_result_component>("result_component");
     impl.system.register_function<&read_element_index>("element_index");
     impl.system.register_function<&read_other_index>("other_index");

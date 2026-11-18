@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/deterministic_math.h"
 #include "devils_engine/utils/dice.h"
 #include "devils_engine/utils/prng.h"
 #include "devils_engine/utils/shared.h"
@@ -77,6 +78,7 @@ sol::environment create_env(sol::state_view s) {
 
   env["math"]["random"] = sol::nil;
   env["math"]["randomseed"] = sol::nil;
+  deterministic_math(env["math"]);
 
   sol::table os(s, sol::create);
   os["clock"] = s["os"]["clock"];
@@ -476,9 +478,32 @@ static int64_t unsigned_modulo(const int64_t value, const int64_t divisor) {
   return int64_t(s64_to_u64(value) % uint64_t(divisor));
 }
 
-// std::hypot: не равен sqrt(x*x + y*y) в последнем бите, а правила мира написаны через него.
+// hypot: не равен sqrt(x*x + y*y) в последнем бите, а правила мира написаны через него. Не std:
+// у glibc 2.44 hypot уже не тот, что у 2.43.
 static double hypot2(const double x, const double y) {
-  return std::hypot(x, y);
+  return utils::deterministic::hypot(x, y);
+}
+
+// Именованные функции, не лямбды: см. ловушку __gc у sol2 в libs/originator/AGENTS.md.
+static double lua_sin(const double x) { return utils::deterministic::sin(x); }
+static double lua_cos(const double x) { return utils::deterministic::cos(x); }
+static double lua_tan(const double x) { return utils::deterministic::tan(x); }
+static double lua_asin(const double x) { return utils::deterministic::asin(x); }
+static double lua_acos(const double x) { return utils::deterministic::acos(x); }
+static double lua_exp(const double x) { return utils::deterministic::exp(x); }
+// math.atan(y [, x]) в lua 5.4 — это atan2(y, x или 1), как в lmathlib.c.
+static double lua_atan(const double y, const sol::optional<double> x) {
+  return utils::deterministic::atan2(y, x.value_or(1.0));
+}
+
+void deterministic_math(sol::table math) {
+  math.set_function("sin", &lua_sin);
+  math.set_function("cos", &lua_cos);
+  math.set_function("tan", &lua_tan);
+  math.set_function("asin", &lua_asin);
+  math.set_function("acos", &lua_acos);
+  math.set_function("atan", &lua_atan);
+  math.set_function("exp", &lua_exp);
 }
 
 // еще дополнительно желательно вылетать если у нас случайно произошел бесконечный цикл

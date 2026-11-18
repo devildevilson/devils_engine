@@ -1,21 +1,31 @@
-// ПРОБА МАТЕМАТИКИ МЕЖДУ ПЛАТФОРМАМИ. std::sin/exp/pow и прочие не обязаны быть корректно округлены,
-// и libm у glibc и CRT у MSVC вправе расходиться в последнем бите. Генераторы зовут их сотни раз, а
-// мир обязан совпадать у клиента и сервера на разных системах. Пробы *_cross_compiler_probe сравнивают
-// GCC и Clang НА ОДНОЙ машине, то есть с одной libm, и этого расхождения не видят.
+// МАТЕМАТИКА МЕЖДУ ПЛАТФОРМАМИ. Два теста на одних и тех же входах.
 //
-// Тест сверяет дайджест битов результатов с эталоном, снятым GCC/glibc на x86-64 Linux. Входы строятся
-// только точными операциями (целое * степень двойки), поэтому различаться могут лишь сами функции.
-// При расхождении печатаются первые входы и выходы в hex — по ним видно, сколько ULP и где.
+// 1. КОНТРАКТ utils::deterministic (double: sin, cos, tan, asin, acos, atan, atan2, exp, pow, hypot):
+//    дайджест битов обязан совпасть с эталоном на КАЖДОЙ платформе и любом компиляторе. Эталон снят
+//    2026-11-18 и побитово равен libm musl 1.2.5 (Alpine 3.22), с которого сделан порт.
+//
+// 2. ПРОБА platform libm (std::sin и прочие): только отчёт, тест не падает. libm не обязана быть
+//    корректно округлена и меняет биты между версиями: замер 2026-11-18 — glibc 2.39, 2.41–2.43 и
+//    2.44 дают три разных набора (до 2 ULP), MSVC CRT расходится почти во всём. Поэтому код, от
+//    которого зависит мир, зовёт utils::deterministic, а не std. Эталон пробы — GCC 16 / glibc 2.44.
+//
+// Входы строятся только точными операциями (целое * степень двойки), поэтому различаться могут лишь
+// сами функции. Расхождения печатаются в hex: по ним видно, сколько ULP и где.
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
+#include <numbers>
 #include <string>
 #include <vector>
 
 #include <doctest/doctest.h>
+
+#include "devils_engine/utils/deterministic_math.h"
 
 namespace {
 
@@ -147,9 +157,132 @@ uint64_t seed_of(const std::string_view name) {
   return h;
 }
 
+// Те же имена и области, что у пробы libm; float-перегрузок порт не даёт (они у Jolt, с другим
+// диапазоном), поэтому только double.
+probe_result run_deterministic(const std::string_view name, const uint64_t seed) {
+  namespace det = devils_engine::utils::deterministic;
+  using F = double;
+  if (name == "sin") return run_unary<F>(seed, angle, [](F x) { return det::sin(x); });
+  if (name == "cos") return run_unary<F>(seed, angle, [](F x) { return det::cos(x); });
+  if (name == "tan") return run_unary<F>(seed, angle, [](F x) { return det::tan(x); });
+  if (name == "sin_big") return run_unary<F>(seed, big_angle, [](F x) { return det::sin(x); });
+  if (name == "cos_big") return run_unary<F>(seed, big_angle, [](F x) { return det::cos(x); });
+  if (name == "asin") return run_unary<F>(seed, unit, [](F x) { return det::asin(x); });
+  if (name == "acos") return run_unary<F>(seed, unit, [](F x) { return det::acos(x); });
+  if (name == "atan") return run_unary<F>(seed, wide, [](F x) { return det::atan(x); });
+  if (name == "atan2") return run_binary<F>(seed, wide, wide, [](F y, F x) { return det::atan2(y, x); });
+  if (name == "exp") return run_unary<F>(seed, exp_range, [](F x) { return det::exp(x); });
+  if (name == "pow") return run_binary<F>(seed, base, power, [](F x, F y) { return det::pow(x, y); });
+  if (name == "hypot") return run_binary<F>(seed, wide, wide, [](F x, F y) { return det::hypot(x, y); });
+  FAIL("unknown function ", name);
+  return {};
+}
+
+struct deterministic_expectation {
+  const char* name;
+  uint64_t digest;
+};
+
+// Эталон порта: снят 2026-11-18, равен libm musl 1.2.5 на тех же входах. Пересъёмка = смена
+// численного контракта: назвать причину в сообщении коммита.
+constexpr deterministic_expectation deterministic_reference[] = {
+#include "utils_deterministic_math_reference.inc"
+};
+
+uint64_t bits(const double value) { return std::bit_cast<uint64_t>(value); }
+
 } // namespace
 
-TEST_CASE("transcendental functions give the same bits as the Linux reference [utils][math][platform]") {
+TEST_CASE("deterministic math gives the same bits on every platform [utils][math][deterministic]") {
+  std::string names; // сначала короткий список: он гарантированно влезает в отчёт CI
+  std::string differing;
+  for (const auto& expected : deterministic_reference) {
+    const auto result = run_deterministic(expected.name, seed_of(expected.name));
+    MESSAGE(std::format("{} 0x{:016x}", expected.name, result.digest)); // строка для пересъёмки, видна с -s
+    if (result.digest != expected.digest) {
+      names += std::format(" {}", expected.name);
+      differing += std::format("\n{} digest 0x{:016x} (reference 0x{:016x}); first samples:", expected.name,
+                               result.digest, expected.digest);
+      for (const auto& line : result.head) differing += "\n    " + line;
+    }
+  }
+  INFO("deterministic functions whose bits differ from the reference:" << names << "\ndetails:" << differing);
+  CHECK(differing.empty());
+}
+
+TEST_CASE("deterministic math keeps signed zero, infinities and one NaN [utils][math][deterministic]") {
+  namespace det = devils_engine::utils::deterministic;
+  constexpr double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::bit_cast<double>(det::canonical_nan_bits);
+  const double negative_nan = std::bit_cast<double>(UINT64_C(0xfff8000000000001)); // знак и payload
+
+  for (const double zero : {0.0, -0.0}) {
+    CHECK(bits(det::sin(zero)) == bits(zero));
+    CHECK(bits(det::tan(zero)) == bits(zero));
+    CHECK(bits(det::asin(zero)) == bits(zero));
+    CHECK(bits(det::atan(zero)) == bits(zero));
+    CHECK(det::cos(zero) == 1.0);
+    CHECK(det::exp(zero) == 1.0);
+  }
+  CHECK(bits(det::atan2(-0.0, 1.0)) == bits(-0.0));
+  CHECK(det::atan2(0.0, -1.0) == std::numbers::pi);
+
+  // Любой NaN на выходе — один и тот же: x86 и ARM рождают NaN с разным знаком.
+  for (const double x : {inf, -inf, nan, negative_nan}) {
+    CHECK(bits(det::sin(x)) == det::canonical_nan_bits);
+    CHECK(bits(det::cos(x)) == det::canonical_nan_bits);
+    CHECK(bits(det::tan(x)) == det::canonical_nan_bits);
+  }
+  CHECK(bits(det::asin(2.0)) == det::canonical_nan_bits);
+  CHECK(bits(det::acos(-2.0)) == det::canonical_nan_bits);
+  CHECK(bits(det::pow(-8.0, 1.0 / 3.0)) == det::canonical_nan_bits);
+  CHECK(bits(det::exp(negative_nan)) == det::canonical_nan_bits);
+  CHECK(bits(det::atan2(negative_nan, 1.0)) == det::canonical_nan_bits);
+
+  CHECK(det::exp(inf) == inf);
+  CHECK(bits(det::exp(-inf)) == bits(0.0));
+  CHECK(det::exp(1000.0) == inf);
+  CHECK(bits(det::exp(-1000.0)) == bits(0.0));
+  CHECK(det::pow(0.0, -1.0) == inf);
+  CHECK(det::pow(-2.0, 3.0) == -8.0);
+  CHECK(det::pow(nan, 0.0) == 1.0);
+  CHECK(det::hypot(inf, nan) == inf);
+  CHECK(det::hypot(3.0, 4.0) == 5.0);
+  CHECK(det::atan(inf) == std::numbers::pi / 2);
+}
+
+TEST_CASE("deterministic math stays within a few ULP of the platform libm [utils][math][deterministic]") {
+  // Ловит порчу порта, а не точность libm: musl < 1 ULP от истины, libm тоже около того.
+  namespace det = devils_engine::utils::deterministic;
+  constexpr uint64_t tolerance = 4;
+  const auto ulp_distance = [](const double a, const double b) {
+    const auto ordered = [](const double v) {
+      const auto i = std::bit_cast<int64_t>(v);
+      return i >= 0 ? i : std::numeric_limits<int64_t>::min() - i;
+    };
+    return uint64_t(std::abs(ordered(a) - ordered(b)));
+  };
+  uint64_t state = 20261118;
+  uint64_t worst = 0;
+  for (size_t i = 0; i < 4096; ++i) {
+    const double x = exact_input(state, angle.lo, angle.hi, angle.shift);
+    const double u = exact_input(state, unit.lo, unit.hi, unit.shift);
+    const double e = exact_input(state, exp_range.lo, exp_range.hi, exp_range.shift);
+    const double b = exact_input(state, base.lo, base.hi, base.shift);
+    const double pairs[][2] = {
+      {det::sin(x), std::sin(x)},           {det::cos(x), std::cos(x)},
+      {det::tan(x), std::tan(x)},           {det::asin(u), std::asin(u)},
+      {det::acos(u), std::acos(u)},         {det::atan(x), std::atan(x)},
+      {det::atan2(x, u), std::atan2(x, u)}, {det::exp(e), std::exp(e)},
+      {det::pow(b, u * 8), std::pow(b, u * 8)}, {det::hypot(x, e), std::hypot(x, e)},
+    };
+    for (const auto& pair : pairs) worst = std::max(worst, ulp_distance(pair[0], pair[1]));
+  }
+  MESSAGE("worst distance from platform libm: " << worst << " ULP");
+  CHECK(worst <= tolerance);
+}
+
+TEST_CASE("platform libm against the GCC/glibc 2.44 reference, report only [utils][math][platform]") {
   std::string names; // сначала короткий список: он гарантированно влезает в отчёт CI
   std::string differing;
   for (const auto& expected : reference) {
@@ -158,8 +291,6 @@ TEST_CASE("transcendental functions give the same bits as the Linux reference [u
                                  : run_named<double>(expected.name, seed_of(expected.name));
       const uint64_t want = single ? expected.f32 : expected.f64;
       const char* type = single ? "float" : "double";
-      // Печатаются только расхождения: отчёт CI обрезает блок теста (~3500 символов),
-      // и 42 строки дайджестов вытесняли из него само расхождение.
       if (result.digest != want) {
         names += std::format(" {}<{}>", expected.name, type);
         differing += std::format("\n{}<{}> digest 0x{:016x} (reference 0x{:016x}); first samples:", expected.name,
@@ -168,6 +299,7 @@ TEST_CASE("transcendental functions give the same bits as the Linux reference [u
       }
     }
   }
-  INFO("functions whose bits differ from GCC/glibc x86-64:" << names << "\ndetails:" << differing);
-  CHECK(differing.empty());
+  // Не проверка: libm такого контракта не даёт. Видно с `-s` (doctest) или --verbose (ctest).
+  MESSAGE("platform libm functions whose bits differ from GCC 16 / glibc 2.44:"
+          << (names.empty() ? std::string(" none") : names) << differing);
 }

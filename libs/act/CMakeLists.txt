@@ -44,3 +44,16 @@ target_link_libraries(devils_act
 )
 
 add_library(devils_engine::act ALIAS devils_act)
+
+# Детерминированная математика devils_script (замена init_math). Отдельная маленькая цель: её
+# подключает и originator, которому не нужны catalogue/demiurg из devils_act.
+add_library(devils_act_script_math src/act/script_math.cpp include/devils_engine/act/script_math.h)
+target_include_directories(devils_act_script_math
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+)
+target_link_libraries(devils_act_script_math
+  PUBLIC devils_script
+  PRIVATE devils_engine::options devils_engine::utils
+)
+add_library(devils_engine::act_script_math ALIAS devils_act_script_math)
+target_link_libraries(devils_act PUBLIC devils_engine::act_script_math)

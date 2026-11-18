@@ -1,4 +1,5 @@
 #include "script_math.h"
+#include "devils_engine/act/script_math.h"
 #include "script_ast.h"
 #include "devils_engine/originator/script_column.h"
 
@@ -25,6 +26,7 @@
 
 namespace devils_engine {
 namespace originator {
+namespace det = utils::deterministic; // трансцендентные функции: одинаковые биты на всех платформах
 
 namespace {
 namespace ds = devils_script;
@@ -443,7 +445,7 @@ std::expected<std::unique_ptr<column_program>, std::string> column_program::try_
   // Парсер настраивает сама система ds: приоритеты операторов объявлены в ней.
   ds::system system;
   system.init_basic_functions();
-  system.init_math();
+  act::init_deterministic_math(system); // не init_math: libm у платформ расходится
   detail::add_generation_math(system);
   tavl::parser parser;
   system.configure_parser(parser);
@@ -522,17 +524,17 @@ void column_program::run(const size_t n, const std::span<const double* const> co
         case op_code::ceil: d = std::ceil(a); break;
         case op_code::round: d = std::round(a); break;
         case op_code::trunc: d = std::trunc(a); break;
-        case op_code::pow: d = std::pow(a, b); break;
+        case op_code::pow: d = det::pow(a, b); break;
         case op_code::sqrt: d = std::sqrt(a); break;
         case op_code::isqrt: d = 1.0 / std::sqrt(a); break;
-        case op_code::exp: d = std::exp(a); break;
-        case op_code::sin: d = std::sin(a); break;
-        case op_code::cos: d = std::cos(a); break;
-        case op_code::tan: d = std::tan(a); break;
-        case op_code::asin: d = std::asin(a); break;
-        case op_code::acos: d = std::acos(a); break;
-        case op_code::atan: d = std::atan(a); break;
-        case op_code::atan2: d = std::atan2(a, b); break;
+        case op_code::exp: d = det::exp(a); break;
+        case op_code::sin: d = det::sin(a); break;
+        case op_code::cos: d = det::cos(a); break;
+        case op_code::tan: d = det::tan(a); break;
+        case op_code::asin: d = det::asin(a); break;
+        case op_code::acos: d = det::acos(a); break;
+        case op_code::atan: d = det::atan(a); break;
+        case op_code::atan2: d = det::atan2(a, b); break;
         case op_code::sign: d = double((a > 0.0) - (a < 0.0)); break;
         case op_code::fma: d = a * b + c; break;
         case op_code::fract: d = a - std::floor(a); break;
@@ -604,17 +606,17 @@ void column_program::run(const size_t n, const std::span<const double* const> co
       case op_code::ceil: for (size_t l = 0; l < n; ++l) d[l] = std::ceil(a[l]); break;
       case op_code::round: for (size_t l = 0; l < n; ++l) d[l] = std::round(a[l]); break;
       case op_code::trunc: for (size_t l = 0; l < n; ++l) d[l] = std::trunc(a[l]); break;
-      case op_code::pow: for (size_t l = 0; l < n; ++l) d[l] = std::pow(a[l], b[l]); break;
+      case op_code::pow: for (size_t l = 0; l < n; ++l) d[l] = det::pow(a[l], b[l]); break;
       case op_code::sqrt: for (size_t l = 0; l < n; ++l) d[l] = std::sqrt(a[l]); break;
       case op_code::isqrt: for (size_t l = 0; l < n; ++l) d[l] = 1.0 / std::sqrt(a[l]); break;
-      case op_code::exp: for (size_t l = 0; l < n; ++l) d[l] = std::exp(a[l]); break;
-      case op_code::sin: for (size_t l = 0; l < n; ++l) d[l] = std::sin(a[l]); break;
-      case op_code::cos: for (size_t l = 0; l < n; ++l) d[l] = std::cos(a[l]); break;
-      case op_code::tan: for (size_t l = 0; l < n; ++l) d[l] = std::tan(a[l]); break;
-      case op_code::asin: for (size_t l = 0; l < n; ++l) d[l] = std::asin(a[l]); break;
-      case op_code::acos: for (size_t l = 0; l < n; ++l) d[l] = std::acos(a[l]); break;
-      case op_code::atan: for (size_t l = 0; l < n; ++l) d[l] = std::atan(a[l]); break;
-      case op_code::atan2: for (size_t l = 0; l < n; ++l) d[l] = std::atan2(a[l], b[l]); break;
+      case op_code::exp: for (size_t l = 0; l < n; ++l) d[l] = det::exp(a[l]); break;
+      case op_code::sin: for (size_t l = 0; l < n; ++l) d[l] = det::sin(a[l]); break;
+      case op_code::cos: for (size_t l = 0; l < n; ++l) d[l] = det::cos(a[l]); break;
+      case op_code::tan: for (size_t l = 0; l < n; ++l) d[l] = det::tan(a[l]); break;
+      case op_code::asin: for (size_t l = 0; l < n; ++l) d[l] = det::asin(a[l]); break;
+      case op_code::acos: for (size_t l = 0; l < n; ++l) d[l] = det::acos(a[l]); break;
+      case op_code::atan: for (size_t l = 0; l < n; ++l) d[l] = det::atan(a[l]); break;
+      case op_code::atan2: for (size_t l = 0; l < n; ++l) d[l] = det::atan2(a[l], b[l]); break;
       case op_code::sign: for (size_t l = 0; l < n; ++l) d[l] = double((a[l] > 0.0) - (a[l] < 0.0)); break;
       case op_code::fma: for (size_t l = 0; l < n; ++l) d[l] = a[l] * b[l] + c[l]; break;
       case op_code::fract: for (size_t l = 0; l < n; ++l) d[l] = a[l] - std::floor(a[l]); break;

@@ -1,4 +1,5 @@
 #include "cardgame/combat_script.h"
+#include "devils_engine/act/script_math.h"
 
 #include <algorithm>
 #include <array>
@@ -916,7 +917,7 @@ void emit_retaliation_attack(const retaliation_rule_scope scope,
 
 combat_effect_script_compiler::combat_effect_script_compiler() {
   sys_.init_basic_functions();
-  sys_.init_math();
+  devils_engine::act::init_deterministic_math(sys_); // не init_math: libm у платформ расходится
   register_combat_effect_script(sys_);
 }
 

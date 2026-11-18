@@ -388,6 +388,8 @@ script_host::script_host(tool_registry& tools, thread::atomic_pool* pool) : tool
   // приходит от шага, а случайность считается инструментами как функция от индекса.
   env_["math"]["random"] = sol::nil;
   env_["math"]["randomseed"] = sol::nil;
+  // Тригонометрия и exp — те же, что у ds-программ и инструментов: libm разных систем расходится.
+  bindings::deterministic_math(env_["math"]);
 
   // БАЗОВЫЕ ФУНКЦИИ ДВИЖКА в таблице `base`, а не своя копия в каждом скрипте: скрипт генератора
   // хеширует ТЕМ ЖЕ, чем хеширует остальной движок (`base.prng64_2` вместо рукописного splitmix).

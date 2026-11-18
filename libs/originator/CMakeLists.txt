@@ -101,7 +101,8 @@ target_link_libraries(devils_originator_script
   PUBLIC devils_engine::originator
   # tavl — тот же парсер, которым разбирает ds: транслятор идёт по AST, который отдаёт сам ds, и
   # второго разбора текста в проекте не появляется.
-  PRIVATE devils_engine::options devils_engine::utils devils_script tavl
+  # act_script_math — замена init_math с детерминированной тригонометрией (libs/act/script_math.h).
+  PRIVATE devils_engine::options devils_engine::utils devils_script tavl devils_engine::act_script_math
 )
 
 add_library(devils_engine::originator_script ALIAS devils_originator_script)

@@ -17,6 +17,10 @@
   `\\server`), `..` за корень и `:` отвергаются статусом на всех платформах; `\` — разделитель.
 - `std::hash` и `std::*_distribution` не годятся для зёрен, идентичностей и канонических байтов: алгоритм у
   каждой стандартной библиотеки свой (MSVC: FNV-1a). Строку хешировать `string_hash` (rapidhash).
+- То же с `std::sin/exp/pow/...`: libm меняет последние биты между версиями glibc и у MSVC своя.
+  Где результат влияет на мир/симуляцию — `deterministic_math.h` (double: порт musl 1.2.5, побитово
+  равен libm musl). Ветки `__FP_FAST_FMA` порта выключены намеренно; нужна сборка без FP contraction
+  (`devils_engine::options`). Эталон и сверка — `utils_math_platform_test`, `*_cross_compiler_probe`.
 - `simulation_time.h`, `timeline.h` — integer gameplay time; presentation/wall time не источник
   authoritative ticks. Шаги симуляции нумеруются с 1: `simulation_now() == 0` значит «ни одного
   шага ещё не было» (начальное состояние), и ни событие, ни действие не адресует тик 0. `prng.h`/`shared.h` — единые hash/random primitives.

@@ -5,6 +5,7 @@
 #include "devils_engine/originator/neighbourhood.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/deterministic_math.h"
 
 // Набор инструментов ядра. Важна не полнота, а то, что каждый ОБЪЯВЛЯЕТ апертуру и живёт по её
 // правилам; у каждого два пути — быстрый через непрерывный span (soa) и общий через аксессор (aos).
@@ -363,7 +364,7 @@ void tool_decay(const tool_call& call, const size_t begin, const size_t end) {
     // Отрицательное расстояние — это метка «недостигнуто», а не расстояние. Растить от неё
     // экспоненту нельзя: получилось бы, что дальше всех влияет сильнее всех.
     const double distance = std::max(0.0, source.get(i));
-    target.set(i, offset + amplitude * std::exp(-distance / width));
+    target.set(i, offset + amplitude * utils::deterministic::exp(-distance / width));
   }
 }
 

@@ -21,6 +21,7 @@ target_link_libraries(GN07_location_brief PRIVATE
   devils_engine::utils
   devils_engine::options
   devils_script
+  devils_engine::act_script_math
   tavl)
 
 set_target_properties(GN07_location_brief PROPERTIES

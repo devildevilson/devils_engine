@@ -41,6 +41,7 @@ set(SRC_LIST
   src/thread/lock.cpp
   src/thread/stack_pool.cpp
   src/thread/atomic_pool.cpp
+  src/utils/deterministic_math.cpp
   src/utils/prng.cpp
   src/utils/process_memory.cpp
   src/utils/atomic_file.cpp

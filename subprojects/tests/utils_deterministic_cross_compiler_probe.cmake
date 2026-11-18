@@ -8,15 +8,21 @@ set(common_flags -std=c++23 -O3 -fno-fast-math -ffp-contract=off -I${PROBE_INCLU
 set(gcc_binary "${PROBE_BINARY_DIR}/utils_deterministic_gcc")
 set(clang_binary "${PROBE_BINARY_DIR}/utils_deterministic_clang")
 
+# deterministic_math.cpp: double-функции живут в .cpp, а не в заголовке.
+set(sources "${PROBE_SOURCE}")
+if (DEFINED PROBE_EXTRA_SOURCE)
+  list(APPEND sources "${PROBE_EXTRA_SOURCE}")
+endif()
+
 execute_process(
-  COMMAND "${GXX}" ${common_flags} "${PROBE_SOURCE}" -o "${gcc_binary}"
+  COMMAND "${GXX}" ${common_flags} ${sources} -o "${gcc_binary}"
   RESULT_VARIABLE gcc_result ERROR_VARIABLE gcc_error)
 if (NOT gcc_result EQUAL 0)
   message(FATAL_ERROR "GCC deterministic corpus compile failed:\n${gcc_error}")
 endif()
 
 execute_process(
-  COMMAND "${CLANGXX}" ${common_flags} "${PROBE_SOURCE}" -o "${clang_binary}"
+  COMMAND "${CLANGXX}" ${common_flags} ${sources} -o "${clang_binary}"
   RESULT_VARIABLE clang_result ERROR_VARIABLE clang_error)
 if (NOT clang_result EQUAL 0)
   message(FATAL_ERROR "Clang deterministic corpus compile failed:\n${clang_error}")
