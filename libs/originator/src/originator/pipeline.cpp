@@ -9,7 +9,7 @@
 #include <tavl/tavl.h>
 
 #include "devils_engine/utils/core.h"
-#include "devils_engine/utils/hash.h"
+#include "devils_engine/utils/string_id.h"
 #include "devils_engine/utils/prng.h"
 
 // Разбор конфига генератора (`tavl`) и сам пайплайн: построение буферов, проверка привязок, обход
@@ -672,8 +672,9 @@ void pipeline::run_step(const size_t index, const step_invoker& invoker) {
   context.index = index;
   // Зерно шага — функция от зерна пайплайна и ИМЕНИ шага, а не позиция в потоке случайности:
   // перестановка или перезапуск шага не сдвигает случайность остальных.
-  // Не std::hash: его алгоритм у каждой стандартной библиотеки свой, и мир зависел бы от компилятора.
-  const auto step_hash = utils::libstdcxx_string_hash(step.name);
+  // Не std::hash: его алгоритм у каждой стандартной библиотеки свой (libstdc++ — Murmur2, MSVC —
+  // FNV-1a), и мир зависел бы от компилятора. string_hash — свой rapidhash, одинаковый везде.
+  const auto step_hash = utils::string_hash(step.name);
   context.seed = utils::mix(seed_, step_hash);
   // Второе зерно домешивает ключ чанка. Оба чистые функции, поэтому чанк не зависит от того, какие
   // чанки посчитаны раньше — ни через одно, ни через другое.

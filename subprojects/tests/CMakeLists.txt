@@ -41,6 +41,8 @@ devils_add_doctest(utils_general_test utils_general_test.cpp)
 target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_engine::mood devils_engine::act)
 
 devils_add_doctest(utils_contract_test utils_contract_test.cpp)
+# Межплатформенная математика: сверка битов libm с эталоном GCC/glibc (см. заголовок файла).
+devils_add_doctest(utils_math_platform_test utils_math_platform_test.cpp)
 target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 
 devils_add_doctest(utils_serialization_test utils_serialization_test.cpp)

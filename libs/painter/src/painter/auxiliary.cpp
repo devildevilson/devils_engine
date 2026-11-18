@@ -1,6 +1,9 @@
 #include "devils_engine/utils/log.h"
 #include "devils_engine/utils/print.h"
+#include <algorithm>
 #include <ranges>
+#include <string>
+#include <string_view>
 
 #include <devils_engine/catalogue/logging.h>
 #include <gtl/phmap.hpp>
@@ -379,63 +382,61 @@ void copy_buffer(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fen
   });
 }
 
-std::vector<const char*> get_all_instance_extension() {
-  gtl::flat_hash_set<const char*> names;
-  const auto layers = vk::enumerateInstanceLayerProperties();
-  for (const auto& layer : layers) {
-    const auto exts = vk::enumerateInstanceExtensionProperties(std::string(layer.layerName.data()));
-    for (const auto& ext : exts) {
-      names.insert(ext.extensionName.data());
-    }
-  }
-
-  const auto exts = vk::enumerateInstanceExtensionProperties();
-  for (const auto& ext : exts) {
-    names.insert(ext.extensionName.data());
-  }
-
-  return std::vector<const char*>(names.begin(), names.end());
+// Имена КОПИРУЮТСЯ в строки: extensionName живёт внутри временного вектора exts, и прежние const char*
+// указывали в уже освобождённую память. Набор по const char* к тому же схлопывал повторы по АДРЕСУ,
+// а не по имени. Сортировка — чтобы список не зависел от порядка слоёв.
+static std::vector<std::string> sorted_unique(std::vector<std::string> names) {
+  std::sort(names.begin(), names.end());
+  names.erase(std::unique(names.begin(), names.end()), names.end());
+  return names;
 }
 
-std::vector<const char*> get_all_device_extension(VkPhysicalDevice device) {
-  vk::PhysicalDevice pd(device);
-  gtl::flat_hash_set<const char*> names;
-  const auto layers = pd.enumerateDeviceLayerProperties();
-  for (const auto& layer : layers) {
-    const auto exts = pd.enumerateDeviceExtensionProperties(std::string(layer.layerName.data()));
-    for (const auto& ext : exts) {
-      names.insert(ext.extensionName.data());
+std::vector<std::string> get_all_instance_extension() {
+  std::vector<std::string> names;
+  for (const auto& layer : vk::enumerateInstanceLayerProperties()) {
+    for (const auto& ext : vk::enumerateInstanceExtensionProperties(std::string(layer.layerName.data()))) {
+      names.emplace_back(ext.extensionName.data());
     }
   }
-
-  const auto exts = pd.enumerateDeviceExtensionProperties();
-  for (const auto& ext : exts) {
-    names.insert(ext.extensionName.data());
+  for (const auto& ext : vk::enumerateInstanceExtensionProperties()) {
+    names.emplace_back(ext.extensionName.data());
   }
+  return sorted_unique(std::move(names));
+}
 
-  return std::vector<const char*>(names.begin(), names.end());
+std::vector<std::string> get_all_device_extension(VkPhysicalDevice device) {
+  vk::PhysicalDevice pd(device);
+  std::vector<std::string> names;
+  for (const auto& layer : pd.enumerateDeviceLayerProperties()) {
+    for (const auto& ext : pd.enumerateDeviceExtensionProperties(std::string(layer.layerName.data()))) {
+      names.emplace_back(ext.extensionName.data());
+    }
+  }
+  for (const auto& ext : pd.enumerateDeviceExtensionProperties()) {
+    names.emplace_back(ext.extensionName.data());
+  }
+  return sorted_unique(std::move(names));
+}
+
+// Сравнение по СОДЕРЖИМОМУ: std::find по const char* сравнивал адреса и не находил ничего.
+// Возвращаются указатели вызывающего — они живут столько же, сколько его вход.
+static std::vector<const char*> keep_available(const std::vector<std::string>& available,
+                                               const std::vector<const char*>& input) {
+  std::vector<const char*> out;
+  for (const char* name : input) {
+    if (std::binary_search(available.begin(), available.end(), std::string_view(name))) {
+      out.push_back(name);
+    }
+  }
+  return out;
 }
 
 std::vector<const char*> check_instance_extension(std::vector<const char*> input) {
-  const auto exts = get_all_instance_extension();
-  std::vector<const char*> out;
-  for (const auto name : input) {
-    if (std::find(exts.begin(), exts.end(), name) != exts.end()) {
-      out.push_back(name);
-    }
-  }
-  return out;
+  return keep_available(get_all_instance_extension(), input);
 }
 
 std::vector<const char*> check_device_extension(VkPhysicalDevice device, std::vector<const char*> input) {
-  const auto exts = get_all_device_extension(device);
-  std::vector<const char*> out;
-  for (const auto name : input) {
-    if (std::find(exts.begin(), exts.end(), name) != exts.end()) {
-      out.push_back(name);
-    }
-  }
-  return out;
+  return keep_available(get_all_device_extension(device), input);
 }
 
 std::string format_to_string(const uint32_t format) {

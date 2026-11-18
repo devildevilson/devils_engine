@@ -309,6 +309,11 @@ template <typename T>
 concept map_like = requires { typename T::key_type; typename T::mapped_type; typename T::value_type; };
 template <typename T>
 concept seq_like = requires(T value) { typename T::value_type; value.begin(); value.end(); } && !map_like<T>;
+// Хеш-множество (unordered_set, gtl::flat_hash_set): порядок обхода у него — свойство таблицы, а не
+// данных. У std::unordered_set он свой в каждой стандартной библиотеке, у gtl зависит от ёмкости и
+// истории вставок, поэтому байты пишутся в порядке значений, как у карт. std::set уже упорядочен.
+template <typename T>
+concept hashed_set_like = seq_like<T> && requires { typename T::key_type; typename T::hasher; };
 template <typename T>
 concept adapted = requires {
   { adapter<std::remove_cvref_t<T>>::name } -> std::convertible_to<std::string_view>;
@@ -513,6 +518,16 @@ void serialize(writer& output, const T& value) {
       serialize(output, pair->first);
       serialize(output, pair->second);
     }
+  } else if constexpr (detail::hashed_set_like<U>) {
+    std::vector<const typename U::value_type*> ordered;
+    ordered.reserve(value.size());
+    for (const auto& element : value)
+      ordered.push_back(std::addressof(element));
+    deterministic_sort(ordered.begin(), ordered.end(),
+                       [](const auto* left, const auto* right) { return *left < *right; });
+    output.u64(ordered.size());
+    for (const auto* element : ordered)
+      serialize(output, *element);
   } else if constexpr (detail::seq_like<U>) {
     output.u64(value.size());
     for (const auto& element : value)

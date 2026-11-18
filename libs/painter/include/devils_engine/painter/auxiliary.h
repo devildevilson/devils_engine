@@ -95,8 +95,8 @@ bool do_transfer_command(
 void copy_buffer(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, VkBuffer src, VkBuffer dst, size_t srcoffset = 0, size_t dstoffset = 0, size_t size = VK_WHOLE_SIZE);
 //void copy_image(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, VkImage dst, VkImage src, );
 
-std::vector<const char*> get_all_instance_extension();
-std::vector<const char*> get_all_device_extension(VkPhysicalDevice device);
+std::vector<std::string> get_all_instance_extension();
+std::vector<std::string> get_all_device_extension(VkPhysicalDevice device);
 std::vector<const char*> check_instance_extension(std::vector<const char*> input);
 std::vector<const char*> check_device_extension(VkPhysicalDevice device, std::vector<const char*> input);
 

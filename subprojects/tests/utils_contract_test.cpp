@@ -24,6 +24,7 @@
 #include "devils_engine/utils/memory_pool.h"
 #include "devils_engine/utils/stack_allocator.h"
 #include "devils_engine/utils/string_id.h"
+#include "devils_engine/utils/type_traits.h"
 
 using namespace devils_engine;
 
@@ -139,24 +140,32 @@ TEST_CASE("murmur3 hashes canonical binary bytes [utils::hash]") {
     utils::murmur_hash3_32(std::string_view{chars.data(), chars.size()}));
 }
 
-TEST_CASE("libstdcxx_string_hash gives the same numbers with every standard library [utils::hash]") {
-  // Числа сняты с libstdc++ std::hash<std::string>; на них стоят зёрна шагов originator.
-  static_assert(utils::libstdcxx_string_hash("") == UINT64_C(0x553e93901e462a6e));
-  static_assert(utils::libstdcxx_string_hash("a") == UINT64_C(0x454ddee488c1ed6b));
-  static_assert(utils::libstdcxx_string_hash("elevation") == UINT64_C(0xdcb5be305438c3aa));
-  static_assert(utils::libstdcxx_string_hash("chunk_seed_step_name_17") == UINT64_C(0xbf6b7d2aaec38b15));
-  // Старший бит байта: load обязан брать unsigned char, иначе знак размажется по слову.
-  CHECK(utils::libstdcxx_string_hash("\xff\x80") != utils::libstdcxx_string_hash("\x7f\x00"));
-
-#if defined(__GLIBCXX__) && SIZE_MAX == UINT64_MAX
-  // Там, где есть оригинал, сверка со всеми остатками длины по модулю 8.
-  std::string text;
-  for (int length = 0; length < 40; ++length) {
-    CAPTURE(length);
-    CHECK(utils::libstdcxx_string_hash(text) == std::hash<std::string>{}(text));
-    text.push_back(char(0x41 + length * 37 % 190));
-  }
-#endif
+TEST_CASE("numbers and strings have one type name on every compiler [utils::type_traits]") {
+  // Из этих имён строятся идентичности (id компонентов, хеши схем), поэтому они обязаны совпадать
+  // у GCC ("long unsigned int") и MSVC ("unsigned __int64").
+  static_assert(utils::type_name<uint64_t>() == "uint64_t");
+  static_assert(utils::type_name<int64_t>() == "int64_t");
+  static_assert(utils::type_name<int32_t>() == "int32_t");
+  static_assert(utils::type_name<uint8_t>() == "uint8_t");
+  static_assert(utils::type_name<int8_t>() == "int8_t");
+  static_assert(utils::type_name<char>() == "char");
+  static_assert(utils::type_name<bool>() == "bool");
+  static_assert(utils::type_name<float>() == "float");
+  static_assert(utils::type_name<double>() == "double");
+  static_assert(utils::type_name<std::string>() == "std::string");
+  static_assert(utils::type_name<std::string_view>() == "std::string_view");
+  static_assert(utils::type_id<uint64_t>() == utils::murmur_hash64A("uint64_t"));
+  static_assert(utils::type_id<std::string>() == utils::murmur_hash64A("std::string"));
+  // Модификаторы не меняют идентичность типа; указатель — другой тип.
+  static_assert(utils::type_id<const std::string&>() == utils::type_id<std::string>());
+  static_assert(utils::type_id<const std::string>() == utils::type_id<std::string>());
+  static_assert(utils::type_id<std::string&&>() == utils::type_id<std::string>());
+  static_assert(utils::type_id<volatile int32_t&>() == utils::type_id<int32_t>());
+  static_assert(utils::type_id<int32_t*>() != utils::type_id<int32_t>());
+  // long и long long — разные типы одного размера: каноническое имя получает только тот, что
+  // является псевдонимом фиксированной ширины, иначе у двух типов был бы один type_id.
+  static_assert(utils::type_id<long>() != utils::type_id<long long>());
+  static_assert(utils::type_id<int>() != utils::type_id<long>());
 }
 
 TEST_CASE("string_pool keeps stable dense ids and supports lookup [utils::string_id]") {

@@ -116,6 +116,8 @@ value to_value(entity_id v) noexcept;
 
 bool ds_type(std::string_view type, std::string_view expected) noexcept;
 
+// Строка типа приходит из программы devils_script, то есть в ЕГО написании (имя от компилятора).
+// Сравнивать её надо с ds::utils::type_name: utils::type_name даёт каноническое имя ("uint64_t").
 template <typename Set>
 bool value_to_ds(const value& v, const std::string_view expected, Set&& set) {
   switch (v.kind) {
@@ -126,35 +128,35 @@ bool value_to_ds(const value& v, const std::string_view expected, Set&& set) {
       }
       break;
     case value_kind::integer:
-      if (expected == utils::type_name<int8_t>()) {
+      if (expected == ds::utils::type_name<int8_t>()) {
         set(static_cast<int8_t>(v.inum));
         return true;
       }
-      if (expected == utils::type_name<int16_t>()) {
+      if (expected == ds::utils::type_name<int16_t>()) {
         set(static_cast<int16_t>(v.inum));
         return true;
       }
-      if (expected == utils::type_name<int32_t>()) {
+      if (expected == ds::utils::type_name<int32_t>()) {
         set(static_cast<int32_t>(v.inum));
         return true;
       }
-      if (expected == utils::type_name<int64_t>()) {
+      if (expected == ds::utils::type_name<int64_t>()) {
         set(v.inum);
         return true;
       }
-      if (expected == utils::type_name<uint8_t>()) {
+      if (expected == ds::utils::type_name<uint8_t>()) {
         set(static_cast<uint8_t>(v.inum));
         return true;
       }
-      if (expected == utils::type_name<uint16_t>()) {
+      if (expected == ds::utils::type_name<uint16_t>()) {
         set(static_cast<uint16_t>(v.inum));
         return true;
       }
-      if (expected == utils::type_name<uint32_t>()) {
+      if (expected == ds::utils::type_name<uint32_t>()) {
         set(static_cast<uint32_t>(v.inum));
         return true;
       }
-      if (expected == utils::type_name<uint64_t>()) {
+      if (expected == ds::utils::type_name<uint64_t>()) {
         set(static_cast<uint64_t>(v.inum));
         return true;
       }
@@ -164,28 +166,28 @@ bool value_to_ds(const value& v, const std::string_view expected, Set&& set) {
       }
       break;
     case value_kind::number:
-      if (expected == utils::type_name<float>()) {
+      if (expected == ds::utils::type_name<float>()) {
         set(static_cast<float>(v.num));
         return true;
       }
-      if (expected == utils::type_name<double>()) {
+      if (expected == ds::utils::type_name<double>()) {
         set(static_cast<double>(v.num));
         return true;
       }
       break;
     case value_kind::handle:
-      if (expected == utils::type_name<entity_id>()) {
+      if (expected == ds::utils::type_name<entity_id>()) {
         set(entity_id{static_cast<uint32_t>(v.hnd)});
         return true;
       }
-      if (expected == utils::type_name<uint64_t>()) {
+      if (expected == ds::utils::type_name<uint64_t>()) {
         set(v.hnd);
         return true;
       }
       break;
     case value_kind::string:
       // act string — стабильный loc/id hash, не заимствованный string_view.
-      if (expected == utils::type_name<utils::id>()) {
+      if (expected == ds::utils::type_name<utils::id>()) {
         set(v.str);
         return true;
       }
