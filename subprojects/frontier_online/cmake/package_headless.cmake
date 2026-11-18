@@ -9,14 +9,12 @@ file(MAKE_DIRECTORY "${PACKAGE_DIR}/bin" "${PACKAGE_DIR}/resources/modules")
 file(COPY "${BINARY}" DESTINATION "${PACKAGE_DIR}/bin")
 file(COPY "${RESOURCE_ROOT}/" DESTINATION "${PACKAGE_DIR}/resources/modules")
 
-if (DEFINED RUNTIME_DLLS AND NOT RUNTIME_DLLS STREQUAL "")
-  string(REPLACE "|" ";" runtime_dlls "${RUNTIME_DLLS}")
-  foreach (runtime IN LISTS runtime_dlls)
-    if (EXISTS "${runtime}")
-      file(COPY "${runtime}" DESTINATION "${PACKAGE_DIR}/bin")
-    endif()
-  endforeach()
-endif()
+# Shared libraries the target machine may lack (Lua, OpenSSL, libstdc++; DLLs and the MSVC runtime
+# on Windows) travel with the binary: see package_runtime.cmake.
+get_filename_component(binary_name "${BINARY}" NAME)
+set(PACKAGED_BINARY "${PACKAGE_DIR}/bin/${binary_name}")
+set(PACKAGE_BIN "${PACKAGE_DIR}/bin")
+include("${CMAKE_CURRENT_LIST_DIR}/package_runtime.cmake")
 
 file(WRITE "${PACKAGE_DIR}/RUN.txt"
   "Run from this directory. Give both roles --resources=resources/modules.\n"

@@ -90,6 +90,81 @@ jobs:
         if: failure() || cancelled()
         run: python3 .github/scripts/report_errors.py ci-logs/configure.log ci-logs/build.log ci-logs/test.log
 
+  package-linux:
+    # Packages for other machines are built against Debian 13 (glibc 2.41): a binary needs a glibc
+    # no older than the one it was linked against, and the test job's Ubuntu 26.04 has 2.43.
+    # Everything else the executables load travels inside the package (package_runtime.cmake).
+    runs-on: ubuntu-24.04
+    container: debian:13
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git g++ cmake ninja-build pkg-config ccache python3 binutils \
+            liblua5.4-dev libzstd-dev libssl-dev libglfw3-dev \
+            libvulkan-dev libshaderc-dev glslang-dev glslang-tools spirv-tools
+
+      - uses: actions/checkout@v7
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-debian13-${{ github.sha }}
+          restore-keys: ccache-debian13-
+
+      - name: Configure
+        run: |
+          mkdir -p ci-logs
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            2>&1 | tee ci-logs/configure.log
+
+      - name: Build packages
+        id: build
+        run: |
+          ccache --max-size=2G
+          cmake --build build --target frontier_online_headless_package frontier_online_client_package \
+            --parallel "$(nproc)" -- -k 0 2>&1 | tee ci-logs/build.log
+          ccache --show-stats
+
+      - name: Save ccache
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-debian13-${{ github.sha }}
+
+      - name: Check packages
+        # The headless contract check runs from the package itself, with only its own libraries.
+        run: |
+          exec > >(tee ci-logs/check.log) 2>&1
+          cd build/subprojects/frontier_online
+          for b in headless-package/bin/frontier_online_server client-package/bin/frontier_online; do
+            echo "$b needs $(objdump -T "$b" "$(dirname "$b")"/*.so* | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          done
+          cd headless-package
+          ./bin/frontier_online_server --ticks=120 --verify --resources=resources/modules 2>&1 | tail -n 3
+          # A zip artifact drops the executable bit; a tarball inside it keeps it.
+          cd .. && tar -czf frontier_online-linux.tar.gz headless-package client-package
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: frontier_online-linux
+          path: build/subprojects/frontier_online/frontier_online-linux.tar.gz
+          retention-days: 30
+
+      - name: Report errors
+        if: failure() || cancelled()
+        run: python3 .github/scripts/report_errors.py ci-logs/configure.log ci-logs/build.log ci-logs/check.log
+
   windows:
     runs-on: windows-2025
     # Configure ~25 min + build + tests (own step limit below); hosted runners stop at 6 h.
@@ -194,7 +269,27 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-windows-${{ github.sha }}
 
+      - name: Package
+        id: package
+        # Before the tests: they take hours and fail for reasons unrelated to these two programs.
+        # The run's status still says whether the tests passed.
+        if: steps.build.outcome == 'success'
+        run: |
+          cmake --build build --target frontier_online_headless_package frontier_online_client_package 2>&1 | Tee-Object -FilePath ci-logs\package.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v7
+        if: steps.package.outcome == 'success'
+        with:
+          name: frontier_online-windows
+          path: |
+            build/subprojects/frontier_online/headless-package
+            build/subprojects/frontier_online/client-package
+          retention-days: 30
+
       - name: Disable crash dialogs
+        # Runs (with the tests) even when packaging failed: a broken package must not hide test results.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # A crashing process otherwise waits on a Windows Error Reporting dialog nobody closes, and
         # the test reads as a timeout instead of a crash with its exit code.
         run: |
@@ -208,6 +303,7 @@ jobs:
 
       - name: Test
         # A step over its own limit FAILS (the report runs); a job over its limit is cancelled.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 150
         run: |
           ctest --test-dir build -L devils_engine -E "$env:UNTRACKED_SCRIPT_TESTS" `
@@ -229,7 +325,7 @@ jobs:
       - name: Report errors
         if: failure() || cancelled()
         run: |
-          $logs = @("ci-logs\configure.log", "ci-logs\build.log", "ci-logs\test.log")
+          $logs = @("ci-logs\configure.log", "ci-logs\build.log", "ci-logs\package.log", "ci-logs\test.log")
           # vcpkg writes the failing port's own logs under buildtrees; include them too.
           $logs += Get-ChildItem -Path "$env:VCPKG_ROOT\buildtrees" -Recurse -Filter "*-err.log" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
           python .github/scripts/report_errors.py @logs

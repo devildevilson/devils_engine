@@ -193,17 +193,41 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_6
     COMMENT "Dropping the build host's inherited x86 ISA-level marker")
 endif()
 
-# A headless package is deliberately separate from the graphical client's resource copy.
-# Both Linux roles use this one executable; the Windows build of the same target supplies
-# the third machine's executable. The packaging script starts from an empty staging tree.
+# Packages for other machines. The headless package is deliberately separate from the graphical
+# client's resource copy. Both Linux roles use this one executable; the Windows build of the same
+# target supplies the third machine's executable. Each packaging script starts from an empty
+# staging tree and carries the shared libraries along (cmake/package_runtime.cmake).
+include("${CMAKE_SOURCE_DIR}/cmake/devils_portable_runtime.cmake")
+devils_set_local_rpath(frontier_online_server)
+set(FRONTIER_SYSTEM_RUNTIME_LIBS "")
+if (MSVC)
+  # Only the list of MSVC runtime DLLs is wanted, not install() rules.
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+  include(InstallRequiredSystemLibraries)
+  list(JOIN CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS "|" FRONTIER_SYSTEM_RUNTIME_LIBS)
+endif()
+
 add_custom_target(frontier_online_headless_package
   COMMAND ${CMAKE_COMMAND}
     "-DBINARY=$<TARGET_FILE:frontier_online_server>"
     "-DRESOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/resources/modules"
     "-DPACKAGE_DIR=${PROJECT_OUTPUT_DIRECTORY}/headless-package"
-    "-DRUNTIME_DLLS=$<JOIN:$<TARGET_RUNTIME_DLLS:frontier_online_server>,|>"
+    "-DBUILD_BIN_DIR=$<TARGET_FILE_DIR:frontier_online_server>"
+    "-DSYSTEM_RUNTIME_LIBS=${FRONTIER_SYSTEM_RUNTIME_LIBS}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_headless.cmake"
   DEPENDS frontier_online_server
+  VERBATIM)
+
+# The graphical client with the resource tree its post-build steps assemble (see the end of file).
+add_custom_target(frontier_online_client_package
+  COMMAND ${CMAKE_COMMAND}
+    "-DBINARY=$<TARGET_FILE:${PROJECT_NAME}>"
+    "-DBUILD_OUTPUT=${PROJECT_OUTPUT_DIRECTORY}"
+    "-DPACKAGE_DIR=${PROJECT_OUTPUT_DIRECTORY}/client-package"
+    "-DBUILD_BIN_DIR=$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    "-DSYSTEM_RUNTIME_LIBS=${FRONTIER_SYSTEM_RUNTIME_LIBS}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_client.cmake"
+  DEPENDS ${PROJECT_NAME}
   VERBATIM)
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -332,7 +356,6 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   set_tests_properties(frontier_server_reproducible PROPERTIES LABELS devils_engine)
 endif()
 
-include("${CMAKE_SOURCE_DIR}/cmake/devils_portable_runtime.cmake")
 devils_bundle_runtime_dependencies(${PROJECT_NAME})
 
 if (WIN32)
