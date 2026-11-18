@@ -100,12 +100,15 @@ jobs:
       - name: MSVC environment
         # Ninja runs cl.exe directly, so the Visual Studio developer environment (compiler, SDK,
         # INCLUDE/LIB) must be in every later step: take what vcvars64 changes and export it.
+        # Except VCPKG_*: vcvars points VCPKG_ROOT at the copy bundled with Visual Studio, and that
+        # override made the clone of our pinned vcpkg fail on an existing directory.
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           Write-Output "Visual Studio: $vs"
           cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+            if ($_ -match '^([^=]+)=(.*)$' -and $Matches[1] -notlike 'VCPKG_*' -and
+                [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
               "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             }
           }
