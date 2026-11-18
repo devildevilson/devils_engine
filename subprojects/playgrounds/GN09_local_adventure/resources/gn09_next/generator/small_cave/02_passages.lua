@@ -91,8 +91,8 @@ return function(step)
         local cap = math.min(max_width, math.max(ra, rb), math.max(fa, fb))
         for _, axis in ipairs({'x', 'y', 'z'}) do
           local pad =
-              math.sqrt((local_right[axis] * max_width) ^ 2 + (local_up[axis] * max_height) ^ 2
-                + (tangent[axis] * cap) ^ 2) * (1 + relief / minimum) + 0.8
+              math.sqrt(math.pow(local_right[axis] * max_width, 2) + math.pow(local_up[axis] * max_height, 2)
+                + math.pow(tangent[axis] * cap, 2)) * (1 + relief / minimum) + 0.8
           lo[axis] = math.min(last[axis], p[axis]) - pad
           hi[axis] = math.max(last[axis], p[axis]) + pad
         end

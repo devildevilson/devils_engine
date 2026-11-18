@@ -496,6 +496,19 @@ static double lua_atan(const double y, const sol::optional<double> x) {
   return utils::deterministic::atan2(y, x.value_or(1.0));
 }
 
+// math.log(x [, base]) как в lmathlib.c 5.4: основания 2 и 10 — отдельными функциями.
+static double lua_log(const double x, const sol::optional<double> base) {
+  namespace det = utils::deterministic;
+  if (!base) return det::log(x);
+  if (*base == 2.0) return det::log2(x);
+  if (*base == 10.0) return det::log10(x);
+  return det::log(x) / det::log(*base);
+}
+
+// math.pow: в lua 5.4 её нет, а оператор `^` считается внутри самой lua через pow из libm (lua
+// у нас системная, подменить его нельзя). Скрипты мира пишут math.pow(x, y), а не x ^ y.
+static double lua_pow(const double x, const double y) { return utils::deterministic::pow(x, y); }
+
 void deterministic_math(sol::table math) {
   math.set_function("sin", &lua_sin);
   math.set_function("cos", &lua_cos);
@@ -504,6 +517,8 @@ void deterministic_math(sol::table math) {
   math.set_function("acos", &lua_acos);
   math.set_function("atan", &lua_atan);
   math.set_function("exp", &lua_exp);
+  math.set_function("log", &lua_log);
+  math.set_function("pow", &lua_pow);
 }
 
 // еще дополнительно желательно вылетать если у нас случайно произошел бесконечный цикл

@@ -20,10 +20,12 @@ struct rng_state {
 // создадим окружение и заполним его дефолтными вещами
 sol::environment create_env(sol::state_view s);
 void basic_functions(sol::table t);
-// Заменяет в таблице math трансцендентные функции (sin cos tan asin acos atan exp) на
+// Заменяет в таблице math трансцендентные функции (sin cos tan asin acos atan exp log) и добавляет
+// math.pow — всё через
 // utils::deterministic: стандартная математика lua зовёт libm, а та меняет последние биты между
 // версиями glibc и у MSVC своя. Таблица должна быть КОПИЕЙ math окружения, не глобальной math.
-// Не покрыто: оператор `^` (pow libm; x^2 lua считает как x*x) и math.log.
+// Оператор `^` не покрыт: он внутри самой lua (системной) и зовёт pow из libm. Скрипты мира
+// пишут math.pow(x, y) вместо x ^ y.
 void deterministic_math(sol::table math);
 } // namespace bindings
 } // namespace devils_engine

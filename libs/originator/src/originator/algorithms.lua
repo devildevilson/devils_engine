@@ -58,7 +58,7 @@ function A.nearest_pair(sites,point,options)
   end
   for _,site in ipairs(sites) do
     local d=0
-    for _,axis in ipairs(coordinates) do d=d+(point[axis]-site[axis])^2 end
+    for _,axis in ipairs(coordinates) do d=d+math.pow(point[axis]-site[axis], 2) end
     assert(d==d and d<math.huge,'nearest_pair: non-finite distance')
     if before(d,site,d1,first) then second,d2=first,d1;first,d1=site,d
     elseif before(d,site,d2,second) then second,d2=site,d end

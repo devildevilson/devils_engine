@@ -74,7 +74,7 @@ return function(step)
         seen = seen + 1
         dry = dry or value >= 0
       end
-      local d = (u - cu) ^ 2 + (v - cv) ^ 2
+      local d = math.pow(u - cu, 2) + math.pow(v - cv, 2)
       if d < best then nearest, best = value, d end
     end)
     if seen == 0 then return nearest ~= nil and nearest < 0 end
@@ -189,8 +189,8 @@ return function(step)
     for b = 0, best.nb - 1 do
       for a = 0, best.na - 1 do
         local j = best.first + b * best.na + a
-        local d = (2 * a / (best.na - 1) - 1) ^ 2 * best.span[best.pa] ^ 2
-            + (2 * b / (best.nb - 1) - 1) ^ 2 * best.span[best.pb] ^ 2
+        local d = math.pow(2 * a / (best.na - 1) - 1, 2) * math.pow(best.span[best.pa], 2)
+            + math.pow(2 * b / (best.nb - 1) - 1, 2) * math.pow(best.span[best.pb], 2)
         if probes:field('value'):get(j) < 0 and d < distance then index, distance = j, d end
       end
     end

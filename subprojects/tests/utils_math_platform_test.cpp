@@ -1,6 +1,7 @@
 // МАТЕМАТИКА МЕЖДУ ПЛАТФОРМАМИ. Два теста на одних и тех же входах.
 //
-// 1. КОНТРАКТ utils::deterministic (double: sin, cos, tan, asin, acos, atan, atan2, exp, pow, hypot):
+// 1. КОНТРАКТ utils::deterministic (double: sin cos tan asin acos atan atan2 exp exp2 expm1 log log2
+//    log10 log1p pow hypot cbrt sinh cosh tanh asinh acosh atanh):
 //    дайджест битов обязан совпасть с эталоном на КАЖДОЙ платформе и любом компиляторе. Эталон снят
 //    2026-11-18 и побитово равен libm musl 1.2.5 (Alpine 3.22), с которого сделан порт.
 //
@@ -108,6 +109,7 @@ constexpr domain base{1, int64_t(16) << 16, 16};                     // (0, 16]
 constexpr domain power{-(int64_t(8) << 16), int64_t(8) << 16, 16};   // [-8, 8)
 constexpr domain cube{-(int64_t(1) << 30), int64_t(1) << 30, 10};    // [-1e6, 1e6)
 constexpr domain hyper{-(int64_t(20) << 16), int64_t(20) << 16, 16}; // [-20, 20)
+constexpr domain above_one{int64_t(1) << 16, int64_t(64) << 16, 16};    // [1, 64): acosh
 
 struct expectation {
   const char* name;
@@ -174,6 +176,19 @@ probe_result run_deterministic(const std::string_view name, const uint64_t seed)
   if (name == "exp") return run_unary<F>(seed, exp_range, [](F x) { return det::exp(x); });
   if (name == "pow") return run_binary<F>(seed, base, power, [](F x, F y) { return det::pow(x, y); });
   if (name == "hypot") return run_binary<F>(seed, wide, wide, [](F x, F y) { return det::hypot(x, y); });
+  if (name == "exp2") return run_unary<F>(seed, exp_range, [](F x) { return det::exp2(x); });
+  if (name == "expm1") return run_unary<F>(seed, hyper, [](F x) { return det::expm1(x); });
+  if (name == "log") return run_unary<F>(seed, positive, [](F x) { return det::log(x); });
+  if (name == "log2") return run_unary<F>(seed, positive, [](F x) { return det::log2(x); });
+  if (name == "log10") return run_unary<F>(seed, positive, [](F x) { return det::log10(x); });
+  if (name == "log1p") return run_unary<F>(seed, unit, [](F x) { return det::log1p(x); });
+  if (name == "cbrt") return run_unary<F>(seed, cube, [](F x) { return det::cbrt(x); });
+  if (name == "sinh") return run_unary<F>(seed, hyper, [](F x) { return det::sinh(x); });
+  if (name == "cosh") return run_unary<F>(seed, hyper, [](F x) { return det::cosh(x); });
+  if (name == "tanh") return run_unary<F>(seed, hyper, [](F x) { return det::tanh(x); });
+  if (name == "asinh") return run_unary<F>(seed, wide, [](F x) { return det::asinh(x); });
+  if (name == "acosh") return run_unary<F>(seed, above_one, [](F x) { return det::acosh(x); });
+  if (name == "atanh") return run_unary<F>(seed, unit, [](F x) { return det::atanh(x); });
   FAIL("unknown function ", name);
   return {};
 }
@@ -249,6 +264,27 @@ TEST_CASE("deterministic math keeps signed zero, infinities and one NaN [utils][
   CHECK(det::hypot(inf, nan) == inf);
   CHECK(det::hypot(3.0, 4.0) == 5.0);
   CHECK(det::atan(inf) == std::numbers::pi / 2);
+
+  CHECK(det::log(0.0) == -inf);
+  CHECK(bits(det::log(1.0)) == bits(0.0));
+  CHECK(bits(det::log(-1.0)) == det::canonical_nan_bits);
+  CHECK(det::log2(8.0) == 3.0);
+  CHECK(det::log10(1000.0) == 3.0);
+  CHECK(det::log1p(-1.0) == -inf);
+  CHECK(bits(det::log1p(-0.0)) == bits(-0.0));
+  CHECK(det::exp2(10.0) == 1024.0);
+  CHECK(det::exp2(-1075.0) == 0.0);
+  CHECK(bits(det::expm1(-0.0)) == bits(-0.0));
+  CHECK(det::expm1(-inf) == -1.0);
+  CHECK(det::cbrt(-27.0) == -3.0);
+  CHECK(bits(det::sinh(-0.0)) == bits(-0.0));
+  CHECK(det::cosh(-inf) == inf);
+  CHECK(det::tanh(inf) == 1.0);
+  CHECK(bits(det::asinh(-0.0)) == bits(-0.0));
+  CHECK(bits(det::acosh(1.0)) == bits(0.0));
+  CHECK(bits(det::acosh(0.5)) == det::canonical_nan_bits);
+  CHECK(det::atanh(1.0) == inf);
+  CHECK(bits(det::atanh(2.0)) == det::canonical_nan_bits);
 }
 
 TEST_CASE("deterministic math stays within a few ULP of the platform libm [utils][math][deterministic]") {
@@ -275,6 +311,13 @@ TEST_CASE("deterministic math stays within a few ULP of the platform libm [utils
       {det::acos(u), std::acos(u)},         {det::atan(x), std::atan(x)},
       {det::atan2(x, u), std::atan2(x, u)}, {det::exp(e), std::exp(e)},
       {det::pow(b, u * 8), std::pow(b, u * 8)}, {det::hypot(x, e), std::hypot(x, e)},
+      {det::exp2(e), std::exp2(e)},           {det::expm1(u * 20), std::expm1(u * 20)},
+      {det::log(b), std::log(b)},             {det::log2(b), std::log2(b)},
+      {det::log10(b), std::log10(b)},         {det::log1p(u), std::log1p(u)},
+      {det::cbrt(x), std::cbrt(x)},           {det::sinh(u * 20), std::sinh(u * 20)},
+      {det::cosh(u * 20), std::cosh(u * 20)}, {det::tanh(u * 4), std::tanh(u * 4)},
+      {det::asinh(x), std::asinh(x)},         {det::acosh(1 + b), std::acosh(1 + b)},
+      {det::atanh(u), std::atanh(u)},
     };
     for (const auto& pair : pairs) worst = std::max(worst, ulp_distance(pair[0], pair[1]));
   }

@@ -57,12 +57,13 @@
   - float `sin/cos/sin_cos` адаптированы из Jolt Physics 5.6.0 (MIT attribution сохранена) и
     побитово сверяются с Jolt corpus. Cody-Waite reduction принимает только конечные углы с
     `abs(angle) <= 100000`; вне диапазона — canonical NaN, caller сначала нормализует угол;
-  - double `sin cos tan asin acos atan atan2 exp pow hypot` в `src/utils/deterministic_math.cpp` —
+  - double `sin cos tan asin acos atan atan2 exp exp2 expm1 log log2 log10 log1p pow hypot cbrt
+    sinh cosh tanh asinh acosh atanh` в `src/utils/deterministic_math.cpp` —
     дословный порт musl 1.2.5 (fdlibm/FreeBSD msun и ARM optimized-routines; MIT и уведомление Sun),
     побитово равен libm musl. Полный диапазон аргументов, < 1 ULP; любой NaN на выходе — один
     canonical NaN. Float-аргумент выбирает перегрузки Jolt, double — порт.
   `devils_engine::options` отключает FP contraction у всех C++ consumers — без этого контракта нет.
-  Остальные функции libm (cbrt, sinh, log, ...) пока не перенесены.
+  Не перенесены: float-варианты вне sin/cos (берите double), erf/gamma, fmod/sqrt не нужны — точны.
 - `deterministic_sort.h` содержит фиксированную quicksort/insertion-sort реализацию из Jolt вместо
   platform-dependent `std::sort`. Она намеренно не stable: canonical caller обязан добавить
   tie-breaker, если эквивалентные элементы различимы. Каноническая сериализация map уже использует её.

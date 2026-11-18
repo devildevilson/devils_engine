@@ -62,7 +62,7 @@ return function(step)
       local phase = base.prng64_normalize(base.mix(step.world_seed, key, j, 1010)) * math.pi * 2
       local dx, dz = math.cos(phase) * r * 0.65, math.sin(phase) * r * 0.45
       local h = {x = 5 + j % 3, y = 6 + j % 4, z = 4 + (j + 1) % 3}
-      local mound = 9 + 7 * math.sqrt(math.max(0, 1 - (dx / (r * 1.1)) ^ 2 - (dz / (r * 0.7)) ^ 2))
+      local mound = 9 + 7 * math.sqrt(math.max(0, 1 - math.pow(dx / (r * 1.1), 2) - math.pow(dz / (r * 0.7), 2)))
       -- Each block penetrates the mound instead of floating above its curved surface.
       local c = W.add(p, {x = dx, y = mound + h.y * 0.5, z = dz})
       if continuous(W.add(p, {x = dx, y = 0, z = dz}), c) then block(c, h, 0.8, phase) end

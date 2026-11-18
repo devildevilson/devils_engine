@@ -6,7 +6,7 @@ return function(step)
     local radius = math.max(1, math.ceil(reach / span - 0.5 + jitter))
     local key = buffer:field('key')
     local n = 0
-    assert((radius * 2 + 1) ^ 2 <= key:count(), 'terrain query halo exceeds host capacity')
+    assert(math.pow(radius * 2 + 1, 2) <= key:count(), 'terrain query halo exceeds host capacity')
     for dz = -radius, radius do
       for dx = -radius, radius do
         key:set(n, cx + dx, 0)

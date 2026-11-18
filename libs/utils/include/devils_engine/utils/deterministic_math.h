@@ -91,6 +91,19 @@ double atan2(double y, double x) noexcept;
 double exp(double x) noexcept;
 double pow(double x, double y) noexcept;
 double hypot(double x, double y) noexcept;
+double exp2(double x) noexcept;
+double expm1(double x) noexcept;
+double log(double x) noexcept;
+double log2(double x) noexcept;
+double log10(double x) noexcept;
+double log1p(double x) noexcept;
+double cbrt(double x) noexcept;
+double sinh(double x) noexcept;
+double cosh(double x) noexcept;
+double tanh(double x) noexcept;
+double asinh(double x) noexcept;
+double acosh(double x) noexcept;
+double atanh(double x) noexcept;
 
 } // namespace devils_engine::utils::deterministic
 

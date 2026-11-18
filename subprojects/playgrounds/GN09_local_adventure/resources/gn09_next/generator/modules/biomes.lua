@@ -45,7 +45,7 @@ end
 
 function B.write_sources(step, cx, cz, radius)
   local keys = step.writes.biome_keys:field('key')
-  assert((2 * radius + 1) ^ 2 <= keys:count(), 'biome source capacity too small for the proven query halo')
+  assert(math.pow(2 * radius + 1, 2) <= keys:count(), 'biome source capacity too small for the proven query halo')
   local n = 0
   for dz = -radius, radius do
     for dx = -radius, radius do
