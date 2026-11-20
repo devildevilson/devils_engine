@@ -94,6 +94,18 @@ jobs:
     # Packages for other machines are built against Debian 13 (glibc 2.41): a binary needs a glibc
     # no older than the one it was linked against, and the test job's Ubuntu 26.04 has 2.43.
     # Everything else the executables load travels inside the package (package_runtime.cmake).
+    # Two instruction sets: the default AVX build died with SIGILL on a VPS whose CPU is QEMU's
+    # baseline model (SSE2/SSE3 only), so `baseline` is built with DEVILS_ENGINE_ARCH=OFF for such
+    # servers and `avx` stays for desktops. Same root either way: no FMA, no FP contraction.
+    name: package-linux (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline
+            arch: "OFF"
+          - name: avx
+            arch: AVX
     runs-on: ubuntu-24.04
     container: debian:13
     timeout-minutes: 120
@@ -107,7 +119,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git g++ cmake ninja-build pkg-config ccache python3 binutils \
+            ca-certificates git g++ cmake ninja-build pkg-config ccache python3 binutils qemu-user \
             liblua5.4-dev libzstd-dev libssl-dev libglfw3-dev \
             libvulkan-dev libshaderc-dev glslang-dev glslang-tools spirv-tools
 
@@ -117,13 +129,14 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ccache
-          key: ccache-debian13-${{ github.sha }}
-          restore-keys: ccache-debian13-
+          key: ccache-debian13-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: ccache-debian13-${{ matrix.name }}-
 
       - name: Configure
         run: |
           mkdir -p ci-logs
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDEVILS_ENGINE_ARCH=${{ matrix.arch }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             2>&1 | tee ci-logs/configure.log
 
@@ -140,7 +153,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/ccache
-          key: ccache-debian13-${{ github.sha }}
+          key: ccache-debian13-${{ matrix.name }}-${{ github.sha }}
 
       - name: Check packages
         # The headless contract check runs from the package itself, with only its own libraries.
@@ -152,13 +165,24 @@ jobs:
           done
           cd headless-package
           ./bin/frontier_online_server --ticks=120 --verify --resources=resources/modules 2>&1 | tail -n 3
+          if [ "${{ matrix.name }}" = baseline ]; then
+            # The VPS's CPU, emulated: qemu64 is "QEMU Virtual CPU version 2.5+" (SSE2/SSE3, no
+            # SSSE3/SSE4/POPCNT/AVX). Any instruction above it is SIGILL here, as it was there.
+            # Debian's own libraries are baseline, so this covers everything the package loads.
+            qemu-x86_64 -cpu qemu64 ./bin/frontier_online_server --ticks=120 --verify \
+              --resources=resources/modules 2>&1 | tail -n 3
+            # ld.so refuses a binary whose ELF note demands a higher ISA level, whatever its code.
+            if readelf -n bin/frontier_online_server | grep 'x86 ISA needed'; then
+              echo "::error::frontier_online_server carries an x86 ISA-level requirement"; exit 1
+            fi
+          fi
           # A zip artifact drops the executable bit; a tarball inside it keeps it.
-          cd .. && tar -czf frontier_online-linux.tar.gz headless-package client-package
+          cd .. && tar -czf frontier_online-linux-${{ matrix.name }}.tar.gz headless-package client-package
 
       - uses: actions/upload-artifact@v7
         with:
-          name: frontier_online-linux
-          path: build/subprojects/frontier_online/frontier_online-linux.tar.gz
+          name: frontier_online-linux-${{ matrix.name }}
+          path: build/subprojects/frontier_online/frontier_online-linux-${{ matrix.name }}.tar.gz
           retention-days: 30
 
       - name: Report errors
