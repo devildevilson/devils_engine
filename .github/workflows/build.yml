@@ -194,12 +194,31 @@ jobs:
           path: build/subprojects/frontier_online/frontier_online-linux-${{ matrix.name }}.tar.gz
           retention-days: 30
 
+      - name: Reference trace
+        # The windows job compares its own trace against this one (cross-platform determinism).
+        if: matrix.name == 'avx'
+        run: |
+          cd build/subprojects/frontier_online/headless-package
+          ./bin/frontier_online_server --trace --ticks=2000 --workers=2 --resources=resources/modules \
+            | grep '^trace ' > ../trace-linux.txt
+          tail -n 1 ../trace-linux.txt
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.name == 'avx'
+        with:
+          name: frontier-trace-linux
+          path: build/subprojects/frontier_online/trace-linux.txt
+          retention-days: 7
+
       - name: Report errors
         if: failure() || cancelled()
         run: python3 .github/scripts/report_errors.py ci-logs/configure.log ci-logs/build.log ci-logs/check.log
 
   windows:
     runs-on: windows-2025
+    outputs:
+      diverged: ${{ steps.xtrace.outputs.diverged }}
+      tick: ${{ steps.xtrace.outputs.tick }}
     # Configure ~25 min + build + tests (own step limit below); hosted runners stop at 6 h.
     timeout-minutes: 340
     env:
@@ -302,6 +321,20 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-windows-${{ github.sha }}
 
+      - name: Disable crash dialogs
+        # Runs (with the tests) even when packaging failed: a broken package must not hide test results.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # A crashing process otherwise waits on a Windows Error Reporting dialog nobody closes, and
+        # the test reads as a timeout instead of a crash with its exit code.
+        run: |
+          $wer = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+          New-Item -Path $wer -Force | Out-Null
+          Set-ItemProperty -Path $wer -Name DontShowUI -Value 1 -Type DWord
+          Set-ItemProperty -Path $wer -Name Disabled -Value 1 -Type DWord
+          # A missing DLL is a different dialog (a system hard error, not WER): without ErrorMode=2
+          # the loader waits on "code execution cannot proceed" and the test times out after 300 s.
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Windows" -Name ErrorMode -Value 2 -Type DWord
+
       - name: Package
         id: package
         # Before the tests: they take hours and fail for reasons unrelated to these two programs.
@@ -320,19 +353,38 @@ jobs:
             build/subprojects/frontier_online/client-package
           retention-days: 30
 
-      - name: Disable crash dialogs
-        # Runs (with the tests) even when packaging failed: a broken package must not hide test results.
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        # A crashing process otherwise waits on a Windows Error Reporting dialog nobody closes, and
-        # the test reads as a timeout instead of a crash with its exit code.
+      # Cross-platform determinism: the same world on Linux and Windows, tick by tick. The Linux
+      # trace comes from package-linux (avx), which finishes long before this build does.
+      - uses: actions/download-artifact@v8
+        if: steps.package.outcome == 'success'
+        with:
+          name: frontier-trace-linux
+          path: ci-xtrace
+
+      - name: Cross-platform trace
+        id: xtrace
+        if: steps.package.outcome == 'success'
         run: |
-          $wer = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
-          New-Item -Path $wer -Force | Out-Null
-          Set-ItemProperty -Path $wer -Name DontShowUI -Value 1 -Type DWord
-          Set-ItemProperty -Path $wer -Name Disabled -Value 1 -Type DWord
-          # A missing DLL is a different dialog (a system hard error, not WER): without ErrorMode=2
-          # the loader waits on "code execution cannot proceed" and the test times out after 300 s.
-          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Windows" -Name ErrorMode -Value 2 -Type DWord
+          Push-Location build\subprojects\frontier_online\headless-package
+          cmd /c "bin\frontier_online_server.exe --trace --ticks=2000 --workers=2 --resources=resources/modules > ..\..\..\..\ci-xtrace\trace-windows.txt 2>&1"
+          Pop-Location
+          python .github/scripts/compare_traces.py ci-xtrace\trace-linux.txt ci-xtrace\trace-windows.txt $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE) {
+            # Dump the world at the first divergent tick; the cross-platform job diffs it with Linux.
+            $tick = (Select-String -Path $env:GITHUB_OUTPUT -Pattern '^tick=(\d+)' | Select-Object -Last 1).Matches[0].Groups[1].Value
+            Push-Location build\subprojects\frontier_online\headless-package
+            cmd /c "bin\frontier_online_server.exe --ticks=$tick --workers=2 --dump=..\..\..\..\ci-xtrace\world-windows.bin --resources=resources/modules > nul 2>&1"
+            Pop-Location
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v7
+        # Bare conditions imply success(); the trace step has just failed on purpose.
+        if: ${{ !cancelled() && steps.xtrace.outputs.diverged == 'true' }}
+        with:
+          name: frontier-divergence-windows
+          path: ci-xtrace
+          retention-days: 7
 
       - name: Test
         # A step over its own limit FAILS (the report runs); a job over its limit is cancelled.
@@ -362,3 +414,38 @@ jobs:
           # vcpkg writes the failing port's own logs under buildtrees; include them too.
           $logs += Get-ChildItem -Path "$env:VCPKG_ROOT\buildtrees" -Recurse -Filter "*-err.log" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
           python .github/scripts/report_errors.py @logs
+
+  cross-platform:
+    # Runs only when the windows trace diverged: dumps the Linux world at the same tick and names
+    # the component, entity and bytes that differ (the windows dump comes from its artifact).
+    needs: windows
+    if: ${{ !cancelled() && needs.windows.outputs.diverged == 'true' }}
+    runs-on: ubuntu-24.04
+    container: debian:13
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install python
+        run: apt-get update && apt-get install -y --no-install-recommends python3
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontier_online-linux-avx
+          path: ci-xtrace
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontier-divergence-windows
+          path: ci-xtrace
+
+      - name: World diff
+        run: |
+          cd ci-xtrace
+          tar -xzf frontier_online-linux-avx.tar.gz
+          (cd headless-package && ./bin/frontier_online_server --ticks=${{ needs.windows.outputs.tick }} --workers=2 \
+            --dump=../world-linux.bin --resources=resources/modules > /dev/null)
+          python3 ../.github/scripts/world_diff.py world-linux.bin world-windows.bin
