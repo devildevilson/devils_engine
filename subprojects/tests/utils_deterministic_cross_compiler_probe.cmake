@@ -7,6 +7,13 @@ file(MAKE_DIRECTORY "${PROBE_BINARY_DIR}")
 set(common_flags -std=c++23 -O3 -fno-fast-math -ffp-contract=off -I${PROBE_INCLUDE_DIR})
 set(gcc_binary "${PROBE_BINARY_DIR}/utils_deterministic_gcc")
 set(clang_binary "${PROBE_BINARY_DIR}/utils_deterministic_clang")
+# On Windows clang compiles against the MSVC STL, which refuses a clang older than it expects
+# (STL1000; the 2026-11 runner image pairs MSVC 14.52 with LLVM 20). This probe compares the bits
+# two compilers produce, not toolchain support, so it takes Microsoft's documented escape hatch.
+set(clang_flags)
+if (CMAKE_HOST_WIN32)
+  list(APPEND clang_flags -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
+endif()
 
 # deterministic_math.cpp: double-функции живут в .cpp, а не в заголовке.
 set(sources "${PROBE_SOURCE}")
@@ -22,7 +29,7 @@ if (NOT gcc_result EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND "${CLANGXX}" ${common_flags} ${sources} -o "${clang_binary}"
+  COMMAND "${CLANGXX}" ${common_flags} ${clang_flags} ${sources} -o "${clang_binary}"
   RESULT_VARIABLE clang_result ERROR_VARIABLE clang_error)
 if (NOT clang_result EQUAL 0)
   message(FATAL_ERROR "Clang deterministic corpus compile failed:\n${clang_error}")

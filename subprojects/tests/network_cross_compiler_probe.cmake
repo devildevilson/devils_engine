@@ -6,6 +6,13 @@ endif()
 file(MAKE_DIRECTORY "${PROBE_BINARY_DIR}")
 set(gcc_binary "${PROBE_BINARY_DIR}/native_float_gcc")
 set(clang_binary "${PROBE_BINARY_DIR}/native_float_clang")
+# On Windows clang compiles against the MSVC STL, which refuses a clang older than it expects
+# (STL1000; the 2026-11 runner image pairs MSVC 14.52 with LLVM 20). This probe compares the bits
+# two compilers produce, not toolchain support, so it takes Microsoft's documented escape hatch.
+set(clang_flags)
+if (CMAKE_HOST_WIN32)
+  list(APPEND clang_flags -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
+endif()
 set(common_flags -std=c++23 -O3 -fno-fast-math)
 if (DEFINED PROBE_ARCH_FLAG AND NOT PROBE_ARCH_FLAG STREQUAL "")
   list(APPEND common_flags "${PROBE_ARCH_FLAG}")
@@ -21,7 +28,7 @@ if (NOT gcc_compile_result EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND "${CLANGXX}" ${common_flags} -stdlib=libc++ "${PROBE_SOURCE}" -o "${clang_binary}"
+  COMMAND "${CLANGXX}" ${common_flags} ${clang_flags} -stdlib=libc++ "${PROBE_SOURCE}" -o "${clang_binary}"
   RESULT_VARIABLE clang_libcxx_result
   ERROR_VARIABLE clang_libcxx_error
 )
@@ -29,7 +36,7 @@ if (clang_libcxx_result EQUAL 0)
   set(clang_runtime "libc++")
 else()
   execute_process(
-    COMMAND "${CLANGXX}" ${common_flags} "${PROBE_SOURCE}" -o "${clang_binary}"
+    COMMAND "${CLANGXX}" ${common_flags} ${clang_flags} "${PROBE_SOURCE}" -o "${clang_binary}"
     RESULT_VARIABLE clang_compile_result
     ERROR_VARIABLE clang_compile_error
   )
