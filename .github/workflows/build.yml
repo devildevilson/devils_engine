@@ -169,8 +169,17 @@ jobs:
             # The VPS's CPU, emulated: qemu64 is "QEMU Virtual CPU version 2.5+" (SSE2/SSE3, no
             # SSSE3/SSE4/POPCNT/AVX). Any instruction above it is SIGILL here, as it was there.
             # Debian's own libraries are baseline, so this covers everything the package loads.
-            qemu-x86_64 -cpu qemu64 ./bin/frontier_online_server --ticks=120 --verify \
-              --resources=resources/modules 2>&1 | tail -n 3
+            # Same binary, two CPUs: runtime-dispatched code (FastNoise2 picks SSE2 under qemu64,
+            # AVX2/AVX-512 on the runner) must give the same terrain and state. FASTNOISE2_STRICT_FP
+            # promises that; this is where a broken promise would show. Log lines start with '['.
+            for args in "--terrain=8 --world-seed=20260911" "--ticks=120 --verify"; do
+              ./bin/frontier_online_server $args --resources=resources/modules | grep -v '^\[' > native.txt
+              qemu-x86_64 -cpu qemu64 ./bin/frontier_online_server $args --resources=resources/modules \
+                | grep -v '^\[' > qemu64.txt
+              diff native.txt qemu64.txt || { echo "::error::$args differs between the runner CPU and qemu64"; exit 1; }
+              grep 'root' native.txt
+            done
+            rm native.txt qemu64.txt
             # ld.so refuses a binary whose ELF note demands a higher ISA level, whatever its code.
             if readelf -n bin/frontier_online_server | grep 'x86 ISA needed'; then
               echo "::error::frontier_online_server carries an x86 ISA-level requirement"; exit 1
