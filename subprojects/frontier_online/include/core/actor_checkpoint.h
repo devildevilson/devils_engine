@@ -44,6 +44,7 @@ struct actor_checkpoint_access {
     state causal{};
     devils_engine::aesthetics::entityid_t player =
       devils_engine::aesthetics::invalid_entityid;
+    std::vector<actor_world_slice::player_slot> players; // по возрастанию peer, peer 0 первым
     std::vector<actor_world_slice::obstacle_disc> obstacles;
     std::unique_ptr<actor_brain_runtime> runtime;
   };

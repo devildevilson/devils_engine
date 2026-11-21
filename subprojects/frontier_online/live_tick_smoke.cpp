@@ -125,10 +125,20 @@ std::vector<std::byte> action_payload(const devils_engine::act::intent& action) 
   return bytes;
 }
 
-bool enqueue_payload(host& target, const std::span<const std::byte> bytes) {
-  fn::canonical_food_action action;
-  return fn::decode(bytes, action) &&
-         target.actors.enqueue_canonical_intent(food_action(action.x, action.y));
+// The live session's reading of a canonical record: a join creates the peer's player, food is
+// executed by the player of its origin peer.
+bool enqueue_payload(host& target, const uint64_t peer, const uint64_t sequence,
+                     const std::span<const std::byte> bytes) {
+  switch (fn::classify(bytes, sequence)) {
+    case fn::canonical_action_kind::peer_joined: return target.actors.enqueue_canonical_join(peer);
+    case fn::canonical_action_kind::spawn_food: {
+      fn::canonical_food_action action;
+      return fn::decode(bytes, action) &&
+             target.actors.enqueue_canonical_intent(food_action(action.x, action.y), peer);
+    }
+    case fn::canonical_action_kind::invalid: break;
+  }
+  return false;
 }
 
 struct wire_tick {
@@ -279,6 +289,16 @@ int main(const int argc, const char* const* argv) {
     input_journal journal;
     for (uint64_t tick = 2; tick <= 7; ++tick) {
       const auto tag = journal.begin(tick, net::canonical_tick_max_records);
+      if (tick == 2) {
+        // The follower agreed on the checkpoint: its player enters by a canonical record.
+        accepted_input join;
+        join.tick = tick;
+        join.logical_peer = logical_peer;
+        join.sequence = fn::canonical_join_sequence;
+        join.payload = fn::encode_join();
+        require(journal.try_record(std::move(join)) == net::tick_record_result::recorded,
+                "live join did not enter the tick journal");
+      }
       if (tick == 4) {
         accepted_input record;
         record.tick = tick;
@@ -293,7 +313,7 @@ int main(const int argc, const char* const* argv) {
               "live tick journal did not seal");
       auto sealed = journal.consume(tag);
       for (const auto& record : sealed.records())
-        require(authoritative.actors.enqueue_canonical_intent(record.action),
+        require(enqueue_payload(authoritative, record.logical_peer, record.sequence, record.payload),
                 "accepted input could not enter authority world");
       step(authoritative, tick);
 
@@ -352,8 +372,10 @@ int main(const int argc, const char* const* argv) {
       target.pending_tick = view.tick;
       target.expected_root = *view.state_root;
       for (const auto& record : view.records) {
-        if (record.origin_peer != logical_peer || record.input_sequence != 2 ||
-            !enqueue_payload(target, record.payload)) return false;
+        if (record.origin_peer != logical_peer ||
+            (record.input_sequence != 2 && record.input_sequence != fn::canonical_join_sequence) ||
+            !enqueue_payload(target, record.origin_peer, record.input_sequence, record.payload))
+          return false;
       }
       return true;
     };

@@ -20,14 +20,15 @@
 #endif
 
 #include "core/frame_capture.h"
+#include "core/net_client.h"
 #include "runtime.h"
 
 using namespace frontier_online;
 
 namespace {
 
-// Разбор аргументов клиента. Их ровно два и оба — инструмент разработчика: снять кадр и выйти.
-// Неопознанный аргумент отвергается, а не игнорируется: молча запущенный не тот режим потом
+// Разбор аргументов клиента: снять кадр и выйти (инструмент разработчика) и присоединиться к живой
+// сессии. Неопознанный аргумент отвергается, а не игнорируется: молча запущенный не тот режим потом
 // объясняют часами.
 bool parse_arguments(const int argc, char** argv) {
   auto& capture = frontier_online::core::capture_request();
@@ -51,6 +52,27 @@ bool parse_arguments(const int argc, char** argv) {
     }
     if (arg == "--stay") { // снять кадр и продолжать жить (смотреть глазами)
       capture.exit_after = false;
+      continue;
+    }
+    if (arg.starts_with("--join=")) { // живая сессия: HOST:PORT авторитета
+      if (!frontier_online::core::network_client_available()) {
+        std::fprintf(stderr, "frontier_online: this build has no network backend\n");
+        return false;
+      }
+      frontier_online::core::join_request().endpoint =
+        std::string(arg.substr(std::string_view("--join=").size()));
+      continue;
+    }
+    if (arg.starts_with("--input-lead=")) { // на сколько тиков вперёд назначать свой клик
+      const auto text = arg.substr(std::string_view("--input-lead=").size());
+      uint32_t value = 0;
+      const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+      if (result.ec != std::errc{} || result.ptr != text.data() + text.size() || value == 0 ||
+          value > 32) {
+        std::fprintf(stderr, "frontier_online: --input-lead must be 1..32 ticks\n");
+        return false;
+      }
+      frontier_online::core::join_request().input_lead_ticks = value;
       continue;
     }
     std::fprintf(stderr, "frontier_online: unknown argument '%.*s'\n", int(arg.size()), arg.data());

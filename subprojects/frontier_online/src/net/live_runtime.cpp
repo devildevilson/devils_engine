@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <optional>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -57,18 +58,24 @@ void require(const bool value, const char* reason) {
 struct host {
   core::actor_world_slice actors;
   utils::timelines clocks;
-  devils_engine::thread::atomic_pool pool;
+  // Пул владельца процесса (графический клиент) или собственный (headless): второй независимый
+  // пул рядом с пулом клиента был бы скрытым расходом потоков.
+  std::optional<devils_engine::thread::atomic_pool> own_pool;
+  devils_engine::thread::atomic_pool* pool = nullptr;
   uint64_t expected_root = 0;
   uint64_t pending_tick = 0;
 
-  host(const uint32_t rate, const uint32_t workers)
-    : clocks(utils::simulation_rate(rate)), pool(workers) {}
+  host(const uint32_t rate, const uint32_t workers, devils_engine::thread::atomic_pool* shared)
+    : clocks(utils::simulation_rate(rate)) {
+    if (shared == nullptr) shared = &own_pool.emplace(workers);
+    pool = shared;
+  }
 };
 
 void step(host& value, const uint64_t number) {
   const auto tick = value.clocks.simulation_now() + utils::simulation_duration{1};
   require(tick.value == number, "live session skipped a simulation tick");
-  value.actors.update(tick, value.clocks.advance_simulation(tick), nullptr, value.pool);
+  value.actors.update(tick, value.clocks.advance_simulation(tick), nullptr, *value.pool);
 }
 
 uint64_t root_of(const host& value) {
@@ -138,10 +145,19 @@ std::vector<std::byte> action_payload(const devils_engine::act::intent& action) 
   return bytes;
 }
 
-bool enqueue_payload(host& target, const std::span<const std::byte> bytes) {
-  canonical_food_action action;
-  return decode(bytes, action) &&
-         target.actors.enqueue_canonical_intent(food_action(action.x, action.y));
+// Одно исполнение канонической записи для всех: авторитет исполняет те же байты, что ведомые.
+bool enqueue_payload(host& target, const uint64_t peer, const uint64_t sequence,
+                     const std::span<const std::byte> bytes) {
+  switch (classify(bytes, sequence)) {
+    case canonical_action_kind::peer_joined: return target.actors.enqueue_canonical_join(peer);
+    case canonical_action_kind::spawn_food: {
+      canonical_food_action action;
+      return decode(bytes, action) &&
+             target.actors.enqueue_canonical_intent(food_action(action.x, action.y), peer);
+    }
+    case canonical_action_kind::invalid: break;
+  }
+  return false;
 }
 
 struct accepted_input {
@@ -194,7 +210,8 @@ bool apply_bundle(host& target, const std::span<const std::byte> bytes,
   target.pending_tick = view.tick;
   target.expected_root = *view.state_root;
   for (const auto& record : view.records) {
-    if (!enqueue_payload(target, record.payload)) return false;
+    if (!enqueue_payload(target, record.origin_peer, record.input_sequence, record.payload))
+      return false;
     if (record.origin_peer == local_peer) on_own(record.input_sequence);
   }
   return true;
@@ -231,13 +248,16 @@ struct live_authority::state {
     uint64_t newest = 0;
   };
   std::map<uint64_t, input_horizon> horizons;
+  // Тик канонической записи присоединения каждого принятого участника. Его предложения
+  // принимаются только на тики ПОСЛЕ него: раньше в мире нет его игрока.
+  std::map<uint64_t, uint64_t> admitted;
   network::intent_layout_table layouts = player_intent_layouts();
   network::id_index_table empty_registry;
   counters stats;
 
   state(net_runtime& runtime, const core::causal_content& content, const live_run_options& o,
         const authority_config& config, const world_declaration& world)
-    : opts(o), endpoint(runtime, content, world, config), simulation(o.rate, o.workers),
+    : opts(o), endpoint(runtime, content, world, config), simulation(o.rate, o.workers, nullptr),
       checkpoint_source(simulation), history(o.history_ticks, o.history_bytes) {
     simulation.actors.init(opts.actors, {0.5f, 0.5f}, {64.0f, 64.0f}, 1, content.config(),
                            opts.prefab_cycle);
@@ -293,8 +313,9 @@ struct live_authority::state {
       return;
     }
     const auto target = network::intent_absolute_tick(now(), batch.base_tick_low, proposal.tick_delta);
+    const auto joined = admitted.find(peer);
     if (!target || *target <= now() || *target > now() + opts.intent_window_ticks ||
-        *target > opts.final_tick) {
+        *target > opts.final_tick || joined == admitted.end() || *target <= joined->second) {
       ++stats.dropped_inputs;
       return;
     }
@@ -316,6 +337,31 @@ struct live_authority::state {
     const uint64_t sequence = network::widen_input_sequence_low16(horizon.newest, proposal.sequence_low);
     horizon.newest = std::max(horizon.newest, sequence);
     queued.push_back({*target, peer, sequence, action, action_payload(action)});
+  }
+
+  // Участник, подтвердивший корень checkpoint, получает игрока канонической записью этого тика.
+  // Предложения в тик уже приняты в пределах его ёмкости; присоединение, которому не хватило места
+  // (записей или байт), ждёт следующего тика — его время ни к чему не привязано, а предложения
+  // этого участника до записи всё равно не принимаются.
+  void record_joins(const uint64_t tick) {
+    const auto queued = pending.find(tick);
+    const size_t inputs = queued == pending.end() ? 0 : queued->second.size();
+    size_t records = inputs;
+    size_t bytes = network::canonical_tick_header_bytes + network::canonical_tick_root_bytes +
+                   inputs * (network::canonical_tick_record_header_bytes + canonical_food_action_bytes);
+    constexpr size_t join_bytes = network::canonical_tick_record_header_bytes + canonical_join_action_bytes;
+    for (const auto& join : endpoint.joins()) {
+      if (!join.agreed || !endpoint.is_live_member(join.peer_id) ||
+          admitted.contains(join.peer_id)) continue;
+      if (records + 1 > network::canonical_tick_max_records ||
+          bytes + join_bytes > network::canonical_tick_max_bytes) break;
+      require(journal.try_record({tick, join.peer_id, canonical_join_sequence, {}, encode_join()}) ==
+                network::tick_record_result::recorded,
+              "live authority could not record a join");
+      admitted.emplace(join.peer_id, tick);
+      ++records;
+      bytes += join_bytes;
+    }
   }
 
   void deliver() {
@@ -375,6 +421,7 @@ void live_authority::advance() {
   auto& self = *state_;
   const uint64_t tick = self.now() + 1;
   const auto tag = self.journal.begin(tick, network::canonical_tick_max_records);
+  self.record_joins(tick);
   if (auto it = self.pending.find(tick); it != self.pending.end()) {
     // Квоты при приёме гарантируют, что записи помещаются: отказ здесь — нарушение инварианта.
     for (auto& input : it->second)
@@ -385,10 +432,12 @@ void live_authority::advance() {
   require(self.journal.seal() == network::tick_seal_result::sealed,
           "live authority could not seal the tick journal");
   auto accepted = self.journal.consume(tag);
-  for (const auto& input : accepted.records())
-    require(self.simulation.actors.enqueue_canonical_intent(input.action),
+  for (const auto& input : accepted.records()) {
+    require(enqueue_payload(self.simulation, input.peer, input.sequence, input.payload),
             "live authority could not enqueue accepted input");
-  self.stats.applied_inputs += uint32_t(accepted.records().size());
+    if (input.sequence == canonical_join_sequence) ++self.stats.admitted_peers;
+    else ++self.stats.applied_inputs;
+  }
   step(self.simulation, tick);
 
   std::vector<network::canonical_tick_record_view> records;
@@ -456,6 +505,7 @@ struct live_follower::state {
   network::id_index_table empty_registry;
   bool prepared = false;
   bool awaiting_repair = false;
+  bool admitted = false; // своя запись присоединения исполнена: в мире есть свой игрок
   // Неподтверждённые предложения. Подтверждение — своя запись в каноническом bundle; тик цели
   // прошёл без неё — предложение отвергнуто.
   struct outstanding_input {
@@ -475,8 +525,8 @@ struct live_follower::state {
   counters stats;
 
   state(net_runtime& runtime, const core::causal_content& c, const follower_config& config,
-        const live_run_options& o)
-    : opts(o), content(c), endpoint(runtime, c, config), simulation(o.rate, o.workers),
+        const live_run_options& o, devils_engine::thread::atomic_pool* pool)
+    : opts(o), content(c), endpoint(runtime, c, config), simulation(o.rate, o.workers, pool),
       checkpoint_sink(simulation, c.config()) {
     outgoing_intents.reserve(max_outstanding_inputs);
     outgoing.reserve(network::intent_batch_max_bytes);
@@ -537,6 +587,10 @@ struct live_follower::state {
   }
 
   void confirm(const uint64_t sequence) {
+    if (sequence == canonical_join_sequence) {
+      admitted = true;
+      return;
+    }
     const auto it = std::find_if(outstanding.begin(), outstanding.end(),
                                  [&](const auto& value) { return value.sequence == sequence; });
     if (it == outstanding.end()) return; // уже подтверждено: повтор одного решения не считается
@@ -606,8 +660,9 @@ struct live_follower::state {
 };
 
 live_follower::live_follower(net_runtime& runtime, const core::causal_content& content,
-                             const follower_config& config, const live_run_options& options)
-  : state_(std::make_unique<state>(runtime, content, config, options)) {}
+                             const follower_config& config, const live_run_options& options,
+                             devils_engine::thread::atomic_pool* pool)
+  : state_(std::make_unique<state>(runtime, content, config, options, pool)) {}
 
 live_follower::~live_follower() = default;
 
@@ -641,7 +696,8 @@ void live_follower::service() {
 
 bool live_follower::propose_food(const double x, const double y, const uint64_t target) {
   auto& self = *state_;
-  if (!self.prepared || self.outstanding.size() >= max_outstanding_inputs || target <= self.now())
+  if (!self.prepared || !self.admitted || self.outstanding.size() >= max_outstanding_inputs ||
+      target <= self.now())
     return false;
   network::intent proposal;
   if (!encode_player_intent(food_action(x, y), uint16_t(self.next_sequence), 0, proposal))
@@ -656,6 +712,10 @@ bool live_follower::ready() const noexcept {
   return state_->prepared;
 }
 
+bool live_follower::admitted() const noexcept {
+  return state_->admitted;
+}
+
 bool live_follower::caught_up() const noexcept {
   return state_->prepared && state_->endpoint.catchup_tick() != 0 &&
          state_->now() >= state_->endpoint.catchup_tick();
@@ -663,6 +723,10 @@ bool live_follower::caught_up() const noexcept {
 
 uint64_t live_follower::tick() const noexcept {
   return state_->now();
+}
+
+const core::actor_world_slice& live_follower::world() const noexcept {
+  return state_->simulation.actors;
 }
 
 uint64_t live_follower::root() const {
@@ -688,8 +752,10 @@ const follower& live_follower::endpoint() const noexcept {
 int run_live_authority(const live_run_options& opts, const core::causal_content& content) {
   try {
     spdlog::set_level(spdlog::level::err);
-    require(opts.port != 0 && opts.expected_peers == 2 && opts.final_tick >= 64,
-            "live authority needs a port, two followers and at least 64 ticks");
+    require(opts.port != 0 && opts.final_tick >= 64 &&
+              (opts.scripted_inputs ? opts.expected_peers == 2 : opts.expected_peers >= 1),
+            opts.scripted_inputs ? "live authority needs a port, two followers and at least 64 ticks"
+                                 : "live authority needs a port, a follower and at least 64 ticks");
     net_runtime runtime(4);
     authority_config config;
     config.host = opts.bind_loopback ? 0x7f000001u : 0u;
@@ -739,6 +805,7 @@ int run_live_authority(const live_run_options& opts, const core::causal_content&
     std::printf("live.authority.tick = %llu\n", static_cast<unsigned long long>(session.tick()));
     std::printf("live.authority.root = %llu\n", static_cast<unsigned long long>(session.root()));
     std::printf("live.authority.joins = %u\n", endpoint.completed_joins());
+    std::printf("live.authority.players = %u\n", stats.admitted_peers);
     std::printf("live.authority.inputs = %u\n", stats.applied_inputs);
     std::printf("live.authority.dropped_inputs = %llu\n",
                 static_cast<unsigned long long>(stats.dropped_inputs));
@@ -754,8 +821,11 @@ int run_live_authority(const live_run_options& opts, const core::causal_content&
                   static_cast<unsigned long long>(value.peer_id), describe(value.reason));
     endpoint.close_all();
     require(endpoint.completed_joins() == opts.expected_peers && endpoint.terminations().empty() &&
-              stats.applied_inputs == opts.expected_peers && stats.dropped_inputs == 0,
-            "live authority did not complete both followers and their inputs");
+              stats.admitted_peers == opts.expected_peers,
+            "live authority did not complete its followers");
+    require(!opts.scripted_inputs ||
+              (stats.applied_inputs == opts.expected_peers && stats.dropped_inputs == 0),
+            "live authority did not receive exactly one input from each follower");
     return 0;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "frontier live authority: %s\n", error.what());
@@ -804,7 +874,8 @@ int run_live_follower(const live_run_options& opts, const core::causal_content& 
       runtime.pump();
       session.service();
       check_alive("live follower lost the session before the final tick");
-      if (!sent_input && session.caught_up() && session.tick() + 24 <= opts.final_tick) {
+      if (!sent_input && session.caught_up() && session.admitted() &&
+          session.tick() + 24 <= opts.final_tick) {
         require(session.propose_food(12.0 + double(endpoint.peer_id()), 13.0, session.tick() + 24),
                 "live follower could not send its intent");
         sent_input = true;

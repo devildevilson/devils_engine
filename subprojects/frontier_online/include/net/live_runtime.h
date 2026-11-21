@@ -16,7 +16,12 @@
 // зависит от планировщика ОС. `net_runtime` тоже чужой: два конца в одном процессе обязаны
 // делить один диспетчер GNS.
 
+namespace devils_engine::thread {
+class atomic_pool;
+}
+
 namespace frontier_online::core {
+class actor_world_slice;
 class causal_content;
 }
 
@@ -47,6 +52,10 @@ struct live_run_options {
   uint32_t intent_window_ticks = 32;
   // Ведомый: один нарочно неверный локальный прогноз, чтобы путь исправления был наблюдаемым.
   bool predict_wrong = true;
+  // Авторитет: процессный сценарий — ровно два ведомых, и каждый присылает ровно одно действие
+  // (так их проверяет итоговая сверка). false — сессия для людей (`--play`): участников от
+  // одного, действий сколько сделают, опоздавший клик — штатный отказ, а не провал прогона.
+  bool scripted_inputs = true;
 };
 
 // Сколько записей `spawn_food` помещается в один canonical tick с корнем: меньшее из предела
@@ -56,7 +65,8 @@ struct live_run_options {
 class live_authority {
 public:
   struct counters {
-    uint32_t applied_inputs = 0;
+    uint32_t applied_inputs = 0;  // действия участников (без записей присоединения)
+    uint32_t admitted_peers = 0;  // канонические присоединения: столько игроков появилось в мире
     uint64_t dropped_inputs = 0;
     uint64_t duplicate_inputs = 0; // повторы уже принятых предложений: штатная избыточность
     uint64_t canonical_bytes_sent = 0;
@@ -98,8 +108,11 @@ public:
     uint64_t canonical_bytes = 0;
   };
 
+  // pool — пул владельца (графический клиент: тот же, что у его кадра); nullptr — свой пул на
+  // options.workers. Пулом пользуется только поток, вызывающий service().
   live_follower(net_runtime& runtime, const core::causal_content& content,
-                const follower_config& config, const live_run_options& options);
+                const follower_config& config, const live_run_options& options,
+                devils_engine::thread::atomic_pool* pool = nullptr);
   ~live_follower();
   live_follower(const live_follower&) = delete;
   live_follower& operator=(const live_follower&) = delete;
@@ -108,14 +121,20 @@ public:
   // Шаг ведомого: приём, затем исполнение всех полученных bundles со сверкой корня на каждом.
   // Расхождение корня — критическая ошибка (std::runtime_error), а не исход.
   void service();
-  // Предложить `spawn_food(x, y)` на тик `target`. Только после подтверждения присоединения и
+  // Предложить `spawn_food(x, y)` на тик `target`. Только после admitted() и
   // пока в полёте меньше 16 неподтверждённых. Повторы до подтверждения — забота ведомого.
   [[nodiscard]] bool propose_food(double x, double y, uint64_t target);
 
   [[nodiscard]] bool ready() const noexcept;     // присоединился, подтверждён, состояние загружено
+  // Исполнена своя каноническая запись присоединения: в мире есть свой игрок. Раньше предложения
+  // не принимаются — авторитет отбросил бы их как адресованные несуществующему игроку.
+  [[nodiscard]] bool admitted() const noexcept;
   [[nodiscard]] bool caught_up() const noexcept; // получил live_caught_up и дошёл до него
   [[nodiscard]] uint64_t tick() const noexcept;
   [[nodiscard]] uint64_t root() const;
+  // Мир последнего проверенного тика — то, что показывает графический клиент. Меняется только
+  // внутри service().
+  [[nodiscard]] const core::actor_world_slice& world() const noexcept;
   [[nodiscard]] const counters& stats() const noexcept;
   [[nodiscard]] follower& endpoint() noexcept;
   [[nodiscard]] const follower& endpoint() const noexcept;

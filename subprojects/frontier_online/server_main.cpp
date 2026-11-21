@@ -86,6 +86,7 @@ struct options {
   bool listen = false;
   bool live = false;         // длительная headless-сессия с тиками и проверкой root
   bool live_loopback = false;
+  bool play = false;          // живая сессия для людей: число участников и действий решают они
   uint16_t listen_port = 0;   // 0 при --listen без числа — порт спрашивается у ОС
   std::string join;           // "host:port"
   uint32_t expect_joins = 1;  // сколько присоединений ждёт авторитет, прежде чем выйти
@@ -178,6 +179,10 @@ bool parse_options(const int argc, char** argv, options& out) {
     }
     if (arg == "--live") {
       out.live = true;
+      continue;
+    }
+    if (arg == "--play") {
+      out.play = true;
       continue;
     }
     if (arg == "--live-loopback") {
@@ -588,6 +593,10 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "frontier_online_server: --live requires --listen=PORT or --join=HOST:PORT\n");
     return EXIT_FAILURE;
   }
+  if (opts.play && (!opts.live || !opts.listen)) {
+    std::fprintf(stderr, "frontier_online_server: --play requires --live --listen=PORT\n");
+    return EXIT_FAILURE;
+  }
   if (opts.live_loopback && (!opts.live || !opts.listen)) {
     std::fprintf(stderr, "frontier_online_server: --live-loopback requires --live --listen=PORT\n");
     return EXIT_FAILURE;
@@ -610,6 +619,7 @@ int main(int argc, char** argv) {
       live.world_seed = opts.world_seed;
       live.generator = opts.generator;
       live.prefab_cycle = opts.prefab_cycle;
+      live.scripted_inputs = !opts.play;
       if (opts.listen) return fnet::run_live_authority(live, content);
       return fnet::run_live_follower(live, content);
     }

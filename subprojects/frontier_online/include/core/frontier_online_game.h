@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -36,12 +37,18 @@ namespace frontier_online {
 namespace core {
 
 struct broker;
+class net_client;
 
 // Project-only gameplay scene. It consumes generic host outputs (resolved scene bindings,
 // phase gates and framebuffer size), but owns every frontier_online policy: chunks/map/camera,
 // actor phases, render snapshots, presentation sound culling and project metrics/UI values.
 class frontier_online_game {
 public:
+  frontier_online_game();
+  ~frontier_online_game();
+  frontier_online_game(const frontier_online_game&) = delete;
+  frontier_online_game& operator=(const frontier_online_game&) = delete;
+
   struct scene_start_context {
     std::string_view scene_id;
     const world_scene_config& config;
@@ -102,6 +109,9 @@ private:
   void publish_actor_snapshot(const presentation_context& context);
   void publish_sound_listener(broker& messages, bool sound_available);
   void update_actors(const simulation_context& context);
+  // Живая сессия (`--join`): ведомый вместо локальной симуляции; actor_batch_ читает мир его
+  // проверенного тика.
+  void update_network(const simulation_context& context);
   void publish_actor_sounds(broker& messages, bool sound_available);
   void update_metrics(const metrics_config& config, bool active);
   void reset_metrics() noexcept;
@@ -123,6 +133,9 @@ private:
   bool chunks_logged_ = false;
 
   actor_world_slice actors_;
+  bool networked_ = false;              // клиент запущен с --join: локальный мир не считается
+  std::unique_ptr<net_client> net_;     // создаётся на первом тике: ему нужен пул кадра
+  uint64_t net_shown_tick_ = 0;         // тик, который сейчас лежит в actor_batch_
   actor_batch actor_batch_;
   bool actors_logged_ = false;
   actor_metrics actors_last_metrics_;

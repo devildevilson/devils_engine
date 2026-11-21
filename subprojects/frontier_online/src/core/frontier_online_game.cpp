@@ -21,11 +21,15 @@
 #include "instance_layout.h"
 #include "messages.h"
 #include "frontier_online_game.h"
+#include "net_client.h"
 
 namespace frontier_online {
 namespace core {
 
 using namespace devils_engine;
+
+frontier_online_game::frontier_online_game() = default;
+frontier_online_game::~frontier_online_game() = default;
 
 void frontier_online_game::begin_scene(const scene_start_context& context) {
   sound_by_name_.clear();
@@ -116,6 +120,17 @@ void frontier_online_game::begin_scene(const scene_start_context& context) {
          context.config.actor_script, brains.fsms.size(), context.config.fsm_prefix,
          brains.goaps.size(), context.config.goap_prefix, brains.prefabs.size());
 
+  networked_ = !join_request().endpoint.empty();
+  net_.reset();
+  net_shown_tick_ = 0;
+  if (networked_) {
+    // Мир придёт checkpoint'ом авторитета; локальный спавн только тратил бы память и время.
+    reset_metrics();
+    DE_LOG(catalogue::log_domain::gameplay, flow, "main: networked scene, joining {}",
+           join_request().endpoint);
+    return;
+  }
+
   actors_.init(
     context.config.actor_count,
     glm::vec2{0.5f, 0.5f},
@@ -153,9 +168,42 @@ void frontier_online_game::begin_frame(const presentation_context& context) {
 }
 
 void frontier_online_game::update_simulation(const simulation_context& context) {
+  if (networked_) {
+    update_network(context);
+    return;
+  }
   if (context.run_gameplay && actor_batch_.valid()) {
     update_actors(context);
   }
+}
+
+// Сетевой круг идёт и на локальной паузе: авторитет не ждёт, а отставший за удерживаемую
+// историю участник отключается. Тик клиента сюда не входит — мир шагает bundles авторитета.
+void frontier_online_game::update_network(const simulation_context& context) {
+  if (!net_) {
+    net_ = net_client::connect(join_request(), make_project_folder_path("resources/modules"),
+                               context.pool);
+    if (!net_) {
+      networked_ = false; // причина уже в логе; окно остаётся с пустым миром
+      return;
+    }
+  }
+  net_->service();
+  const auto* world = net_->world();
+  if (world == nullptr || !actor_batch_.valid() || net_->tick() == net_shown_tick_) {
+    return;
+  }
+  const auto begin = std::chrono::steady_clock::now();
+  actor_batch_.read(world->ecs(), net_->tick());
+  const auto end = std::chrono::steady_clock::now();
+  net_shown_tick_ = net_->tick();
+  // Метрики показа: мир чужой, решения в нём считал ведомый, поэтому intents здесь не считаются.
+  actors_last_metrics_ = actor_metrics{
+    uint32_t(world->ecs().count<actor_position>()), 0u, actor_batch_.produced(),
+    uint32_t(world->ecs().count<actor_eating>()), net_->tick()};
+  metrics_actor_ticks_ += 1;
+  metrics_instances_ += actor_batch_.produced();
+  metrics_actor_update_us_ += uint64_t(std::max<int64_t>(utils::count_mcs(begin, end), 0));
 }
 
 void frontier_online_game::end_frame(const presentation_context& context) {
@@ -179,6 +227,11 @@ void frontier_online_game::collect_player_intents(const presentation_context& co
       glm::vec2{float(context.window_width), float(context.window_height)}),
     glm::vec2{0.0f}, world_extent_);
 
+  if (networked_) {
+    // Предложение авторитету: в мире еда появится, когда он запишет её в canonical bundle.
+    if (net_) static_cast<void>(net_->propose_food(point.x, point.y));
+    return;
+  }
   act::intent intent;
   intent.kind = act::intent_kind::spawn_prefab;
   intent.payload.spawn.prefab = utils::string_hash("food");

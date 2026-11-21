@@ -14,10 +14,12 @@
 //   6. два участника делают одно действие в одном тике; отставший за историю отключается с
 //      причиной, остальные продолжают; медленный ведомый догоняет без ошибки;
 //   7. ведомый прекращает сессию с названной причиной, если авторитет молчит или противоречит себе.
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <optional>
 #include <set>
 #include <span>
@@ -70,6 +72,23 @@ bool drive(fnet::net_runtime& runtime, Step&& step, Done&& done,
     std::this_thread::sleep_for(1ms);
   }
   return done();
+}
+
+// Игрок участника появляется канонической записью тика после его согласия с checkpoint, поэтому
+// до предложений авторитет должен протикать, а участники — исполнить свои записи присоединения.
+bool admit(fnet::net_runtime& runtime, fnet::live_authority& authority,
+           const std::initializer_list<fnet::live_follower*> followers) {
+  return drive(runtime,
+               [&] {
+                 authority.service();
+                 authority.advance();
+                 for (auto* follower : followers) follower->service();
+               },
+               [&] {
+                 return std::all_of(followers.begin(), followers.end(),
+                                    [](const auto* follower) { return follower->admitted(); });
+               },
+               10000ms);
 }
 
 fnet::live_run_options session_options() {
@@ -323,6 +342,7 @@ void intent_flood_does_not_starve_others(fnet::net_runtime& runtime,
   CHECK(honest.start());
   CHECK(drive(runtime, [&] { authority.service(); flooder.service(); honest.service(); },
               [&] { return flooder.ready() && honest.ready(); }, 10000ms));
+  CHECK(admit(runtime, authority, {&flooder, &honest}));
 
   const auto layouts = fnet::player_intent_layouts();
   const network::id_index_table registry;
@@ -379,6 +399,8 @@ void live_session_survives_order_pressure(fnet::net_runtime& runtime,
   CHECK(repairing.start());
   CHECK(drive(runtime, [&] { authority.service(); slow.service(); repairing.service(); },
               [&] { return slow.ready() && repairing.ready(); }, 10000ms));
+  CHECK(admit(runtime, authority, {&slow, &repairing}));
+  CHECK(authority.stats().admitted_peers == 2);
 
   // Оба предлагают spawn_food на ОДИН тик. Раньше второе действие роняло авторитет.
   const uint64_t shared_tick = authority.tick() + 10;
@@ -453,6 +475,9 @@ void inputs_survive_loss_exactly_once(fnet::net_runtime& runtime, const fo::caus
                              [&] { return client.ready(); }, 15000ms);
     CHECK(ready);
     if (!ready) return;
+    const bool admitted = admit(runtime, authority, {&client});
+    CHECK(admitted);
+    if (!admitted) return;
     // Потери включаются после присоединения: здесь проверяется ввод, а не рукопожатие.
     SteamNetworkingUtils()->SetGlobalConfigValueFloat(
       k_ESteamNetworkingConfig_FakePacketLoss_Send, 20.0f);

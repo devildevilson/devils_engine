@@ -276,6 +276,21 @@ void check_protocol_v4_contract() {
   forged.assign(fnet::canonical_food_action_bytes, std::byte{0});
   CHECK(!fnet::decode(forged, action)); // нулевой вид и чужой префаб
 
+  // Род записи: присоединение — один байт и ТОЛЬКО с зарезервированным номером; пища с этим
+  // номером, лишний байт и пустая запись — invalid.
+  const auto join = fnet::encode_join();
+  CHECK(join.size() == fnet::canonical_join_action_bytes);
+  CHECK(fnet::classify(join, fnet::canonical_join_sequence) == fnet::canonical_action_kind::peer_joined);
+  CHECK(fnet::classify(join, 3) == fnet::canonical_action_kind::invalid);
+  std::vector<std::byte> food_bytes;
+  CHECK(fnet::encode(fnet::canonical_food_action{1.0, 2.0}, food_bytes));
+  CHECK(fnet::classify(food_bytes, 3) == fnet::canonical_action_kind::spawn_food);
+  CHECK(fnet::classify(food_bytes, fnet::canonical_join_sequence) == fnet::canonical_action_kind::invalid);
+  auto long_join = join;
+  long_join.push_back(std::byte{0});
+  CHECK(fnet::classify(long_join, fnet::canonical_join_sequence) == fnet::canonical_action_kind::invalid);
+  CHECK(fnet::classify({}, fnet::canonical_join_sequence) == fnet::canonical_action_kind::invalid);
+
   fnet::join_report report;
   report.status = fnet::join_status::world_declaration_malformed;
   CHECK(fnet::encode(report, bytes));
@@ -307,8 +322,8 @@ void check_protocol_v4_contract() {
   CHECK(fnet::protocol_version == 4);
   // Замороженное значение: отпечаток объявления меняется только вместе с ревизией схемы.
   // murmur3_32 по {revision 2, kind 1, axes 2, absolute 1, shift 6, fraction 10,
-  // payload revision 1, payload kind 1, payload bytes 25}.
-  CHECK(fnet::player_intent_schema_fingerprint == 0x3fd8afa0u);
+  // payload revision 2, food kind 1, food bytes 25, join kind 2, join bytes 1}.
+  CHECK(fnet::player_intent_schema_fingerprint == 0xc8431bebu);
 }
 
 // Один прогон присоединения. Мир авторитета тикает всё это время: присоединяющийся получает

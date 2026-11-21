@@ -20,4 +20,6 @@ file(WRITE "${PACKAGE_DIR}/RUN.txt"
   "Run from this directory. Give both roles --resources=resources/modules.\n"
   "Authority: bin/frontier_online_server --live --listen=41236 --expect-joins=2 --ticks=1800 --timeout=120 --resources=resources/modules\n"
   "Follower:  bin/frontier_online_server --live --join=SERVER_IPV4:41236 --ticks=1800 --timeout=120 --resources=resources/modules\n"
-  "On Windows use bin/frontier_online_server.exe. All peers need identical causal resource files.\n")
+  "On Windows use bin/frontier_online_server.exe. All peers need identical causal resource files.\n"
+  "For graphical clients (frontier_online --join=SERVER_IPV4:41236) add --play to the authority:\n"
+  "  bin/frontier_online_server --live --play --listen=41236 --expect-joins=N --ticks=36000 --timeout=120 --resources=resources/modules\n")

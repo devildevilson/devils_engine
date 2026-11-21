@@ -46,14 +46,19 @@ bool actor_checkpoint_access::validate(const state& value) noexcept {
 
 bool actor_checkpoint_access::prepare_world(staged_actor& output,
                                             aesthetics::world&& world) {
-  aesthetics::entityid_t player = aesthetics::invalid_entityid;
+  // Игроки — по одному на peer; порядок обхода view зависит от хранилища, поэтому кэш сортируется.
+  std::vector<actor_world_slice::player_slot> players;
   for (auto [id, controller] : world.view<player_controller>()) {
-    static_cast<void>(controller);
-    if (player != aesthetics::invalid_entityid) return false;
-    player = id;
+    players.push_back({controller->peer, id});
   }
-  if (player == aesthetics::invalid_entityid) return false;
-  world.create<player_intent_queue>(player);
+  std::sort(players.begin(), players.end(),
+            [](const auto& a, const auto& b) { return a.peer < b.peer; });
+  for (size_t i = 1; i < players.size(); ++i) {
+    if (players[i - 1].peer == players[i].peer) return false;
+  }
+  if (players.empty() || players.front().peer != 0) return false;
+  for (const auto& slot : players) world.create<player_intent_queue>(slot.entity);
+  const aesthetics::entityid_t player = players.front().entity;
 
   std::vector<actor_world_slice::obstacle_disc> obstacles;
   obstacles.reserve(world.count<obstacle>());
@@ -63,6 +68,7 @@ bool actor_checkpoint_access::prepare_world(staged_actor& output,
   }
 
   output.player = player;
+  output.players = std::move(players);
   output.obstacles = std::move(obstacles);
   return true;
 }
@@ -175,8 +181,7 @@ bool write_actor_checkpoint(const actor_world_slice& actors,
   if (actors.simulation_now() > timelines.simulation_now() ||
       actors.game_now() != timelines.game_now() ||
       !actor_checkpoint_access::validate(actor_checkpoint_access::capture(actors))) return false;
-  const auto* pending = actors.ecs().get<player_intent_queue>(actors.player_entity());
-  if (pending == nullptr || !pending->pending.empty()) return false;
+  if (actors.player_inputs_pending()) return false;
   checkpoint_host host{&actors, &timelines};
   return checkpoint_schema::write(host, buffers.document, buffers.section_scratch);
 }

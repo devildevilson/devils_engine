@@ -873,8 +873,10 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   obstacles_.clear();
 
   player_entity_ = world_.gen_entityid();
-  world_.create<player_controller>(player_entity_);
+  world_.create<player_controller>(player_entity_, player_controller{0});
   world_.create<player_intent_queue>(player_entity_);
+  players_.assign(1, player_slot{0, player_entity_});
+  pending_joins_.clear();
 
   const uint32_t tex_count = std::max(texture_count, 1u);
   const glm::vec2 extent = max_bound - min_bound; // только для стартовой раскладки
@@ -1439,45 +1441,88 @@ bool actor_world_slice::enqueue_player_intent(act::intent intent) {
   return true;
 }
 
-bool actor_world_slice::enqueue_canonical_intent(act::intent intent) {
-  if (!world_.exists(player_entity_) || intent.kind == act::intent_kind::none) {
+bool actor_world_slice::enqueue_canonical_intent(act::intent intent, const uint64_t peer) {
+  const auto player = player_of(peer);
+  if (player == aesthetics::invalid_entityid || intent.kind == act::intent_kind::none) {
     return false;
   }
-  auto* queue = world_.get<player_intent_queue>(player_entity_);
+  auto* queue = world_.get<player_intent_queue>(player);
   if (queue == nullptr) {
     return false;
   }
-  intent.actor.id = player_entity_;
+  intent.actor.id = player;
   queue->pending.push_back(intent);
   return true;
 }
 
-uint32_t actor_world_slice::apply_player_intents() {
-  auto* queue = world_.get<player_intent_queue>(player_entity_);
-  if (queue == nullptr) {
-    return 0;
+bool actor_world_slice::enqueue_canonical_join(const uint64_t peer) {
+  if (peer == 0 || player_of(peer) != aesthetics::invalid_entityid ||
+      std::find(pending_joins_.begin(), pending_joins_.end(), peer) != pending_joins_.end()) {
+    return false;
   }
+  pending_joins_.push_back(peer);
+  return true;
+}
 
-  uint32_t applied = 0;
-  for (const auto& intent : queue->pending) {
-    switch (intent.kind) {
-      case act::intent_kind::spawn_prefab: {
-        if (intent.payload.spawn.prefab != utils::string_hash("food")) {
-          utils::error{}("Player requested unknown prefab id 0x{:016x}", intent.payload.spawn.prefab);
-        }
-        const glm::vec2 target{
-          float(intent.payload.spawn.target.x),
-          float(intent.payload.spawn.target.y)};
-        spawn_prefab("food", glm::clamp(target, spawn_min_, spawn_max_));
-        applied += 1;
-        break;
-      }
-      case act::intent_kind::none: break;
-      default:
-        utils::error{}("Unsupported player intent kind {}", uint32_t(intent.kind));
+aesthetics::entityid_t actor_world_slice::player_of(const uint64_t peer) const noexcept {
+  const auto it = std::lower_bound(players_.begin(), players_.end(), peer,
+                                   [](const player_slot& slot, const uint64_t value) { return slot.peer < value; });
+  return it != players_.end() && it->peer == peer ? it->entity : aesthetics::invalid_entityid;
+}
+
+bool actor_world_slice::player_inputs_pending() const noexcept {
+  if (!pending_joins_.empty()) {
+    return true;
+  }
+  for (const auto& slot : players_) {
+    const auto* queue = world_.get<player_intent_queue>(slot.entity);
+    if (queue == nullptr || !queue->pending.empty()) {
+      return true;
     }
   }
-  queue->pending.clear();
+  return false;
+}
+
+// Граница тика: сначала присоединения (в порядке записей тика), затем действия игроков по
+// возрастанию peer — тот же порядок, что (peer, sequence) канонического журнала. Сущность нового
+// игрока берёт id из аллокатора мира, поэтому у всех участников она одна и та же.
+uint32_t actor_world_slice::apply_player_intents() {
+  for (const uint64_t peer : pending_joins_) {
+    const auto entity = world_.gen_entityid();
+    world_.create<player_controller>(entity, player_controller{peer});
+    world_.create<player_intent_queue>(entity);
+    const auto at = std::lower_bound(players_.begin(), players_.end(), peer,
+                                     [](const player_slot& slot, const uint64_t value) { return slot.peer < value; });
+    players_.insert(at, player_slot{peer, entity});
+  }
+  pending_joins_.clear();
+
+  uint32_t applied = 0;
+  for (const auto& slot : players_) {
+    auto* queue = world_.get<player_intent_queue>(slot.entity);
+    if (queue == nullptr) {
+      utils::error{}("frontier_online: player of peer {} lost its intent queue", slot.peer);
+    }
+    for (const auto& intent : queue->pending) {
+      switch (intent.kind) {
+        case act::intent_kind::spawn_prefab: {
+          if (intent.payload.spawn.prefab != utils::string_hash("food")) {
+            utils::error{}("Player requested unknown prefab id 0x{:016x}", intent.payload.spawn.prefab);
+          }
+          const glm::vec2 target{
+            float(intent.payload.spawn.target.x),
+            float(intent.payload.spawn.target.y)};
+          spawn_prefab("food", glm::clamp(target, spawn_min_, spawn_max_));
+          applied += 1;
+          break;
+        }
+        case act::intent_kind::none: break;
+        default:
+          utils::error{}("Unsupported player intent kind {}", uint32_t(intent.kind));
+      }
+    }
+    queue->pending.clear();
+  }
   return applied;
 }
 
@@ -1574,6 +1619,8 @@ void actor_checkpoint_access::publish(actor_world_slice& actors, aesthetics::wor
   actors.commit_game_ticks_ = staged.causal.commit_game_ticks;
   actors.think_budget_ = std::size_t(staged.causal.think_budget);
   actors.player_entity_ = staged.player;
+  actors.players_ = std::move(staged.players);
+  actors.pending_joins_.clear();
   actors.obstacles_ = std::move(staged.obstacles);
   actors.world_.replace_state(std::move(world));
 }

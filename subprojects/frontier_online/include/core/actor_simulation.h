@@ -80,8 +80,11 @@ struct spawn_point {
   uint64_t group = 0;
 };
 
+// Сущность игрока: одна на logical peer сессии. Peer 0 — свой игрок процесса (локальный клиент,
+// авторитет); peer N > 0 появляется в мире канонической записью присоединения (enqueue_canonical_join),
+// поэтому у всех участников один и тот же набор игроков с одними и теми же id. Тела у игрока нет.
 struct player_controller {
-  uint8_t index = 0;
+  uint64_t peer = 0;
 };
 
 // Ephemeral queue on the player entity. It is consumed at the gameplay tick boundary and is not
@@ -336,7 +339,15 @@ public:
   // Действие из КАНОНИЧЕСКОГО журнала тика. Дедупликации по виду нет: несколько участников
   // законно делают одно и то же в одном тике, а тождество входа — (peer, sequence) — уже
   // проверили журнал и canonical_tick_wire. Число записей ограничено журналом тика.
-  bool enqueue_canonical_intent(devils_engine::act::intent intent);
+  // Исполнитель — сущность игрока `peer`; нет такого игрока — false (запись тика отвергается).
+  bool enqueue_canonical_intent(devils_engine::act::intent intent, uint64_t peer);
+  // Каноническое присоединение: на следующей границе тика, ДО действий тика, появляется сущность
+  // игрока `peer`. Peer 0 и уже существующий/ожидающий игрок — false (запись тика отвергается).
+  bool enqueue_canonical_join(uint64_t peer);
+  // Сущность игрока peer или invalid_entityid. Peer 0 = player_entity().
+  devils_engine::aesthetics::entityid_t player_of(uint64_t peer) const noexcept;
+  // Есть неисполненные действия или присоединения: такой мир не годится для checkpoint.
+  bool player_inputs_pending() const noexcept;
   devils_engine::aesthetics::entityid_t player_entity() const noexcept { return player_entity_; }
   // Tick задаёт session/host: слайс больше не изобретает локальную кадровую координату. game_delta
   // — целочисленная проекция этого fixed step в game-домен (пауза даёт 0, scale её меняет).
@@ -480,6 +491,14 @@ private:
   uint32_t food_target_ = 0;    // целевое число еды на карте (поддерживается респавном)
   uint64_t food_spawn_seq_ = 0; // счётчик спавнов — детерминированный поток позиций еды
   devils_engine::aesthetics::entityid_t player_entity_ = devils_engine::aesthetics::invalid_entityid;
+  // Производный кэш игроков мира, упорядоченный по peer: порядок исполнения их действий в тике.
+  // Пересобирается из world (init, присоединение, загрузка checkpoint) и в состояние не входит.
+  struct player_slot {
+    uint64_t peer = 0;
+    devils_engine::aesthetics::entityid_t entity = devils_engine::aesthetics::invalid_entityid;
+  };
+  std::vector<player_slot> players_;
+  std::vector<uint64_t> pending_joins_; // эфемерно, как player_intent_queue: пусто между тиками
   uint32_t texture_count_ = 1;  // запомненное число текстур (для визуала еды/спавна)
   std::vector<obstacle_disc> obstacles_; // плоский кэш препятствий для коллизии (тип — публичный выше)
 };

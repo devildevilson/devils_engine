@@ -131,6 +131,7 @@ set(CLIENT_HDR_LIST
   include/core/frontier_online_game.h
   include/core/world_scene_resource.h
   include/core/simulation.h
+  include/core/net_client.h
 )
 
 set(CLIENT_SRC_LIST
@@ -146,6 +147,7 @@ set(CLIENT_SRC_LIST
   src/core/frontier_online_game.cpp
   src/core/world_scene_resource.cpp
   src/core/simulation.cpp
+  src/core/net_client.cpp
 )
 
 add_executable(${PROJECT_NAME} ${CLIENT_SRC_LIST} ${CLIENT_HDR_LIST})
@@ -163,6 +165,11 @@ target_link_libraries(
   VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
 )
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+# Клиент присоединяется к живой сессии (`--join`) тем же ведомым, что headless-процесс.
+if (TARGET frontier_net)
+  target_link_libraries(${PROJECT_NAME} frontier_net)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE FRONTIER_ONLINE_HAS_NETWORK=1)
+endif()
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 # Headless-авторитет. Линкует ТОЛЬКО причинное ядро: ни одной графической библиотеки в списке.

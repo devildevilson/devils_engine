@@ -18,9 +18,11 @@ set(PACKAGE_BIN "${PACKAGE_DIR}/bin")
 include("${CMAKE_CURRENT_LIST_DIR}/package_runtime.cmake")
 
 file(WRITE "${PACKAGE_DIR}/RUN.txt"
-  "Graphical client: local simulation in a window. It does not connect to a server yet;\n"
-  "the networked roles are the headless package.\n"
-  "Linux:   bin/frontier_online\n"
-  "Windows: bin\\frontier_online.exe\n"
+  "Graphical client. Without arguments: local simulation in a window.\n"
+  "With --join=SERVER_IPV4:PORT: shows the live session of a headless authority started as\n"
+  "  frontier_online_server --live --play --listen=PORT --expect-joins=N --ticks=36000\n"
+  "(click places food; it appears after a round trip).\n"
+  "Linux:   bin/frontier_online [--join=HOST:PORT]\n"
+  "Windows: bin\\frontier_online.exe [--join=HOST:PORT]\n"
   "Needs a Vulkan 1.0 driver. Keep the directory layout: the client looks for resources/ next to bin/.\n"
   "The directory must be writable: the client creates cache/ and its settings files next to bin/.\n")
