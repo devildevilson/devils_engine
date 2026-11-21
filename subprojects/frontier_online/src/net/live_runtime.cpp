@@ -559,8 +559,12 @@ struct live_follower::state {
     }
     const auto period = std::chrono::nanoseconds(std::chrono::seconds(1)) / opts.rate;
     if (outstanding.empty() || (!force && clock::now() - last_send < period)) return;
-    std::sort(outstanding.begin(), outstanding.end(),
-              [](const auto& a, const auto& b) { return a.target > b.target; });
+    // Полный порядок (цель, sequence): при равных целях состав и порядок пакета иначе решала бы
+    // реализация std::sort, и Linux- и Windows-клиент слали бы из одного состояния разные байты.
+    std::sort(outstanding.begin(), outstanding.end(), [](const auto& a, const auto& b) {
+      if (a.target != b.target) return a.target > b.target;
+      return a.sequence < b.sequence;
+    });
     size_t first = 0;
     while (first < outstanding.size()) {
       const uint64_t base = outstanding[first].target;

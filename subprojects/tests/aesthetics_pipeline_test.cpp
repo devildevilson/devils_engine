@@ -293,6 +293,38 @@ TEST_CASE("budget_clamp keeps the highest-priority candidates with a determinist
     REQUIRE(due.size() == 3);
     CHECK(ids_of(due) == std::vector<uint32_t>{0, 1, 2});
   }
+  SUBCASE("kept candidates come out in priority order, independent of the input order") {
+    // Порядок оставленных после nth_element не специфицирован (libstdc++ и MSVC STL расходятся);
+    // budget_clamp обещает порядок по less — выход зависит только от множества входа.
+    std::vector<cand> forward;
+    for (uint32_t i = 0; i < 64; ++i) {
+      forward.push_back({uint64_t(i % 7), i});
+    }
+    std::vector<cand> backward(forward.rbegin(), forward.rend());
+    devils_engine::aesthetics::budget_clamp(forward, 20, priority);
+    devils_engine::aesthetics::budget_clamp(backward, 20, priority);
+    REQUIRE(forward.size() == 20);
+    REQUIRE(backward.size() == 20);
+    for (size_t i = 0; i < forward.size(); ++i) {
+      CHECK(forward[i].id == backward[i].id);
+      if (i > 0) {
+        CHECK(priority(forward[i - 1], forward[i]));
+      }
+    }
+    std::vector<cand> small{{1, 3}, {9, 1}, {9, 0}};
+    devils_engine::aesthetics::budget_clamp(small, 8, priority); // в пределах бюджета — тоже по порядку
+    CHECK(small[0].id == 0);
+    CHECK(small[1].id == 1);
+    CHECK(small[2].id == 3);
+  }
+  SUBCASE("a tie under the priority order is a contract violation") {
+    auto overdue_only = [](const cand& a, const cand& b) { return a.overdue > b.overdue; };
+    std::vector<cand> at_border{{9, 0}, {5, 1}, {5, 2}, {1, 3}};
+    // Бюджет 2: на границе две равные кандидатуры — какой из них остаться, решал бы nth_element.
+    CHECK_THROWS(devils_engine::aesthetics::budget_clamp(at_border, 2, overdue_only));
+    std::vector<cand> inside{{9, 0}, {9, 1}, {1, 2}};
+    CHECK_THROWS(devils_engine::aesthetics::budget_clamp(inside, 2, overdue_only));
+  }
 }
 
 namespace {

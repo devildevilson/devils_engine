@@ -112,6 +112,14 @@ brain_config load_required_brain_config(
   std::sort(config.prefabs.begin(), config.prefabs.end(), [](const auto& a, const auto& b) {
     return a.name < b.name;
   });
+  // prefab_registry::add_prefab заменяет одноимённый префаб: при повторе имени выжил бы тот, кого
+  // std::sort поставил последним среди равных, — а это решает реализация STL, не содержимое.
+  if (const auto dup = std::adjacent_find(config.prefabs.begin(), config.prefabs.end(),
+                                          [](const auto& a, const auto& b) { return a.name == b.name; });
+      dup != config.prefabs.end()) {
+    utils::error{}("tile_frontier: prefab set '{}' declares prefab '{}' more than once", prefab_prefix,
+                   dup->name);
+  }
   const auto has_prefab = [&config](const std::string_view name) {
     return std::any_of(config.prefabs.begin(), config.prefabs.end(), [name](const auto& prefab) {
       return prefab.name == name;
