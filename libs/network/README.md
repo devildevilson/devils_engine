@@ -348,6 +348,16 @@ horizon вместе с authoritative anchor; `state_frame_header` содерж�
 
 ## Регулярная репликация
 
+### Схема компонентных значений
+
+[`component_wire_table`](include/devils_engine/network/component_wire.h) описывает значения,
+которые проект может передавать в компонентном формате. Регистрация в ECS checkpoint и объявление
+в сетевой таблице независимы. Проект замораживает сетевую таблицу до handshake и передаёт её
+fingerprint. В него входят ID типа, layout hash, revision и предел размера канонического значения.
+`component_wire_identity<T>` позволяет закрепить имя и ревизию, `component_wire_validation<T>` —
+проверить значение по правилам проекта. Codec использует `utils::serial` и принимает размер под
+явным лимитом. Частота доставки, выбор получателей и применение кадра принадлежат проекту.
+
 ### Baseline и delta
 
 Replication baseline — complete snapshot выбранного представления, но не обязательно полный causal

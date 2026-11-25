@@ -24,11 +24,8 @@
 
 // GN04 — ФОНОВЫЕ ТЕКСТУРЫ НА УСТРОЙСТВЕ.
 //
-// Случай выбран не наугад. `ORIGINATOR_GPGPU.md` §5 п.5 называет именно его, потому что здесь НЕ
-// МЕШАЕТ ни одна слабость очереди: результат остаётся на устройстве (передача не платится),
-// детерминизм не требуется (это ПРЕДСТАВЛЕНИЕ, а не симуляция), свёртка целочисленная (порядок
-// прихода групп не важен), цепочка короткая. Проверять конструкцию надо там, где её слабости ни при
-// чём — иначе замер меряет слабости.
+// Текстура предназначена для представления и остаётся на устройстве. Целочисленная свёртка
+// воспроизводима при любом порядке прихода групп.
 //
 // ПЛОЩАДКА НЕ СОДЕРЖИТ НИ ОДНОЙ СТРОКИ GLSL И НИ ОДНОЙ КОМАНДЫ VULKAN. Пайплайн приезжает конфигом,
 // как у остальных площадок кампании: буферы объявлены в `buffers.tavl`, пороги в `values.tavl`, а
@@ -105,8 +102,7 @@ originator::size_table make_sizes(const options& opts) {
   return sizes;
 }
 
-// Что ИЗ МАНИФЕСТА меняет площадка: путь исполнения и объявленную границу. Оба — числа конфига, а не
-// решения по машине: §6.4 требует, чтобы ветку выбирало объявление, одинаковое всюду.
+// Конфиг выбирает путь исполнения и объём readback.
 originator::pipeline_description load_description(const bool on_device, const bool download_all) {
   originator::pipeline_description description = generator().config.description;
   description.values.set_number("on_device", on_device ? 1.0 : 0.0);
@@ -352,8 +348,7 @@ int run_verify(const options& opts) {
   std::cout << "  выгрузка: " << plan->download_byte_count() << " байт против "
             << full_executor.last_plan()->download_byte_count() << "\n";
 
-  // 7. ТОТ ЖЕ ПАЙПЛАЙН НА CPU. Не «похожая проверка», а буквально та же очередь: путь на CPU обязан
-  //    существовать (§4.6), и переключает его одно число манифеста.
+  // 7. Та же очередь в CPU-конфигурации.
   const auto on_cpu = load_description(false, true);
   originator::pipeline host_run(on_cpu, sizes, opts.seed);
   run_pipeline(host_run, on_cpu, nullptr);
@@ -377,8 +372,7 @@ int run_verify(const options& opts) {
   std::cout << "  разметка: " << label_differences << " пикселей из " << pixels_count
             << " решены иначе (граничные)\n";
 
-  // 9. Плавающая часть совпадает в пределах float — и ровно до фильтра. §6.3 объявил точность фильтра
-  //    implementation-defined, поэтому у сглаженного поля допуск ШИРЕ, и это не поблажка.
+  // 9. Допуск для сглаженного поля учитывает implementation-defined точность аппаратной фильтрации.
   double worst_edge = 0.0;
   double worst_smoothed = 0.0;
   for (size_t i = 0; i < pixels_count; ++i) {
