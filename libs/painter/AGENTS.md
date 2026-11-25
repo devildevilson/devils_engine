@@ -37,12 +37,6 @@ Rendering и GPU assets, цель `devils_engine::painter`. Начинать с 
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Технический аудит 2026-11-07
 
 Минимальное устройство — Vulkan 1.0. 256 МиБ VRAM — диагностический ориентир; graphics_base и assets_base VMA allocators учитываются вместе,
@@ -52,4 +46,4 @@ GPU-измерения в техническом аудите не выполн�
 allocation/block bytes и counts по heap; `combine_memory_statistics` проверяет owners/device и складывает их.
 
 TECH-10 не требует слияния graphics/assets VMA: их owners различны. Per-owner/per-heap
-accounting реализован; правило не складывать process-wide heap budgets дважды — docs/review/LIFETIME_AND_RESOURCES.md.
+accounting реализован. При суммировании owners учитывай process-wide heap budgets один раз.

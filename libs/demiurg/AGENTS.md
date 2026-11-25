@@ -38,12 +38,6 @@ Public headers: `devils_public_headers`; `public_link_demiurg` линкует т
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Технический аудит 2026-11-07
 
 F-04/F-05 исправлены: ZIP проверяет byte counts/short read/CRC; listing использует filesystem

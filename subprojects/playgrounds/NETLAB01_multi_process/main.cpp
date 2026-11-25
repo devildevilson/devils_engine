@@ -346,8 +346,8 @@ int run_authority(const options& opts) {
     if (c.relevance_publications != 0)
       report.set("relevance.mean_size",
                  double(c.relevance_size_sum) / double(c.relevance_publications));
-    // Observed bytes per second, per follower, so the figure is comparable with
-    // the arithmetic budget in NETWORKING.md rather than with itself.
+    // Report bytes per second per follower for comparison with the encoder
+    // budget for one recipient.
     const uint64_t wall = monotonic_ms() - wall_origin;
     const uint64_t peers = schedule.followers == 0 ? 1 : schedule.followers;
     if (wall != 0) {

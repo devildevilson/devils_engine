@@ -11,8 +11,8 @@
 плохо видно, остались ли материки материками, легли ли пустыни в пояса и похож ли рельеф на рельеф.
 
 Правила axis/velocity/wind/insolation/interaction/hotspots/moisture теперь заданы DS-ресурсами;
-собственных native tools у GN02 нет. Общие component/gather/neighbourhood механизмы и
-контрольные bytes описаны в [P2 review](../../../docs/review/P2_ORIGINATOR_MIGRATION.md).
+собственных native tools у GN02 нет. Общие component/gather/neighbourhood механизмы описаны
+в [README originator](../../../libs/originator/README.md).
 
 ## Вопрос площадки
 

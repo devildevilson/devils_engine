@@ -7,9 +7,7 @@
 транспорт, журнал тиков и повторный вход взяты из движка, проект добавляет только свои сообщения и
 смысл канонических записей.
 
-Карта правки — [AGENTS.md](AGENTS.md). Решения и разбор закрытия — [docs/review/FRONTIER_ONLINE_CLOSING_AUDIT.md](../../docs/review/FRONTIER_ONLINE_CLOSING_AUDIT.md),
-байты протокола — [NETWORK_FRONTIER_ONLINE.md](../../docs/review/NETWORK_FRONTIER_ONLINE.md),
-план устойчивости к враждебным участникам — [NETWORK_FRONTIER_ONLINE_PLAN.md](../../docs/review/NETWORK_FRONTIER_ONLINE_PLAN.md).
+Карта правки — [AGENTS.md](AGENTS.md). Раскладку сообщений определяет [кодек проекта](src/net/protocol.cpp).
 
 ## Основные решения
 
@@ -213,10 +211,6 @@ OpenSSL (`network/secure_random.h`).
 (сервер читает только `resources/modules`); общие библиотеки обеих частей обязаны совпадать побайтно. `frontier_online_headless_package` и
 `frontier_online_client_package` — части по отдельности. Пакет несёт все разделяемые библиотеки,
 кроме glibc (`RPATH=$ORIGIN`; на Windows — DLL vcpkg и рантайм MSVC).
-
-CI (ветка `ci`): `frontier_online-linux-baseline` (без AVX, для серверов; проверяется под
-`qemu-x86_64 -cpu qemu64`), `frontier_online-linux-avx`, продукт `package-linux-product` (клиент avx +
-сервер baseline), `frontier_online-windows`.
 
 ## Проверки
 

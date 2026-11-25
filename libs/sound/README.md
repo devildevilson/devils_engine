@@ -237,10 +237,8 @@ Main сразу возвращает UI opaque handle на основе task id,
 
 ## Измерение CPU
 
-Несколько нагрузок 16/64/128/320 voices, PCM/WAV/MP3, update и mixing отдельно:
-[методика и результаты](../../docs/review/audio_cpu/README.md). Лимит проекта пока не выбран.
+Профилируй PCM/WAV/MP3 с разным числом voices, измеряя update и mixing по отдельности. Лимит задаёт проект.
 Cold startup измеряется отдельно: PCM decoder копирует source на каждый voice, ring refill
 декодирует вперёд. Из p95 warm cost нельзя выводить гарантию кадра при массовом запуске.
 
 Режимы и отдельные engine/project/debug файлы: [simul/CONFIGURATION.md](../simul/CONFIGURATION.md).
-Текущая небольшая нагрузка: [1/5 voices](../../docs/review/audio_cpu/SMALL_LOADS.md).

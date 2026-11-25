@@ -78,9 +78,7 @@ target_include_directories(tile_frontier_config_test PRIVATE
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
-# PRE-01 from NETWORKING.md deliberately probes the third-party transport before
-# a production adapter exists.  It links GNS directly and moves no GNS type into
-# an engine library.
+# The capability test links GNS directly to probe the third-party transport.
 devils_add_doctest(gamenetworking_sockets_capability_test gamenetworking_sockets_capability_test.cpp)
 target_link_libraries(gamenetworking_sockets_capability_test PRIVATE GameNetworkingSockets::static)
 
@@ -520,10 +518,4 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_test_build_dependencies.py ${CMAKE_BINARY_DIR}
       --manifest "${DEVILS_ENGINE_TEST_ARTIFACTS}" --config "$<CONFIG>" --ctest "${CMAKE_CTEST_COMMAND}")
   set_tests_properties(test_build_dependencies_contract PROPERTIES LABELS devils_engine)
-endif()
-
-if(Python3_Interpreter_FOUND)
-  devils_add_test(NAME project_task_ids_contract
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/inventory_project_tasks.py --check)
-  set_tests_properties(project_task_ids_contract PROPERTIES LABELS devils_engine)
 endif()

@@ -34,12 +34,6 @@ fixture. Нулевой exit headless теста не подтверждает �
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Native ownership и измерения
 
 - Один system-owned selected playback device, engine получает `pDevice` и фактические rate/channels;
@@ -52,8 +46,7 @@ fixture. Нулевой exit headless теста не подтверждает �
   Input frames и written output frames при resampling не смешивать в draining.
 - Минимум машины — 8 hardware threads, не cap процесса. Voice cap пока не выбран.
   PCM decoder копирует весь source на voice; учитывать cold/RAM peak отдельно от ring capacity.
-- 48 CPU series и методика: [audio_cpu](../../docs/review/audio_cpu/README.md).
-  `sound_cpu_probe` не CTest performance gate; запускать без параллельной сборки.
+- `sound_cpu_probe` не CTest performance gate; запускать без параллельной сборки.
   Offline CPU estimate не подтверждает hardware timing или качество звучания.
 
 ## Где выполняется mixing
@@ -64,4 +57,4 @@ Ring SPSC, один producer и один consumer, lifetime до stop callback; 
 Недостающий output = silence, callback не ждёт и не берёт graph work на себя. 50 ms ring даёт
 lookahead/задержку; progress относится к произведённому PCM. Mode не менять на живой системе.
 `system_config.output_buffer_seconds` задаёт owner ring; offline render проверяет тот же sink path.
-[Runtime settings](../simul/CONFIGURATION.md), [актуальные 1/5 voice measurements](../../docs/review/audio_cpu/SMALL_LOADS.md).
+[Runtime settings](../simul/CONFIGURATION.md).

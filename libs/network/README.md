@@ -557,6 +557,9 @@ view — до следующей мутации; in-memory consume value — д�
 
 ## Чего пока нет
 
+Список относится к переиспользуемому слою библиотеки. [frontier_online](../../subprojects/frontier_online/README.md)
+компонует собственные join, canonical tick delivery и rejoin поверх этого слоя.
+
 - общего project-facing `network_session_system`, компонующего transport, handshake, tick integration
   и recovery в main loop;
 - project payload codec и live session route для bounded `canonical_tick_wire`, production wire

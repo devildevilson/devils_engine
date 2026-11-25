@@ -64,5 +64,3 @@ Progress/finished в owner mode относятся к уже произведё�
 Прямой API: `sound::system_config::mixing` и `output_buffer_seconds`.
 Offline `owner`: update производит PCM, render его потребляет; offline `device`: render вызывает
 native graph непосредственно. Это позволяет проверять обе ветки без физического audio device.
-
-[Замеры 1/5 источников](../../docs/review/audio_cpu/SMALL_LOADS.md).

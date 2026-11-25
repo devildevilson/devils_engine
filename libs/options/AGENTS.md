@@ -25,15 +25,9 @@ Compile/link policy, а не разбор аргументов executable. Ед�
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Технический аудит 2026-11-07
 
-Замер O2/O3 selected field/column/codec kernels — в TECHNICAL_AUDIT.md и raw JSON.
+Локальный замер O2/O3 охватывал selected field/column/codec kernels.
 Рекомендация — сохранить Release O3: O2 не решает превышение data memory. MinSizeRel сейчас
 получает O3 поверх Os — это открытая ошибка профиля; MSVC /ZI требует отдельной проверки.
 256 МиБ — диагностический runtime ориентир, CPU минимум — 8 аппаратных потоков.

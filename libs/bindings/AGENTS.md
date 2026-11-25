@@ -30,12 +30,6 @@
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Технический аудит 2026-11-07
 
 Production API — data_conversion.h в bindings_base: to_lua/from_lua (reflect), tavl_to_lua/

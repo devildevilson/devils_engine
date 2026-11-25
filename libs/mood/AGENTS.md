@@ -25,12 +25,6 @@ FSM store и отдельные runtime conventions. Цель `devils_engine::mo
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Технический аудит 2026-11-07
 
 Нативные resource transitions уже без кавычек, actions в tuple; tavl v1.1.2 это поддерживает.

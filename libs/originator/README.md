@@ -40,7 +40,7 @@
 приходят из параметров шага как `ctx:arg:имя` или `param_имя`. Vector inputs читаются как
 `name_x/y/z/w`; список `program` задаёт группу scalar/vector outputs. Read-only gather над явно
 названным соседством/other domain — отдельный `gather_script`, с собственными проверками.
-Контракты и примеры миграции — [P2 review](../../docs/review/P2_ORIGINATOR_MIGRATION.md).
+Примеры применения есть в [GN02](../../subprojects/playgrounds/GN02_planet_generator/README.md).
 
 **Сцепить несколько проходов в одну единицу.** Объявить их через `originator.queue.*` и отдать
 `originator.queue{ ..., output = {...} }`. Получается: проверка всей цепочки до первого вызова,
@@ -1472,4 +1472,4 @@ Whitelist проверяется при создании хоста: пропа�
 не привязаны к OS thread. Контекст эксклюзивен во время вызова. `context.release()` освобождает
 capacity/hosts после drain, пока pool жив; внешний контекст освобождается до удаления chain.
 Root API без context использует pool самой chain, освобождаемый `chain.release_contexts()`.
-Кэш результатов имеет отдельный lifetime. Детали: [review](../../docs/review/LIFETIME_AND_RESOURCES.md).
+Кэш результатов имеет отдельный lifetime.

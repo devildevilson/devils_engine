@@ -55,18 +55,11 @@
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Технический аудит 2026-11-07
 
 Восемь аппаратных CPU-потоков — минимум машины, не cap процесса. Main/systems/pool/native
 backends учитываются раздельно; hardware_concurrency minus reserved — не общий thread budget. Host владеет
 thread и RAM/job admission budgets, не добавляя scheduler внутрь originator.
-Открытые TECH-03/04 и измерения — в TECHNICAL_AUDIT.md.
 
 ## Владельцы конфигурации
 

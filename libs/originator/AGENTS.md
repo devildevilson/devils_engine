@@ -283,7 +283,6 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
   межпоточного deadlock. Не добавлять внешний scheduler поверх parallel fan-in/helping waits.
 - Смена миров GN09 исторически разрешила изменение seed result; это не отменяет детерминизм
   одного описания и независимость от порядка чанков. Обещания мира GN09 — в его README.
-- Новая очередь — [TASKS.md](../../TASKS.md), аудит — [PROJECT_AUDIT.md](../../PROJECT_AUDIT.md).
 
 ## Технический аудит 2026-11-07
 
@@ -292,7 +291,7 @@ ctest --test-dir build-release -R originator --output-on-failure -j 4
 F-02 исправлен: script_host устанавливает critical-error policy и проверяет latch после
 защищённых вызовов. utils::critical_error доходит до host даже через pcall/xpcall/coroutine.
 Lua hosts и scratch принадлежат явным contexts. Allocation admission принадлежит host; не вводить
-новый scheduler поверх tools/chain. См. TECHNICAL_AUDIT.md и TECH-02/03/11.
+новый scheduler поверх tools/chain.
 
 ## Владение execution state
 
@@ -306,13 +305,10 @@ Lua hosts принадлежат context, не OS thread. Внешний context
 `column_program::run` требует `column_workspace&`, `run_once` — одноразовый вариант.
 Повторные point queries используют `field_workspace&` либо sampler; default overload создаёт
 временный scratch. Вложенный query получает стабильный frame, не перезаписывает scratch parent.
-Не двигать/не release активный workspace. Карта и проверки —
-[review](../../docs/review/LIFETIME_AND_RESOURCES.md).
+Не двигать и не освобождать активный workspace.
 
 ## Аудит инструментария GN
 
-[Карта algorithms/adapters и gaps](../../docs/review/GN_ORIGINATOR_TOOLS.md),
-`python3 docs/review/originator_tools/inventory_originator_tools.py --check` — lexical inventory, не runtime trace.
 Перед новым тематическим tool проверить выразимость через component/lookup/neighbourhood
 и существующие kernels. Разные имена могут делить одно ядро: collapse уже так устроен;
 общие CPU neighbourhood kernels ещё не означают общую device eligibility. Source-находки
@@ -335,5 +331,5 @@ Lua hosts принадлежат context, не OS thread. Внешний context
 - Small-set Lua algorithms встроены из `src/originator/algorithms.lua` при CMake configure;
   доступны как originator.algorithms. Rules/profile/bounds остаются у consumer.
   Никаких тайных heaps на OS thread; propagate требует явный visit budget.
-- [Контракты и evidence](../../docs/review/P2_ORIGINATOR_MIGRATION.md). Проверять native formula
+- Проверять native formula
   oracle, queue refusals, GLSL compile без GPU и GN package bytes отдельно от campaigns.

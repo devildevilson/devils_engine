@@ -6,8 +6,8 @@
 Lua/Nuklear UI, звук, AI-планирование, FSM, межпоточные каналы и общий lifecycle
 крупных подсистем.
 
-Этот README сейчас описывает только `libs/`. Папку `tests/`, особенно
-`subprojects/tile_frontier`, стоит разобрать отдельным документом позже.
+Этот README описывает `libs/`. Эксперименты собраны в [каталоге площадок](subprojects/playgrounds/README.md),
+сетевые контракты — в [NETWORKING.md](NETWORKING.md), тесты движка — в `subprojects/tests`.
 
 Цель файла - дать общую картину для человека: что за подпроект перед тобой,
 зачем он нужен, насколько он живой, с чем связан и как им пользоваться на уровне
@@ -601,7 +601,7 @@ catalogue::domain<domain::gameplay>::set_introspection(&intro);
   `DE_LOG(domain, DEPTH, fmt, …)` гейтится relaxed-атомиком (near-zero когда off,
   и в release); `DE_TRACE` = глубина trace + захват `file:line`.
 - **Runtime-переключение** (работает в release): `app.set_log_level("sound","trace")`
-  из lua/app или секция `logging` в `app.tavl`. `catalogue::init_logging(file, console)`
+  из lua/app или секция `logging` в `debug.tavl`. `catalogue::init_logging(file, console)`
   поднимает spdlog console + rotating file.
 
 Старый buffer/registry/channel/RPC/demo прототип все еще лежит в библиотеке, но

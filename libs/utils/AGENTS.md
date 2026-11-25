@@ -45,15 +45,9 @@
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.
 Выбирать проверки по изменению; полный прогон всей библиотеки ради правки текста не нужен.
 
-## Память и задачи
-
-Открытые работы и сверка прежних списков — [TASKS.md](../../TASKS.md), аудит —
-[PROJECT_AUDIT.md](../../PROJECT_AUDIT.md). Новые контракты записывать здесь; актуальные проверки и открытые решения — в audit/review.
-История разработки не является обязательной памятью проекта.
-
 ## Технический аудит 2026-11-07
 
-Ориентир ресурсов и critical-error policy — в корневом AGENTS и TECHNICAL_AUDIT.md.
+Ориентир ресурсов и critical-error policy — в корневом AGENTS.
 Исправлены F-01 (pool teardown: drain + join до разрушения членов), F-03 (move переносит
 выданные blocks; source пуст), F-08 (variadic min). Регрессии: thread_general_test,
 fixed_pool_move_test, utils_contract_test. Destruction требует остановленных producers.

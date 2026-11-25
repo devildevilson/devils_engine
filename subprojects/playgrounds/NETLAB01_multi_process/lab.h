@@ -430,8 +430,7 @@ inline constexpr uint16_t lab_relevant_capacity = 32;
 // Tuned so the set is comfortably larger than `lab_near_slots`: with a radius
 // that left fewer than eight entities relevant, the FAR class never had
 // anything to send and its declared age bound was therefore exceeded on almost
-// every tick. The counter was right and the stand was wrong — see the note in
-// NETWORKING_STATUS.md about what a receiver cannot yet know.
+// every tick. The age bound applies once the receiver can know about the sample.
 inline constexpr double lab_relevance_enter_units = 150.0;
 inline constexpr double lab_relevance_leave_units = 180.0;
 // The set changes slower than the transforms do, which is not an approximation

@@ -41,4 +41,4 @@ project look остаются у своих лабораторий.
 первые два consumer. CLI schema остаётся в executable; общий механизм не задаёт игру, семантику
 seed или выбор CPU/device. Для нового option добавлять описание в CLI11, не отдельную строку
 ручного help. Тест executable boundary — `common/tests/cli_contract.py`, CTest
-`playground_cli_contract`. Остальные площадки переносятся по [TASKS.md](../../../TASKS.md).
+`playground_cli_contract`.

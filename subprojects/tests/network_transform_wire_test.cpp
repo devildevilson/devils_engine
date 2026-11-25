@@ -24,9 +24,8 @@ constexpr uint8_t class_refresh = 3; // the periodic full pass the age bound nee
 constexpr net::transform_field_layout point_and_turn{3, true};
 
 net::transform_layout_table make_layouts() {
-  // Cadence is a FREQUENCY, and the engine ticks at 60 Hz (TIME-02), so the
-  // interval in ticks is that frequency's reciprocal rather than the number
-  // printed in NETWORKING.md's 20 Hz table. The phases differ deliberately:
+  // Convert cadence to an interval by dividing the 60 Hz tick rate by
+  // the publication frequency. The phases differ deliberately:
   // NET-LAB-01 had to learn that two classes sharing a phase turn a staggered
   // schedule back into a synchronous one.
   const std::array<net::transform_class_layout, 3> declared{

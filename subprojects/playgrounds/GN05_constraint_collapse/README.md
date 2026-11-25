@@ -320,4 +320,3 @@
 нулевые размеры отвергаются (для GN05 минимальная сторона — 2, отрицательные overrides — только -1).
 
 Общий smoke: `ctest --test-dir build-release -R playground_cli_contract --output-on-failure`.
-План остальных переносов — [TASKS.md](../../../TASKS.md).

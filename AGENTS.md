@@ -8,17 +8,13 @@
 
 - [README.md](README.md) — русскоязычная карта библиотек для человека.
 - `libs/<name>/AGENTS.md` — карта правки конкретной библиотеки: файлы, контракты, проверки.
-- [TASKS.md](TASKS.md) — текущая очередь и результаты сверки старых задач.
-- [PROJECT_AUDIT.md](PROJECT_AUDIT.md) — обзор структуры/документации.
-- [TECHNICAL_AUDIT.md](TECHNICAL_AUDIT.md) — ресурсы, ошибки, зависимости и измерения 2026-11-07.
-- [ROADMAP.md](ROADMAP.md) — каталог движковых контрактов; [ROADMAP_ULT.md](ROADMAP_ULT.md) — дальний горизонт.
-- [subprojects/playgrounds/README.md](subprojects/playgrounds/README.md) — каталог площадок;
-  [PLAYGROUNDS.md](PLAYGROUNDS.md) — указатель на единый каталог.
-- `NETWORKING.md`, `NETWORKING_COMPONENTS.md`, `NETWORKING_STATUS.md` — networking design и журнал.
-- `ORIGINATOR_ULT.md`, `ORIGINATOR_GPGPU.md` — направления генератора; фактический API — в
-  `libs/originator/README.md`, заголовках и тестах.
+- [subprojects/playgrounds/README.md](subprojects/playgrounds/README.md) — каталог площадок.
+- [NETWORKING.md](NETWORKING.md) — общие сетевые контракты. API и композиция сессии — в README
+  `libs/network` и `subprojects/frontier_online`.
+- [originator](libs/originator/README.md) — API генератора. Подробности экспериментов есть в README площадок.
 - [Engine/project/debug settings](libs/simul/CONFIGURATION.md) — владельцы файлов, overrides и audio modes.
-- [Владение и ресурсы](docs/review/LIFETIME_AND_RESOURCES.md) — контексты исполнения, VMA accounting и audio ownership.
+- `docs/` — локальные рабочие записи, если папка есть в checkout. Вход через `docs/README.md`,
+  открытая очередь в `docs/TASKS.md`, протоколы измерений и аудиты в `docs/review/` и `docs/audit/`.
 - Историю разработки не накапливать в AGENTS; хранить актуальные контракты и воспроизводимые проверки.
 
 ## Границы библиотек
@@ -54,8 +50,8 @@
   статусом/данными. Не превращать их в fatal error только ради общей формы API.
 - Cleanup/перенос уже критической ошибки через future допустим; swallowing в Lua/host с последующим
   успешным publish — дефект. Диагностический logger сам по себе ещё не гарантирует остановку.
-- Открытые P0/P1 и протоколы — в TECHNICAL_AUDIT.md и TASKS.md. Negative audit probes не являются
-  зелёной приёмкой engine; не выдавать source-site counts за полное покрытие ошибок.
+- Результат negative audit probe фиксирует конкретный отказ. Source-site counts показывают число
+  найденных точек; полноценная приёмка требует отдельной проверки затронутых исполнений.
 
 ## Текущий контекст генератора
 
@@ -81,8 +77,8 @@ GN09 (закрыта 2026-11-13) использует chain, Lua/TAVL/DS; пре
   При намеренном изменении назвать новую гарантию и подходящий consumer-тест.
 - sol2: биндинги через именованные функции/методы; одинаковые сигнатуры разных lambda из одной
   функции могут столкнуться в metatable `__gc`. См. `libs/originator/AGENTS.md`.
-- Новая запись в AGENTS — актуальный контракт/ловушка/команда. Длинные протоколы измерений и
-  результаты проверок помещать в audit/review, задачи — в TASKS; не наращивать корневую память журналом.
+- Новая запись в AGENTS — актуальный контракт, ловушка или команда. Длинные протоколы измерений,
+  результаты проверок и очередь задач вести в локальной `docs/`.
 
 ## Сборка и проверка
 

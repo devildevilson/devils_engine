@@ -53,4 +53,4 @@ state, что uninterrupted authority. State-frame sequence acceptance отде�
 
 In-memory link моделирует наблюдаемые обещания backend, а не его внутренний протокол. NET-08C прогоняет
 те же causal checkpoint/replay типы из `causal_fixture.h` через prepared in-memory bytes и реальный GNS,
-не меняя schema/replay code. Результаты записаны в корневом `NETWORKING_STATUS.md`.
+через общий schema/replay code. Фикстура — [network_backend_session_test](../../tests/network_backend_session_test.cpp).
