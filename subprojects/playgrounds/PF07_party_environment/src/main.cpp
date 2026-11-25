@@ -840,7 +840,7 @@ int main(int argc, char** argv) {
   options selected;
   if (!parse_options(argc, argv, selected)) return 0;
 
-  const std::string text = file_io::read(selected.config_path, file_io::type::text);
+  const std::string text = file_io::read_text(selected.config_path).value_or(std::string{});
   if (text.empty()) {
     utils::warn("PF07 could not read celestial config '{}'", selected.config_path);
     return 2;

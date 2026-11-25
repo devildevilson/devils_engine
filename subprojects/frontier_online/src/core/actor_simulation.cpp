@@ -27,15 +27,15 @@
 #include <devils_engine/utils/string_id.h>    // utils::string_hash
 #include <devils_script/system.h>
 
-#include "actor_simulation.h"
+#include "core/actor_simulation.h"
 #include "core/actor_checkpoint.h"
 
 // glm-адаптеры сериализации + регистрация ВСЕХ компонентов в реестр serial (SERIALIZABLE_COMPONENT).
 // Включён здесь, а не только в тестах, чтобы игровой бинарь сам умел save/load (регистрации линкуются
 // в этот TU) и чтобы сторонний дампер скаляров (sim_globals с glm::vec2) видел adapter<glm::vec2>.
 #include "core/actor_snapshot.h"
-#include "entity_scope.h" // seed_entity_scope — засев root-скоупа скрипт-предикатов
-#include "spawn_scope.h"  // scope_spawn_at — примитивный ds-спавн (регистрируется в building blocks)
+#include "core/entity_scope.h" // seed_entity_scope — засев root-скоупа скрипт-предикатов
+#include "core/spawn_scope.h"  // scope_spawn_at — примитивный ds-спавн (регистрируется в building blocks)
 
 namespace frontier_online {
 namespace core {
@@ -98,6 +98,8 @@ static constexpr uint64_t sated_seconds = 10; // игровых секунд с�
 // деградирует в полный обход) и задаёт модель ограниченного зрения: вне радиуса — не видим.
 // Меньше радиус → меньше площадь поиска → дешевле query (квадратично).
 static constexpr float perception_radius = 4.0f;
+// Пищи в мире не больше этого числа норм (food_target_): предел роста мира от кликов участников.
+static constexpr size_t player_food_limit = 4;
 
 namespace catalogue_domains {
 constexpr size_t actor_update_perf = 1;
@@ -519,8 +521,8 @@ const act::building_blocks& actor_building_blocks() {
     b.pure<&scope_prey_present>("prey_present");
     b.pure<&scope_prey_in_range>("prey_in_range");
     b.pure<&scope_prey>("prey");
-    b.pure<&scope_spawn>("spawn");
-    b.pure<&scope_spawn_at>("spawn_at");
+    b.scope_effect<&scope_spawn>("spawn");
+    b.scope_effect<&scope_spawn_at>("spawn_at");
     // Исключение в обход ds: is_eating — FSM-гвард, скриптам не нужен. Конфиг-скрипт с тем же
     // именем упадёт громко на install() — фолбэков нет, конфликт решается удалением записи отсюда.
     b.native<&predicate_is_eating>("is_eating");
@@ -561,9 +563,9 @@ struct deferred_effects {
 
 
 void actor_world_slice::setup_brain_registry() {
-  if (brain_runtime_->brains.is_hungry_program == nullptr || brain_runtime_->brains.fsms.empty() ||
-      brain_runtime_->brains.goaps.empty() || brain_runtime_->brains.prefabs.empty()) {
-    utils::error{}("frontier_online: actor_world_slice requires script, FSM set, GOAP set, and prefab config");
+  if (brain_runtime_->brains.fsms.empty() || brain_runtime_->brains.goaps.empty() ||
+      brain_runtime_->brains.prefabs.empty()) {
+    utils::error{}("frontier_online: actor_world_slice requires FSM set, GOAP set, and prefab config");
   }
 
   // пересоздаём реестр с нуля: reg() ассертит на повторную регистрацию имени,
@@ -571,9 +573,7 @@ void actor_world_slice::setup_brain_registry() {
   brain_runtime_->functions = act::registry{};
   brain_runtime_->goaps = acumen::registry{};
   brain_runtime_->fsms = mood::registry{};
-  brain_runtime_->goap_origins.clear();
-  brain_runtime_->functions.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
-                                     brain_runtime_->brains.is_hungry_program, &seed_entity_scope));
+  brain_runtime_->goap_names.clear();
   // ВАЖНО: на "is_eating" (внутри building blocks) ссылается СТРОКА FSM (mood) как гвард — парсер
   // mood не допускает точку в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик
   // "actor.*", которые в парсер mood не попадают и резолвятся по полному хешу строки).
@@ -658,23 +658,11 @@ void actor_world_slice::setup_brain_registry() {
 
 void actor_world_slice::build_goap_from_config(const std::string_view name, const acumen::goap_config& cfg) {
   // Имена act-функций — ГЛОБАЛЬНОЕ пространство слайса; несколько мозгов обычно наследуют одну
-  // базу, поэтому одноимённые метрики/действия дедупятся по origin (resource id, где элемент
-  // определён): одинаковый origin ⇒ копии одного скомпилированного скрипта — регистрируем первый,
-  // разный origin ⇒ конфликт имён между мозгами — громкая ошибка.
-  const auto reg_deduped = [this](const std::string& key, const std::string& origin, auto make_fn) {
-    const uint64_t hash = utils::string_hash(key);
-    for (const auto& [known, known_origin] : brain_runtime_->goap_origins) {
-      if (known == hash) {
-        if (known_origin != origin) {
-          utils::error{}("frontier_online: GOAP name '{}' is defined by both '{}' and '{}' — "
-                         "brains share act namespace, rename one of them",
-                         key, known_origin, origin);
-        }
-        return; // тот же origin: копия того же скрипта, уже зарегистрирован
-      }
+  // базу, поэтому одноимённые метрики/действия дедупятся по origin (acumen::goap_function_names).
+  const auto reg = [this](const std::string& key, const std::string& origin, auto make_fn) {
+    if (brain_runtime_->goap_names.claim(key, origin)) {
+      brain_runtime_->functions.reg(key, make_fn());
     }
-    brain_runtime_->goap_origins.emplace_back(hash, origin);
-    brain_runtime_->functions.reg(key, make_fn());
   };
 
   // Метрики ОПРЕДЕЛЯЮТ свои предикаты инлайн-скриптами: регистрируем каждый как script_function<bool>
@@ -682,7 +670,7 @@ void actor_world_slice::build_goap_from_config(const std::string_view name, cons
   // исполняется на per-worker execution_scratch; засев root-скоупа — seed_entity_scope. Контейнеры живут в
   // goap_config (shared_ptr в brain_runtime_->brains.goaps), поэтому заимствование &m.program валидно на всё время слайса.
   for (const auto& m : cfg.metrics) {
-    reg_deduped(m.key, m.origin, [&m] {
+    reg(m.key, m.origin, [&m] {
       return std::make_unique<act::script_function<bool>>(&m.program, &seed_entity_scope);
     });
   }
@@ -692,82 +680,15 @@ void actor_world_slice::build_goap_from_config(const std::string_view name, cons
   // every collect/elect commit lane.
   for (const auto& a : cfg.actions) {
     if (a.has_effect_program) {
-      reg_deduped(a.name, a.origin, [&a] {
+      reg(a.name, a.origin, [&a] {
         return std::make_unique<act::script_function<void>>(&a.effect_program, &seed_entity_scope);
       });
     }
   }
 
-  // Единое пространство имён битов: метрики (0..N-1, порядок = конфиг) + символические биты
-  // (next_state/goal, напр. "resolved") получают индексы ≥N при первой встрече. Линейный поиск — N крошечно.
-  std::vector<std::string> bit_names;
-  bit_names.reserve(cfg.metrics.size() + 4);
-  for (const auto& m : cfg.metrics) {
-    bit_names.push_back(m.key);
-  }
-
-  const auto bit_of = [&bit_names](const std::string& key) -> size_t {
-    for (size_t i = 0; i < bit_names.size(); ++i) {
-      if (bit_names[i] == key) {
-        return i;
-      }
-    }
-    bit_names.push_back(key);
-    return bit_names.size() - 1;
-  };
-
-  // "key" / "!key" / "not key" -> (ключ, значение бита). Пробелы обрезаем.
-  const auto parse_bit = [](std::string_view s) -> std::pair<std::string, bool> {
-    const auto trim = [](std::string_view v) {
-      while (!v.empty() && v.front() == ' ') {
-        v.remove_prefix(1);
-      }
-      while (!v.empty() && v.back() == ' ') {
-        v.remove_suffix(1);
-      }
-      return v;
-    };
-    s = trim(s);
-    bool value = true;
-    if (s.starts_with("!")) {
-      value = false;
-      s = trim(s.substr(1));
-    } else if (s.starts_with("not ")) {
-      value = false;
-      s = trim(s.substr(4));
-    }
-    return {std::string(s), value};
-  };
-
-  const auto build_ss = [&](const std::vector<std::string>& keys) {
-    acumen::scoped_state ss;
-    for (const auto& raw : keys) {
-      const auto [key, value] = parse_bit(raw);
-      ss.set(bit_of(key), value);
-    }
-    return ss;
-  };
-
-  std::vector<acumen::state_metric> metrics;
-  metrics.reserve(cfg.metrics.size());
-  for (const auto& m : cfg.metrics) {
-    metrics.emplace_back(m.key);
-  }
-
-  std::vector<acumen::action> actions;
-  actions.reserve(cfg.actions.size());
-  for (const auto& a : cfg.actions) {
-    actions.emplace_back(a.name, build_ss(a.requirements), build_ss(a.next_state), build_ss(a.weight_state));
-  }
-
-  std::vector<acumen::goal> goals;
-  goals.reserve(cfg.goals.size());
-  for (const auto& g : cfg.goals) {
-    goals.push_back(acumen::goal{g.name, build_ss(g.requirements), build_ss(g.goal)});
-  }
-
-  // резолвит предикаты (метрики) и эффекты (действия) по имени из brain_runtime_->functions, кидает при промахе.
-  brain_runtime_->goaps.add(name, acumen::system(&brain_runtime_->functions, std::move(metrics), std::move(goals), std::move(actions)));
+  // Нумерация битов и сборка system — в acumen; предикаты и эффекты резолвятся по имени из
+  // brain_runtime_->functions, промах — ошибка загрузки.
+  brain_runtime_->goaps.add(name, acumen::build_system(&brain_runtime_->functions, name, cfg));
 }
 
 // ── map-фазы на общем примитиве template_system + внешний run ──
@@ -856,25 +777,33 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   tick_ = 0;
   game_ticks_ = 0;
 
-  // СОЗДАЁМ аллокаторы пулов поедания заранее на ГЛАВНОМ потоке. Две причины: (1) view<>
-  // (в resolve_eating) кидает, если аллокатора нет, а компоненты появляются лишь при первом
-  // хвате; (2) component_type_id — sequential_type_id (присваивается при первом обращении),
-  // фиксируем его до любого MT-доступа. block_size как в world::create (sizeof(T)*250).
-  static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
-  static_cast<void>(world_.get_or_create_allocator<flag_set>(sizeof(flag_set) * 250));
-  static_cast<void>(world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250));
-
   // C2: границы для респавна еды, целевое число еды, кэш препятствий.
   spawn_min_ = min_bound;
   spawn_max_ = max_bound;
   texture_count_ = std::max(texture_count, 1u);
   food_target_ = std::max(count / 8u, 32u);
+
+  // Хранилища пулов поедания создаются заранее на ГЛАВНОМ потоке: view<> в resolve_eating падает
+  // без хранилища, а компоненты появляются лишь при первом хвате; component_type_id закрепляется
+  // до параллельного доступа. Ожидаемое число акторов и еды — память заранее (не предел).
+  world_.ensure_storage<actor_eating, flag_set, actor_grabbed>();
+  world_.reserve<actor_position>(size_t(count) + food_target_);
+  world_.reserve<actor_visual>(size_t(count) + food_target_);
+  world_.reserve<actor_velocity>(count);
+  world_.reserve<actor_brain>(count);
+  world_.reserve<actor_perception>(count);
+  world_.reserve<actor_cognition>(count);
+  world_.reserve<stats>(count);
+  world_.reserve<actor_state>(count);
   food_spawn_seq_ = 0;
   obstacles_.clear();
 
   player_entity_ = world_.gen_entityid();
-  world_.create<player_controller>(player_entity_);
+  world_.create<player_controller>(player_entity_, player_controller{0});
   world_.create<player_intent_queue>(player_entity_);
+  players_.assign(1, player_slot{0, player_entity_});
+  pending_joins_.clear();
+  pending_leaves_.clear();
 
   const uint32_t tex_count = std::max(texture_count, 1u);
   const glm::vec2 extent = max_bound - min_bound; // только для стартовой раскладки
@@ -940,8 +869,11 @@ actor_metrics actor_world_slice::update(const utils::simulation_tick tick,
   if (game_delta.ticks > std::numeric_limits<uint64_t>::max() - game_ticks_) {
     utils::error{}("actor_world_slice game time overflow");
   }
-  // Float dt remains the deliberate non-deterministic physics experiment, but it is derived only
-  // from an integer fixed step. Frame pacing can no longer change the sequence of integration dt.
+  // Шаг интеграции — float, но выводится только из целого фиксированного шага: темп кадров не меняет
+  // последовательность dt. Позиции входят в корень состояния, который сверяют разные процессы, поэтому
+  // float здесь обязан быть детерминированным: -ffp-contract=off / /fp:precise (libs/options) и
+  // корректно округляемый sqrt. Равенство между компиляторами доказывает только межплатформенная
+  // трасса CI, а не это место.
   game_ticks_ += game_delta.ticks;
   const float dt_seconds = float(game_delta.ticks) / float(utils::timeline_ticks_per_second);
   using build_sense_tree_perf = actor_perf_domain::fn_traits<
@@ -1439,45 +1371,120 @@ bool actor_world_slice::enqueue_player_intent(act::intent intent) {
   return true;
 }
 
-bool actor_world_slice::enqueue_canonical_intent(act::intent intent) {
-  if (!world_.exists(player_entity_) || intent.kind == act::intent_kind::none) {
+bool actor_world_slice::enqueue_canonical_intent(act::intent intent, const uint64_t peer) {
+  const auto player = player_of(peer);
+  if (player == aesthetics::invalid_entityid || intent.kind == act::intent_kind::none ||
+      std::find(pending_leaves_.begin(), pending_leaves_.end(), peer) != pending_leaves_.end()) {
     return false;
   }
-  auto* queue = world_.get<player_intent_queue>(player_entity_);
+  auto* queue = world_.get<player_intent_queue>(player);
   if (queue == nullptr) {
     return false;
   }
-  intent.actor.id = player_entity_;
+  intent.actor.id = player;
   queue->pending.push_back(intent);
   return true;
 }
 
-uint32_t actor_world_slice::apply_player_intents() {
-  auto* queue = world_.get<player_intent_queue>(player_entity_);
-  if (queue == nullptr) {
-    return 0;
+bool actor_world_slice::enqueue_canonical_join(const uint64_t peer) {
+  if (peer == 0 || player_of(peer) != aesthetics::invalid_entityid ||
+      std::find(pending_joins_.begin(), pending_joins_.end(), peer) != pending_joins_.end()) {
+    return false;
   }
+  pending_joins_.push_back(peer);
+  return true;
+}
 
-  uint32_t applied = 0;
-  for (const auto& intent : queue->pending) {
-    switch (intent.kind) {
-      case act::intent_kind::spawn_prefab: {
-        if (intent.payload.spawn.prefab != utils::string_hash("food")) {
-          utils::error{}("Player requested unknown prefab id 0x{:016x}", intent.payload.spawn.prefab);
-        }
-        const glm::vec2 target{
-          float(intent.payload.spawn.target.x),
-          float(intent.payload.spawn.target.y)};
-        spawn_prefab("food", glm::clamp(target, spawn_min_, spawn_max_));
-        applied += 1;
-        break;
-      }
-      case act::intent_kind::none: break;
-      default:
-        utils::error{}("Unsupported player intent kind {}", uint32_t(intent.kind));
+bool actor_world_slice::enqueue_canonical_leave(const uint64_t peer) {
+  const auto player = player_of(peer);
+  if (peer == 0 || player == aesthetics::invalid_entityid ||
+      std::find(pending_leaves_.begin(), pending_leaves_.end(), peer) != pending_leaves_.end()) {
+    return false;
+  }
+  const auto* queue = world_.get<player_intent_queue>(player);
+  if (queue == nullptr || !queue->pending.empty()) {
+    return false;
+  }
+  pending_leaves_.push_back(peer);
+  return true;
+}
+
+aesthetics::entityid_t actor_world_slice::player_of(const uint64_t peer) const noexcept {
+  const auto it = std::lower_bound(players_.begin(), players_.end(), peer,
+                                   [](const player_slot& slot, const uint64_t value) { return slot.peer < value; });
+  return it != players_.end() && it->peer == peer ? it->entity : aesthetics::invalid_entityid;
+}
+
+bool actor_world_slice::player_inputs_pending() const noexcept {
+  if (!pending_joins_.empty() || !pending_leaves_.empty()) {
+    return true;
+  }
+  for (const auto& slot : players_) {
+    const auto* queue = world_.get<player_intent_queue>(slot.entity);
+    if (queue == nullptr || !queue->pending.empty()) {
+      return true;
     }
   }
-  queue->pending.clear();
+  return false;
+}
+
+// Граница тика: сначала присоединения (в порядке записей тика), затем действия игроков по
+// возрастанию peer — тот же порядок, что (peer, sequence) канонического журнала, затем уходы.
+// Сущность нового игрока берёт id из аллокатора мира, а уход возвращает id ему же, поэтому у всех
+// участников id одни и те же.
+uint32_t actor_world_slice::apply_player_intents() {
+  for (const uint64_t peer : pending_joins_) {
+    const auto entity = world_.gen_entityid();
+    world_.create<player_controller>(entity, player_controller{peer});
+    world_.create<player_intent_queue>(entity);
+    const auto at = std::lower_bound(players_.begin(), players_.end(), peer,
+                                     [](const player_slot& slot, const uint64_t value) { return slot.peer < value; });
+    players_.insert(at, player_slot{peer, entity});
+  }
+  pending_joins_.clear();
+
+  uint32_t applied = 0;
+  for (const auto& slot : players_) {
+    auto* queue = world_.get<player_intent_queue>(slot.entity);
+    if (queue == nullptr) {
+      utils::error{}("frontier_online: player of peer {} lost its intent queue", slot.peer);
+    }
+    for (const auto& intent : queue->pending) {
+      switch (intent.kind) {
+        case act::intent_kind::spawn_prefab: {
+          if (intent.payload.spawn.prefab != utils::string_hash("food")) {
+            utils::error{}("Player requested unknown prefab id 0x{:016x}", intent.payload.spawn.prefab);
+          }
+          // Правило мира: пищи не больше player_food_limit норм. Без предела участник по протоколу
+          // растил бы мир без конца (до 2 записей на тик), пока checkpoint не перестанет пролезать
+          // в сеть. Предел выводится из канонического food_target_, поэтому одинаков у всех сторон;
+          // клик сверх него записан в журнал, но эффекта не имеет.
+          if (world_.count<food_item>() >= size_t(food_target_) * player_food_limit) break;
+          const glm::vec2 target{
+            float(intent.payload.spawn.target.x),
+            float(intent.payload.spawn.target.y)};
+          spawn_prefab("food", glm::clamp(target, spawn_min_, spawn_max_));
+          applied += 1;
+          break;
+        }
+        case act::intent_kind::none: break;
+        default:
+          utils::error{}("Unsupported player intent kind {}", uint32_t(intent.kind));
+      }
+    }
+    queue->pending.clear();
+  }
+
+  for (const uint64_t peer : pending_leaves_) {
+    const auto at = std::lower_bound(players_.begin(), players_.end(), peer,
+                                     [](const player_slot& slot, const uint64_t value) { return slot.peer < value; });
+    if (at == players_.end() || at->peer != peer) {
+      utils::error{}("frontier_online: leave of peer {} found no player at the tick boundary", peer);
+    }
+    world_.remove_entity(at->entity);
+    players_.erase(at);
+  }
+  pending_leaves_.clear();
   return applied;
 }
 
@@ -1574,6 +1581,9 @@ void actor_checkpoint_access::publish(actor_world_slice& actors, aesthetics::wor
   actors.commit_game_ticks_ = staged.causal.commit_game_ticks;
   actors.think_budget_ = std::size_t(staged.causal.think_budget);
   actors.player_entity_ = staged.player;
+  actors.players_ = std::move(staged.players);
+  actors.pending_joins_.clear();
+  actors.pending_leaves_.clear();
   actors.obstacles_ = std::move(staged.obstacles);
   actors.world_.replace_state(std::move(world));
 }

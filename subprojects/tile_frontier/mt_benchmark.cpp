@@ -73,7 +73,7 @@ run_result run(const size_t workers, const uint32_t entity_count,
 
   const auto step = [&]() {
     const auto tick = clocks.simulation_now() + devils_engine::utils::simulation_duration{1};
-    slice.update(tick, clocks.advance_simulation(tick), batch, pool);
+    slice.update(tick, clocks.advance_simulation(tick), &batch, pool);
   };
 
   for (size_t i = 0; i < warmup_ticks; ++i) {

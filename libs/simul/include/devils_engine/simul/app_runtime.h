@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include <devils_engine/simul/launch_arguments.h>
 #include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/systems.h>
 
@@ -48,13 +49,18 @@ public:
     main_.reset();
   }
 
-  int run() {
+  // arguments — разобранный argv из main; попадает в bootstrap до init_bootstrap (если у bootstrap
+  // есть поле `arguments`), дальше проект раздаёт свои опции системам при их создании.
+  int run(launch_arguments arguments = {}) {
     static_assert(std::is_base_of_v<main_base_type, main_type>);
 
     if constexpr (requires { Traits::make_bootstrap(); }) {
       bootstrap_ = Traits::make_bootstrap();
     } else {
       bootstrap_ = std::make_unique<bootstrap_type>();
+    }
+    if constexpr (requires { bootstrap_->arguments = std::move(arguments); }) {
+      bootstrap_->arguments = std::move(arguments);
     }
 
     Traits::init_bootstrap(*bootstrap_);

@@ -31,8 +31,13 @@
 
 ### Файлы, строки, время и локаль
 
-- `fileio.h` дает простые операции чтения/записи/append для строк, байтов и typed-векторов,
-  а также проверки `exists`, `size`, `is_directory`, `is_regular_file`.
+- `fileio.h` дает чтение, запись и append целого файла, а также проверки `exists`, `size`,
+  `is_directory`, `is_regular_file`. Проверки не бросают исключений. Чтение возвращает
+  `std::expected`: `read<Byte>(path)` — байты в двоичном режиме (`std::byte` по умолчанию,
+  `uint8_t`, `char`); `read_text(path)` — строка в текстовом режиме. Ошибка
+  `read_error` различает `not_found`, `not_regular` и `read_failed`, `describe` даёт текст.
+  Пустой файл — годный пустой результат. Что из ошибок критично, решает вызывающий: кэш
+  считает их промахом, файл, найденный листингом модуля, — `utils::error`.
 - `atomic_file.h` дает same-directory RAII-транзакцию для durable replacement. Writer
   эксклюзивно создаёт `target.tmp`, пишет данные, flush-ит файл, атомарно заменяет target и
   синхронизирует parent directory. До commit старая версия остаётся authoritative;
@@ -52,12 +57,18 @@
 ### Хеши, id и случайные числа
 
 - `hash.h` содержит constexpr-миксеры и Murmur3 x86 32-bit для строковых id.
-- `deterministic_math.h` содержит scalar `sin/cos/sin_cos`, адаптированные из Jolt Physics 5.6.0
-  с сохранённой MIT attribution. Они не зовут platform libm и побитово сверяются с Jolt corpus;
-  `devils_engine::options` отключает FP contraction у всех C++ consumers. Cody-Waite reduction
-  принимает только конечные углы с `abs(angle) <= 100000`; вне диапазона возвращается canonical
-  NaN, а caller должен сначала нормализовать угол. Это начало численного контракта, не обещание,
-  что произвольная floating-point функция уже детерминирована.
+- `deterministic_math.h` — функции с одинаковыми битами на всех платформах, в отличие от libm
+  (glibc 2.39 / 2.41–2.43 / 2.44 дают три разных набора, MSVC CRT — четвёртый):
+  - float `sin/cos/sin_cos` адаптированы из Jolt Physics 5.6.0 (MIT attribution сохранена) и
+    побитово сверяются с Jolt corpus. Cody-Waite reduction принимает только конечные углы с
+    `abs(angle) <= 100000`; вне диапазона — canonical NaN, caller сначала нормализует угол;
+  - double `sin cos tan asin acos atan atan2 exp exp2 expm1 log log2 log10 log1p pow hypot cbrt
+    sinh cosh tanh asinh acosh atanh` в `src/utils/deterministic_math.cpp` —
+    дословный порт musl 1.2.5 (fdlibm/FreeBSD msun и ARM optimized-routines; MIT и уведомление Sun),
+    побитово равен libm musl. Полный диапазон аргументов, < 1 ULP; любой NaN на выходе — один
+    canonical NaN. Float-аргумент выбирает перегрузки Jolt, double — порт.
+  `devils_engine::options` отключает FP contraction у всех C++ consumers — без этого контракта нет.
+  Не перенесены: float-варианты вне sin/cos (берите double), erf/gamma, fmod/sqrt не нужны — точны.
 - `deterministic_sort.h` содержит фиксированную quicksort/insertion-sort реализацию из Jolt вместо
   platform-dependent `std::sort`. Она намеренно не stable: canonical caller обязан добавить
   tie-breaker, если эквивалентные элементы различимы. Каноническая сериализация map уже использует её.
@@ -70,6 +81,8 @@
   функции смешивания seed.
 - `dice.h` строит поверх PRNG броски кубиков и выбор интервала.
 - `sha256.h`/`sha256cpp.h` дают C и C++ обертки SHA-256.
+- `hmac.h` — HMAC-SHA256 поверх них: конкретный примитив для внедряемых MAC-политик
+  (`network/credential.h` примитив не выбирает; потребители — frontier_online и NETLAB01).
 
 ### Сериализация и сжатие
 
@@ -80,6 +93,8 @@
   scratch, который нельзя публиковать. Входные spans не должны ссылаться на выходной буфер.
   Reader ограничивает байты, число декодируемых значений и глубину (`decode_limits`),
   принимает только 0/1 для bool/presence. Он изменяет кандидат, а не обеспечивает rollback.
+- `serial_glm.h`: канонические `adapter<glm::vec2/3/4>` (`"glm.vec2f"`...); имена входят в
+  layout-хеш и отпечатки схем, менять их — менять байты у всех потребителей.
 - `state_schema.h`: полный документ из явно версионированных секций с устойчивыми id.
   `write(host, document, section_scratch)` переиспользует обе capacity и допускает рост;
   `try_write` — ограниченный вариант. Декодирование и проверки идут в `Host::staging_type`,
@@ -284,11 +299,9 @@ back, elastic, bounce плюс linear) переводят долю пройде�
    аллокаторы, spatial query, string_pool/hash collision policy, compression roundtrip и новый
    aggregate serializer.
 
-9. Пересмотреть контракт `file_io`.
-   Функции чтения/записи и проверки файловой системы лучше перевести на возврат кода ошибки
-   или `std::expected`-подобного результата вместо выбрасывания исключений/фатальных ошибок.
-   Это сделает инструмент пригоднее для загрузчиков ресурсов, редакторских сценариев и
-   фоновых потоков, где ошибка файла должна быть обычным результатом операции.
+9. Довести контракт `file_io` до записи.
+   Чтение уже возвращает `std::expected` с `read_error`; запись и append пока отвечают
+   `bool` без причины, а `create_directory` может бросить исключение.
 
 ## Narrow utility headers
 

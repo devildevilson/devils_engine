@@ -5,21 +5,21 @@
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/time-utils.hpp>
 
-#include "assets_system.h"
-#include "broker.h"
-#include "config.h"
-#include "render_system.h"
-#include "runtime.h"
-#include "simulation.h"
-#include "frame_capture.h"
-#include "frontier_online_game.h"
-#include "world_scene_resource.h"
+#include "core/assets_system.h"
+#include "core/broker.h"
+#include "core/config.h"
+#include "core/render_system.h"
+#include "core/runtime.h"
+#include "core/simulation.h"
+#include "core/frontier_online_game.h"
+#include "core/world_scene_resource.h"
 
 namespace frontier_online {
 namespace core {
 
 using namespace devils_engine;
 
+// Начальный шаг до чтения настроек: host_init заменяет его частотой из конфигурации движка.
 constexpr size_t main_frame_time = utils::round(
   double(utils::global_time_resolution) * (1.0 / 20.0));
 
@@ -59,9 +59,8 @@ void simulation::init() {
 }
 
 bool simulation::stop_predicate() const {
-  // Снятый кадр — законная причина закончить: стенд запускается из скрипта, и висящее окно после
-  // съёмки означало бы, что скрипт ждёт вечно.
-  return host_stop_predicate() || capture_request().finished();
+  // Снимок по --dump заканчивает процесс через request_quit (on_frame_captured).
+  return host_stop_predicate();
 }
 
 void simulation::update(const size_t time) {
@@ -70,6 +69,18 @@ void simulation::update(const size_t time) {
 
 void simulation::workers_started() {
   host_workers_started();
+  const auto& capture = bootstrap()->launch.capture;
+  if (capture.wanted() && !request_frame_capture(capture.path, capture.at_frame)) {
+    utils::error{}("frontier_online: the capture queue refused the --dump request at startup");
+  }
+}
+
+void simulation::on_frame_captured(const simul::command_frame_captured& result) {
+  const auto& capture = bootstrap()->launch.capture;
+  if (!capture.wanted() || !capture.exit_after || result.path != capture.path) {
+    return; // снимок клавишей или --stay: лог уже написан производителем
+  }
+  request_quit(result.ok ? 0 : 1);
 }
 
 void simulation::runtime_settings_reloaded() {
@@ -86,6 +97,15 @@ void simulation::project_init() {
 demiurg::resource_system* simulation::asset_registry() {
   auto& state = this->state();
   return state.assets_sim != nullptr ? state.assets_sim->resources() : nullptr;
+}
+
+void runtime_traits::init_bootstrap(bootstrap_type& boot) {
+  simul::standard_app_runtime_traits<app_config_resource>::init_bootstrap(boot);
+  std::string problem;
+  if (!parse_launch_options(boot.arguments, boot.launch, problem)) {
+    // main проверяет аргументы до запуска; сюда доходят только уже проверенные.
+    utils::error{}("frontier_online: launch arguments refused after main accepted them: {}", problem);
+  }
 }
 
 simul::worker_systems<runtime_traits::broker_type> runtime_traits::make_workers(
@@ -126,6 +146,7 @@ void simulation::begin_project_loading() {
     .viewport_width = state.fb_width,
     .viewport_height = state.fb_height,
     .assets_available = systems().assets,
+    .join = bootstrap()->launch.join,
   });
 }
 

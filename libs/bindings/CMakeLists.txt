@@ -8,16 +8,8 @@ project(
   LANGUAGES CXX
 )
 
-if (MSVC)
-  # windows: prebuilt lua54 (см. WIN32-блок ниже)
-  set(DEVILS_LUA_LIBRARIES lua54)
-else()
-  # sol2 больше не поддерживается и не умеет lua5.5. find_package(Lua) на этой системе
-  # цепляет несовместимую liblua5.5 при заголовках 5.4, поэтому берем строго lua5.4 через pkg-config.
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(lua54 REQUIRED IMPORTED_TARGET lua5.4)
-  set(DEVILS_LUA_LIBRARIES PkgConfig::lua54)
-endif()
+# Lua 5.4 (sol2 не умеет 5.5): одна цель на весь движок, выбор источника — в корневом CMakeLists.
+set(DEVILS_LUA_LIBRARIES devils_engine::lua54)
 
 # БАЗОВЫЕ функции lua — ОТДЕЛЬНАЯ цель, и это не косметика сборки. В них нет ничего от интерфейса
 # (только utils: prng, dice, упаковка, очереди), зато нужны они и тем, у кого интерфейса нет вовсе —
@@ -42,11 +34,6 @@ target_link_libraries(devils_bindings_base
 target_include_directories(devils_bindings_base PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_bindings_base PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/bindings>")
 
-if (WIN32)
-  target_link_directories(devils_bindings_base PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54)
-  target_include_directories(devils_bindings_base PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54/include)
-endif()
-
 add_library(devils_engine::bindings_base ALIAS devils_bindings_base)
 
 set(SRC_LIST
@@ -66,10 +53,5 @@ target_link_libraries(devils_bindings
 target_include_directories(devils_bindings INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_bindings PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/bindings>")
 target_include_directories(devils_bindings PRIVATE "${nuklear_SOURCE_DIR}")
-
-if (WIN32)
-  target_link_directories(devils_bindings PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54)
-  target_include_directories(devils_bindings PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/lua54/include)
-endif()
 
 add_library(devils_engine::bindings ALIAS devils_bindings)

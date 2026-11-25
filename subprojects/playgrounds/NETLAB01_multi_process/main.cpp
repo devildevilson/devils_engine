@@ -2,6 +2,8 @@
 #include "follower.h"
 #include "report.h"
 
+#include <devils_engine/network/endpoint.h>
+
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -138,11 +140,6 @@ std::string_view wire_version_name(const uint16_t value) noexcept {
   return "breaking";
 }
 
-struct endpoint_value {
-  uint32_t host = 0;
-  uint16_t port = 0;
-};
-
 std::chrono::seconds wall_deadline(const options& opts) {
   if (opts.deadline_s != 0) return std::chrono::seconds(opts.deadline_s);
   return std::chrono::seconds(opts.endpoint.empty() ? 60 : 900);
@@ -153,45 +150,7 @@ std::string dotted_quad(const uint32_t host) {
          std::to_string((host >> 8) & 0xffu) + '.' + std::to_string(host & 0xffu);
 }
 
-// Dotted quad to the host order GNS wants. A laboratory parser: refusing
-// anything it does not understand is the whole of its error handling.
-std::optional<uint32_t> parse_ipv4(const std::string_view text) {
-  uint32_t value = 0;
-  size_t start = 0, parts = 0;
-  while (parts < 4) {
-    const auto dot = text.find('.', start);
-    const auto piece = text.substr(start, dot == std::string_view::npos ? dot : dot - start);
-    if (piece.empty() || piece.size() > 3) return std::nullopt;
-    unsigned octet = 0;
-    for (const char c : piece) {
-      if (c < '0' || c > '9') return std::nullopt;
-      octet = octet * 10 + unsigned(c - '0');
-    }
-    if (octet > 255) return std::nullopt;
-    value = (value << 8) | octet;
-    ++parts;
-    if (dot == std::string_view::npos) break;
-    start = dot + 1;
-  }
-  return parts == 4 ? std::optional(value) : std::nullopt;
-}
-
-std::optional<uint32_t> parse_ipv4(const std::string_view text);
-
-std::optional<endpoint_value> parse_endpoint(const std::string_view text) {
-  const auto colon = text.rfind(':');
-  if (colon == std::string_view::npos || colon + 1 == text.size()) return std::nullopt;
-  const auto host = parse_ipv4(text.substr(0, colon));
-  if (!host) return std::nullopt;
-  unsigned port = 0;
-  for (const char c : text.substr(colon + 1)) {
-    if (c < '0' || c > '9') return std::nullopt;
-    port = port * 10 + unsigned(c - '0');
-    if (port > 65535) return std::nullopt;
-  }
-  if (port == 0) return std::nullopt;
-  return endpoint_value{*host, uint16_t(port)};
-}
+// Адрес и HOST:PORT — net::parse_ipv4 / net::parse_endpoint (network/endpoint.h).
 
 lab_schedule schedule_for(const std::string_view scenario) {
   if (scenario == "continuous") return lab_continuous_schedule();
@@ -274,7 +233,7 @@ int run_authority(const options& opts) {
   uint32_t host_address = 0;
   uint16_t declared_port = 0;
   if (!opts.endpoint.empty()) {
-    const auto parsed = parse_endpoint(opts.endpoint);
+    const auto parsed = net::parse_endpoint(opts.endpoint);
     if (!parsed) {
       std::cerr << "NET-LAB-01 authority: '" << opts.endpoint
                 << "' is not A.B.C.D:PORT\n";
@@ -283,7 +242,7 @@ int run_authority(const options& opts) {
     host_address = parsed->host;
     declared_port = parsed->port;
   } else {
-    const auto parsed = parse_ipv4(opts.address);
+    const auto parsed = net::parse_ipv4(opts.address);
     if (!parsed) {
       std::cerr << "NET-LAB-01 authority: '" << opts.address << "' is not a dotted quad\n";
       return EXIT_FAILURE;
@@ -517,7 +476,7 @@ int run_authority(const options& opts) {
 
 int run_intruder(const options& opts) {
   const auto schedule = schedule_with(opts);
-  const auto host_address = parse_ipv4(opts.address);
+  const auto host_address = net::parse_ipv4(opts.address);
   const auto port = await_port(opts.rendezvous);
   if (!host_address || !port || !await_started(opts.rendezvous)) {
     std::cerr << "NET-LAB-01 intruder: the authority never became ready\n";
@@ -549,7 +508,7 @@ int run_follower(const options& opts) {
   uint16_t port = 0;
   std::filesystem::path ticket = opts.ticket;
   if (!opts.endpoint.empty()) {
-    const auto parsed = parse_endpoint(opts.endpoint);
+    const auto parsed = net::parse_endpoint(opts.endpoint);
     if (!parsed) {
       std::cerr << "NET-LAB-01 follower: '" << opts.endpoint << "' is not A.B.C.D:PORT\n";
       return EXIT_FAILURE;
@@ -560,7 +519,7 @@ int run_follower(const options& opts) {
     // itself rather than in a directory it shares with nobody.
     if (ticket.empty()) ticket = "netlab01-ticket-" + std::to_string(opts.index);
   } else {
-    const auto parsed = parse_ipv4(opts.address);
+    const auto parsed = net::parse_ipv4(opts.address);
     if (!parsed) {
       std::cerr << "NET-LAB-01 follower: '" << opts.address << "' is not a dotted quad\n";
       return EXIT_FAILURE;
@@ -801,7 +760,14 @@ std::string quoted(const std::string& value) {
 }
 
 FILE* spawn(const std::string& command) {
+#ifdef _WIN32
+  // _popen runs `cmd /c <command>`, and cmd strips the first and the last quote of a line that
+  // starts with one and holds more than two: "exe" --rendezvous "dir" became exe" ... "dir.
+  // The outer pair is the one cmd removes.
+  FILE* stream = LAB_POPEN(("\"" + command + "\"").c_str(), "r");
+#else
   FILE* stream = LAB_POPEN(command.c_str(), "r");
+#endif
   if (stream == nullptr) utils::error{}("NET-LAB-01: cannot spawn '{}'", command);
   return stream;
 }

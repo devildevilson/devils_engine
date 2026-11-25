@@ -450,6 +450,70 @@ TEST_CASE("network GNS lane reservations and expected refusals do not consume ca
   CHECK(sender.retained_send_count(0) == 2);
 }
 
+TEST_CASE("network GNS per-peer lane limit keeps a silent peer from starving the others") {
+  runtime runtime;
+  REQUIRE_MESSAGE(runtime.initialized, runtime.error);
+  constexpr net::gns_transport_config two_peers{2, 8, 64, 16, 4096};
+  auto lanes = small_lanes;
+  lanes[0].send_slots = 4;
+  lanes[0].send_byte_budget = 4 * 32;
+  lanes[0].peer_send_slots = 2;
+  net::gns_transport sender(*SteamNetworkingSockets(), *SteamNetworkingUtils(), two_peers, lanes);
+  net::gns_transport receiver(*SteamNetworkingSockets(), *SteamNetworkingUtils(), two_peers, lanes);
+  socket_pair first;
+  socket_pair second;
+  REQUIRE(first.valid);
+  REQUIRE(second.valid);
+  const auto a = sender.adopt(first.take(0));
+  const auto b = sender.adopt(second.take(0));
+  REQUIRE(a.status == net::gns_status::ok);
+  REQUIRE(b.status == net::gns_status::ok);
+  REQUIRE(receiver.adopt(first.take(1)).status == net::gns_status::ok);
+  REQUIRE(receiver.adopt(second.take(1)).status == net::gns_status::ok);
+  const std::array payload{std::byte{7}};
+
+  REQUIRE(sender.try_send(a.peer, 0, payload).status == net::gns_status::ok);
+  REQUIRE(sender.try_send(a.peer, 0, payload).status == net::gns_status::ok);
+  CHECK(sender.try_send(a.peer, 0, payload).status == net::gns_status::peer_budget_exceeded);
+  CHECK(sender.retained_send_count(a.peer, 0) == 2);
+  CHECK(sender.retained_send_count(b.peer, 0) == 0);
+  // The lane still has room for the other peer: a's backlog is a's own.
+  REQUIRE(sender.try_send(b.peer, 0, payload).status == net::gns_status::ok);
+  CHECK(sender.retained_send_count(b.peer, 0) == 1);
+  CHECK(sender.retained_send_count(0) == 3);
+  // Other lanes have no own limit and are not affected.
+  CHECK(sender.try_send(a.peer, 2, payload).status == net::gns_status::ok);
+  CHECK(sender.retained_send_count(a.peer, 2) == 1);
+
+  // Delivery frees the slots; only observed release returns them to the peer.
+  std::array<net::gns_received_message, 4> received;
+  size_t total = 0;
+  REQUIRE(wait_until([&] {
+    const auto result = receiver.receive(received);
+    for (size_t i = 0; i < result.count; ++i) received[i].reset();
+    total += result.count;
+    return total == 4;
+  }));
+  std::array<net::gns_send_release, 8> releases;
+  size_t released = 0;
+  REQUIRE(wait_until([&] {
+    released += sender.poll_send_releases(releases);
+    return released == 4;
+  }));
+  CHECK(sender.retained_send_count(a.peer, 0) == 0);
+  CHECK(sender.try_send(a.peer, 0, payload).status == net::gns_status::ok);
+  // A stale peer id reads as holding nothing.
+  CHECK(sender.retained_send_count(net::gns_peer{a.peer.slot, a.peer.generation + 1000}, 0) == 0);
+}
+
+TEST_CASE("network GNS refuses a per-peer limit wider than the lane") {
+  runtime runtime;
+  REQUIRE_MESSAGE(runtime.initialized, runtime.error);
+  auto lanes = small_lanes;
+  lanes[0].peer_send_slots = lanes[0].send_slots + 1;
+  CHECK_THROWS(net::gns_transport(*SteamNetworkingSockets(), *SteamNetworkingUtils(), small_config, lanes));
+}
+
 TEST_CASE("network GNS leases and callbacks outlive adapter destruction") {
   runtime runtime;
   REQUIRE_MESSAGE(runtime.initialized, runtime.error);

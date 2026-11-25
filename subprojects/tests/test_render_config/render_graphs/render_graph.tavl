@@ -16,6 +16,16 @@
       steps = [ draw_tiles, draw_actors, draw_ui ]
     },
     {
+      // Снимок экрана: копия цели в буфер чтения. Условный пасс — команды пишутся только в кадре, где
+      // хост сдвинул frame_capture; в остальных кадрах группа отправляется пустой.
+      name = capture
+      counter = frame_capture
+      subpasses = [
+        { albedo_res = (transfer_src, store), frame_readback = (transfer_dst, store) }
+      ]
+      steps = [ copy_frame_to_readback ]
+    },
+    {
       name = p2
       wait_for = [ swapchain_image ]
       subpasses = [

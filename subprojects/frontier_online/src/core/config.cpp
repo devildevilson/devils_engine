@@ -2,9 +2,10 @@
 #include <utility>
 
 #include <devils_engine/utils/core.h>
+#include <devils_engine/utils/root.h>
 #include <devils_engine/utils/timeline.h>
 
-#include "config.h"
+#include "core/config.h"
 
 namespace frontier_online {
 namespace core {
@@ -24,13 +25,16 @@ utils::calendar_clock make_calendar_clock(const time_config& cfg) {
 }
 
 std::string make_project_path(std::string path) {
-  if (path.empty()) {
-    return utils::project_folder();
+  // Только внутри папки проекта: абсолютный путь или выход через `..` — критическая ошибка.
+  auto root = utils::root::open(utils::project_folder());
+  if (!root) {
+    utils::error{}("project folder '{}': {}", utils::project_folder(), utils::to_string(root.error()));
   }
-  if (path.front() == '/') {
-    return path;
+  auto resolved = root->resolve(path);
+  if (!resolved) {
+    utils::error{}("path '{}' under project folder '{}': {}", path, root->path(), utils::to_string(resolved.error()));
   }
-  return utils::project_folder() + path;
+  return std::move(*resolved);
 }
 
 std::string make_project_folder_path(std::string path) {

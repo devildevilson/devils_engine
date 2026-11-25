@@ -22,7 +22,13 @@
 #include "startup_resources.h"
 
 // Движковый каркас загрузки runtime-состояния: startup_entry -> runtime_state_resource -> allowlist
-// ресурсов, грузимых через канал load_resource, огороженный resource_access_scope. Здесь ТОЛЬКО
+// ресурсов, грузимых через канал load_resource, огороженный resource_access_scope.
+//
+// Ресурсы грузит ТОЛЬКО поток ассетов. Главный поток ничего не грузит сам, даже мета-ресурсы
+// загрузки (entry, runtime state, scene manifest, project descriptor): они идут двухступенчато —
+// первый кадр отправляет запрос в load_resource, следующие ждут usable(). Поэтому подготовка
+// состояния растянута на несколько кадров (standard_boot_resolve_initial_state,
+// standard_advance_runtime_state, standard_advance_loading) вместо одного вызова. Здесь ТОЛЬКО
 // движково-generic состояние и логика (одинаковые для любого внешнего проекта). Мир/сцена/чанки —
 // проектные: проект держит их у себя и AND-ит свои условия готовности к предикатам ниже. Форма —
 // shared-state + свободные хелперы (как standard_render_state + standard_render_*), проектные
@@ -59,6 +65,7 @@ struct standard_loading_state {
     std::string alias;
     int32_t target = 0;
     bool startup = false;
+    bool prepare = false; // нужен к begin_project_loading
   };
   std::vector<scene_binding> scene_resources;
   demiurg::resource_handle project_scene;
@@ -73,7 +80,15 @@ struct standard_loading_state {
   std::vector<scene_binding> pending_scene_resources;
   demiurg::resource_handle pending_project_scene;
   bool target_prepared = false;
+  bool target_pre_external = false; // target подготовлен boot-ом: до первых внешних ступеней
   bool target_ui_committed = false;
+
+  // Мета-ресурсы, запрос которых уже ушёл в поток ассетов (ждём usable). Чистится, когда target
+  // подготовлен.
+  std::vector<const demiurg::resource_interface*> meta_requested;
+  // loading текущей generation: запросы final/scene отправлены; begin_project_loading вызван.
+  bool loading_requested = false;
+  bool project_started = false;
 };
 
 // Первая external/GPU-ступень ресурса (или final_state, если внешних шагов нет) — до неё boot доводит
@@ -140,14 +155,45 @@ inline void track_startup_resource(
   s.startup_targets.push_back(target);
 }
 
-// boot: прочитать активный startup/entry и вернуть handle начального runtime-состояния.
-inline demiurg::resource_handle standard_boot_initial_state(demiurg::resource_system& registry) {
-  auto* entry = registry.get<startup_entry_resource>("startup/entry");
+// Мета-ресурс загрузки двухступенчато: первый вызов просит поток ассетов довести его до
+// final_state, следующие ждут usable(). true — ресурс готов.
+inline bool standard_meta_ready(
+  standard_loading_state& s,
+  standard_broker& br,
+  const demiurg::resource_handle handle,
+  const std::string_view owner) {
+  auto* resource = handle.get();
+  if (resource == nullptr) {
+    utils::error{}("{}: meta resource handle is unresolved", owner);
+  }
+  if (resource->usable()) {
+    return true;
+  }
+  if (std::find(s.meta_requested.begin(), s.meta_requested.end(), resource) == s.meta_requested.end()) {
+    if (!br.load_resource.try_push(command_load_resource{resource_ref::from_handle(handle), resource->final_state()})) {
+      utils::error{}("{}: load_resource queue overflow while requesting meta resource '{}'", owner, resource->id);
+    }
+    s.meta_requested.push_back(resource);
+  }
+  return false;
+}
+
+// boot: дождаться startup/entry и взять из него начальное runtime-состояние в target. true —
+// target назначен (на этом кадре или раньше).
+inline bool standard_boot_resolve_initial_state(
+  standard_loading_state& s,
+  demiurg::resource_system& registry,
+  standard_broker& br) {
+  if (s.target_runtime_state.get() != nullptr) {
+    return true;
+  }
+  const auto entry_handle = registry.handle("startup/entry");
+  auto* entry = entry_handle.get<startup_entry_resource>();
   if (entry == nullptr) {
     utils::error{}("startup: required entry resource 'startup/entry' was not found");
   }
-  while (!entry->usable()) {
-    entry->load(utils::safe_handle_t{});
+  if (!standard_meta_ready(s, br, entry_handle, "startup")) {
+    return false;
   }
 
   const auto& entry_cfg = entry->config();
@@ -158,24 +204,57 @@ inline demiurg::resource_handle standard_boot_initial_state(demiurg::resource_sy
   if (initial_state.get<runtime_state_resource>() == nullptr) {
     utils::error{}("startup/entry: runtime state '{}' was not found", entry_cfg.state);
   }
-  return initial_state;
+  s.target_runtime_state = initial_state;
+  return true;
 }
 
-// Подготовить целевое runtime-состояние: собрать allowlist (scope) + запросить загрузку каждого
-// ресурса через канал load_resource. pre_external_only=true (boot) доводит до первой external-ступени
-// и копит boot-targets; false (loading) запрашивает final_state.
-inline void standard_prepare_runtime_state(
+namespace detail {
+
+inline void bind_scene_resource(
+  standard_loading_state& s,
+  const demiurg::resource_interface& manifest,
+  const demiurg::resource_handle handle,
+  const scene_resource_request& request) {
+  auto* resource = handle.get();
+  if (std::any_of(s.pending_scene_resources.begin(), s.pending_scene_resources.end(),
+                  [resource](const standard_loading_state::scene_binding& binding) {
+                    return binding.resource.get() == resource;
+                  })) {
+    utils::error{}("scene manifest '{}': resource '{}' is requested more than once", manifest.id, resource->id);
+  }
+  const int32_t target = scene_request_target(request, *resource);
+  if (request.prepare && pre_external_target(*resource) < target) {
+    utils::error{}("scene manifest '{}': resource '{}' is marked prepare but needs an external (GPU) step "
+                   "below its target {}; prepare resources must be CPU-only",
+                   manifest.id, resource->id, target);
+  }
+  s.pending_ui_scope->grant(handle);
+  s.pending_scene_resources.push_back(standard_loading_state::scene_binding{
+    resource_ref::from_handle(handle), request.group, request.alias, target, request.startup, request.prepare});
+}
+
+} // namespace detail
+
+// Подготовить целевое runtime-состояние (s.target_runtime_state) за несколько кадров: мета-ресурсы
+// (состояние, манифест, проект) — через поток ассетов; когда все usable — собрать allowlist (scope)
+// и запросить загрузку каждого ресурса через load_resource. pre_external_only=true (boot) доводит
+// до первой external-ступени и копит boot-targets; false (loading) запрашивает final_state.
+// true — target подготовлен (на этом кадре или раньше).
+inline bool standard_advance_runtime_state(
   standard_loading_state& s,
   demiurg::resource_system& registry,
   standard_broker& br,
-  const demiurg::resource_handle state_handle,
   const bool pre_external_only) {
+  if (s.target_prepared) {
+    return true;
+  }
+  const auto state_handle = s.target_runtime_state;
   auto* runtime_state = state_handle.get<runtime_state_resource>();
   if (runtime_state == nullptr) {
     utils::error{}("runtime state: invalid target handle");
   }
-  while (!runtime_state->usable()) {
-    runtime_state->load(utils::safe_handle_t{});
+  if (!standard_meta_ready(s, br, state_handle, "runtime state")) {
+    return false;
   }
 
   const auto& cfg = runtime_state->config();
@@ -191,7 +270,36 @@ inline void standard_prepare_runtime_state(
                    runtime_state->id, cfg.default_font);
   }
 
-  s.target_runtime_state = state_handle;
+  demiurg::resource_handle manifest_handle;
+  demiurg::resource_handle project_handle;
+  if (!cfg.scene.empty()) {
+    manifest_handle = registry.handle(cfg.scene);
+    auto* manifest = manifest_handle.get<scene_manifest_resource>();
+    if (manifest == nullptr) {
+      utils::error{}("runtime state '{}': scene manifest '{}' was not found", runtime_state->id, cfg.scene);
+    }
+    if (!standard_meta_ready(s, br, manifest_handle, "scene manifest")) {
+      return false;
+    }
+    const auto& scene_cfg = manifest->config();
+    if (!scene_cfg.project.empty()) {
+      project_handle = registry.handle(scene_cfg.project);
+      auto* project = project_handle.get();
+      if (project == nullptr) {
+        utils::error{}("scene manifest '{}': project descriptor '{}' was not found", manifest->id, scene_cfg.project);
+      }
+      if (pre_external_target(*project) != project->final_state()) {
+        utils::error{}("scene manifest '{}': project descriptor '{}' must be a CPU-only resource",
+                       manifest->id, scene_cfg.project);
+      }
+      if (!standard_meta_ready(s, br, project_handle, "scene manifest")) {
+        return false;
+      }
+    }
+  }
+
+  // Все мета-ресурсы готовы: дальше один проход без ожиданий.
+  s.meta_requested.clear();
   s.pending_ui_resources.clear();
   s.pending_boot_targets.clear();
   s.pending_ui_scope = std::make_shared<resource_access_scope>();
@@ -201,6 +309,7 @@ inline void standard_prepare_runtime_state(
   s.pending_scene_resources.clear();
   s.pending_project_scene = {};
   s.target_prepared = true;
+  s.target_pre_external = pre_external_only;
 
   for (const auto& id : cfg.resources) {
     const auto handle = registry.handle(id);
@@ -224,84 +333,79 @@ inline void standard_prepare_runtime_state(
     }
   }
 
-  if (!cfg.scene.empty()) {
-    const auto manifest_handle = registry.handle(cfg.scene);
-    auto* manifest = manifest_handle.get<scene_manifest_resource>();
-    if (manifest == nullptr) {
-      utils::error{}("runtime state '{}': scene manifest '{}' was not found", runtime_state->id, cfg.scene);
-    }
-    while (!manifest->usable()) {
-      manifest->load(utils::safe_handle_t{});
-    }
+  if (auto* manifest = manifest_handle.get<scene_manifest_resource>()) {
     s.pending_ui_scope->grant(manifest_handle);
-
-    const auto& scene_cfg = manifest->config();
-    if (!scene_cfg.project.empty()) {
-      const auto project_handle = registry.handle(scene_cfg.project);
-      auto* project = project_handle.get();
-      if (project == nullptr) {
-        utils::error{}("scene manifest '{}': project descriptor '{}' was not found", manifest->id, scene_cfg.project);
-      }
-      if (pre_external_target(*project) != project->final_state()) {
-        utils::error{}("scene manifest '{}': project descriptor '{}' must be a CPU-only resource",
-                       manifest->id, scene_cfg.project);
-      }
-      while (!project->usable()) {
-        project->load(utils::safe_handle_t{});
-      }
+    if (project_handle.get() != nullptr) {
       s.pending_project_scene = project_handle;
       s.pending_ui_scope->grant(project_handle);
     }
 
-    for (const auto& request : scene_cfg.resources) {
+    for (const auto& request : manifest->config().resources) {
       if (request.id.empty()) {
         utils::error{}("scene manifest '{}': resource id is empty", manifest->id);
       }
+      if (request.id.ends_with('/')) {
+        if (!request.alias.empty()) {
+          utils::error{}("scene manifest '{}': directory '{}' cannot have an alias", manifest->id, request.id);
+        }
+        std::vector<demiurg::resource_interface*> found;
+        registry.directory<demiurg::resource_interface>(request.id, found);
+        if (found.empty()) {
+          utils::error{}("scene manifest '{}': directory '{}' holds no resources", manifest->id, request.id);
+        }
+        for (auto* resource : found) {
+          detail::bind_scene_resource(s, *manifest, registry.handle(resource->id), request);
+        }
+        continue;
+      }
       const auto handle = registry.handle(request.id);
-      auto* resource = handle.get();
-      if (resource == nullptr) {
+      if (handle.get() == nullptr) {
         utils::error{}("scene manifest '{}': resource '{}' was not found", manifest->id, request.id);
       }
-      if (std::any_of(s.pending_scene_resources.begin(), s.pending_scene_resources.end(),
-                      [resource](const standard_loading_state::scene_binding& binding) {
-                        return binding.resource.get() == resource;
-                      })) {
-        utils::error{}("scene manifest '{}': resource '{}' is requested more than once", manifest->id, request.id);
-      }
-      s.pending_ui_scope->grant(handle);
-      s.pending_scene_resources.push_back(standard_loading_state::scene_binding{
-        resource_ref::from_handle(handle), request.group, request.alias,
-        scene_request_target(request, *resource), request.startup});
+      detail::bind_scene_resource(s, *manifest, handle, request);
     }
   }
   DE_LOG(catalogue::log_domain::ui, flow,
          "runtime state target='{}' script='{}' resources={} scene='{}' scene_resources={} pre_external_only={}",
          runtime_state->id, s.pending_ui_entry_script, s.pending_ui_resources.size(), s.pending_scene,
          s.pending_scene_resources.size(), pre_external_only);
+  return true;
 }
 
-// Вход в loading: новая generation, сброс gate/commit, подготовка target (если ещё не готов) до
-// final_state и доведение UI-allowlist до final_state. Проект после этого создаёт окно и мир.
-inline void standard_begin_loading(
+// Вход в loading: новая generation, сброс gate/commit. Подготовка target (если boot его не
+// подготовил) и запросы до final идут по кадрам в standard_advance_loading.
+inline void standard_enter_loading(standard_loading_state& s) {
+  s.state_generation += 1;
+  s.target_ui_committed = false;
+  s.loading_requested = false;
+  s.project_started = false;
+  s.startup_resources.clear();
+  s.startup_targets.clear();
+  if (!s.target_prepared && s.target_runtime_state.get<runtime_state_resource>() == nullptr) {
+    utils::error{}("loading: no valid target runtime state");
+  }
+}
+
+// Кадр loading: довести подготовку target и один раз отправить запросы final (UI-allowlist и
+// ресурсы сцены). true — запросы отправлены (на этом кадре или раньше); тогда проект может создавать
+// окно и мир.
+inline bool standard_advance_loading(
   standard_loading_state& s,
   demiurg::resource_system& registry,
   standard_broker& br,
   const bool external_steps_available) {
-  s.state_generation += 1;
-  s.target_ui_committed = false;
-  s.startup_resources.clear();
-  s.startup_targets.clear();
-
-  const bool needs_final_request = s.target_prepared;
-  if (!s.target_prepared) {
-    if (s.target_runtime_state.get<runtime_state_resource>() == nullptr) {
-      utils::error{}("loading: no valid target runtime state");
-    }
-    standard_prepare_runtime_state(s, registry, br, s.target_runtime_state, false);
+  if (s.loading_requested) {
+    return true;
+  }
+  if (!standard_advance_runtime_state(s, registry, br, false)) {
+    return false;
   }
 
-  // Тот же allowlist доводится до полной готовности. UI script не исполняется, пока каждый ресурс не
-  // достиг final_state() (или первой external-ступени при отключённом render).
+  // boot подготовил target до первых внешних ступеней — теперь тот же allowlist запрашивается до
+  // полной готовности. Подготовленный здесь же target уже запросил final.
+  const bool needs_final_request = s.target_pre_external;
+  // UI script не исполняется, пока каждый ресурс не достиг final_state() (или первой external-ступени
+  // при отключённом render).
   for (const auto& ref : s.pending_ui_resources) {
     auto* resource = ref.get();
     if (resource == nullptr) {
@@ -313,7 +417,6 @@ inline void standard_begin_loading(
       utils::error{}("loading: load_resource queue overflow while finalizing UI resource '{}'", resource->id);
     }
   }
-
 
   for (const auto& binding : s.pending_scene_resources) {
     auto* resource = binding.resource.get();
@@ -330,6 +433,20 @@ inline void standard_begin_loading(
       track_startup_resource(s, binding.resource, target);
     }
   }
+  s.loading_requested = true;
+  return true;
+}
+
+// Ресурсы сцены с prepare = true дошли до target: пора begin_project_loading. Они CPU-only, поэтому
+// доступность render на цель не влияет.
+inline bool standard_project_prerequisites_ready(const standard_loading_state& s) {
+  if (!s.loading_requested) {
+    return false;
+  }
+  return std::all_of(s.pending_scene_resources.begin(), s.pending_scene_resources.end(),
+                     [](const standard_loading_state::scene_binding& binding) {
+                       return !binding.prepare || resource_reached(binding.resource, binding.target);
+                     });
 }
 
 // Зафиксировать целевой вид как активный (зовётся при старте UI). Проект отдельно сбрасывает свои
@@ -346,6 +463,7 @@ inline void standard_commit_runtime_state(standard_loading_state& s) {
   s.current_runtime_state = s.target_runtime_state;
   s.target_runtime_state = {};
   s.target_prepared = false;
+  s.target_pre_external = false;
 }
 
 // game -> loading по смене состояния. target уже резолвнут вызывающим (из своего реестра). Возврат

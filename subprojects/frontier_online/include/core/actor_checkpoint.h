@@ -10,7 +10,7 @@
 #include <devils_engine/utils/state_schema.h>
 #include <devils_engine/utils/timeline.h>
 
-#include "actor_simulation.h"
+#include "core/actor_simulation.h"
 
 // Полный причинный checkpoint акторного слоя: timeline, ECS и собственные счётчики — три секции.
 // Запись допустима на завершённой границе тика без pending intent и параллельного доступа.
@@ -30,6 +30,10 @@ struct actor_checkpoint_buffers {
 };
 
 struct actor_checkpoint_access {
+  // Верхняя граница нормы еды в чужом документе: норма — actor_count / 8, и миру с миллионом акторов
+  // хватает с запасом.
+  static constexpr std::uint32_t max_food_target = 1u << 17;
+
   struct state {
     std::uint64_t food_spawn_seq = 0;
     glm::vec2 spawn_min{};
@@ -44,6 +48,7 @@ struct actor_checkpoint_access {
     state causal{};
     devils_engine::aesthetics::entityid_t player =
       devils_engine::aesthetics::invalid_entityid;
+    std::vector<actor_world_slice::player_slot> players; // по возрастанию peer, peer 0 первым
     std::vector<actor_world_slice::obstacle_disc> obstacles;
     std::unique_ptr<actor_brain_runtime> runtime;
   };

@@ -9,6 +9,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <devils_engine/network/endpoint.h>
+#include <devils_engine/network/gns_runtime.h>
 #include <devils_engine/network/gns_transport.h>
 
 // ТРАНСПОРТ. Знает про байты, полосы и соединения — и не знает ни про тик, ни про состояние мира,
@@ -38,34 +40,18 @@ inline constexpr size_t chunk_message_bytes = chunk_payload_bytes + 9;
 inline constexpr size_t max_message_bytes =
   chunk_message_bytes > control_message_bytes ? chunk_message_bytes : control_message_bytes;
 
-// Разбор "host:port" и "port". Возвращает false на любом мусоре: адрес, молча превратившийся в
-// дефолтный, соединяет не с тем и объясняется потом часами.
-[[nodiscard]] bool parse_endpoint(std::string_view text, uint32_t& host, uint16_t& port);
-[[nodiscard]] bool parse_port(std::string_view text, uint16_t& port);
+// Разбор "HOST:PORT" — network::parse_endpoint (network/endpoint.h).
 
-// Инициализация GNS и общий диспетчер. Ровно один на процесс.
-class net_runtime {
+// Инициализация GNS (Init/Kill со счётчиком владельцев) и общий диспетчер — движковые
+// (network/gns_runtime.h). pump() зовётся из ЕДИНСТВЕННОГО потока-владельца, один раз за круг, за все
+// концы сразу.
+// Отдельный класс, а не псевдоним: заголовки проекта объявляют `class net_runtime;` заранее.
+class net_runtime : public network::gns_runtime {
 public:
-  explicit net_runtime(size_t endpoints);
-  ~net_runtime();
-  net_runtime(const net_runtime&) = delete;
-  net_runtime& operator=(const net_runtime&) = delete;
-
-  // Прокачать колбэки интерфейса. Зовётся из ЕДИНСТВЕННОГО потока-владельца, один раз за круг,
-  // за все концы сразу.
-  void pump();
-
-  network::gns_dispatcher& dispatcher() noexcept {
-    return *dispatcher_;
-  }
-
-private:
-  struct state;
-  std::unique_ptr<state> state_;
-  network::gns_dispatcher* dispatcher_ = nullptr;
+  using network::gns_runtime::gns_runtime;
 };
 
-enum class send_result : uint8_t { sent, no_peer, backpressure, refused };
+using send_result = network::gns_send_outcome;
 
 class net_link {
 public:
@@ -96,6 +82,9 @@ public:
     bool connected = false;
     bool terminal = false;
     bool needs_accept = false;
+    // terminal из-за нарушения контракта полос: адаптер закрыл соединение сам (чужая полоса,
+    // другая надёжность, размер). Это поведение участника, а не обрыв: слот не удерживается.
+    bool invalid = false;
   };
 
   // Слитые наблюдения, ровно как обещает адаптер: это взгляд на ТЕКУЩЕЕ состояние, а не журнал
@@ -127,13 +116,6 @@ public:
     return invalid_closed_;
   }
 
-  struct conditions {
-    bool available = false;
-    int ping_ms = 0;
-    float quality_local = 0, quality_remote = 0;
-    int pending_reliable_bytes = 0;
-  };
-  conditions measure(network::gns_peer peer);
 
 private:
   size_t receive_batch(void* consumer, void (*invoke)(void*, network::gns_peer, uint16_t,
@@ -145,6 +127,9 @@ private:
   network::gns_peer pending_;
   uint64_t superseded_ = 0;
   uint64_t invalid_closed_ = 0;
+  // Закрытые адаптером за нарушение полос, ещё не отданные poll: своё закрытие GNS событием не
+  // сообщает.
+  std::vector<network::gns_peer> invalid_peers_;
 };
 
 template <class Consumer>

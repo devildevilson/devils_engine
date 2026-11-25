@@ -21,6 +21,11 @@ struct gns_lane_config {
   size_t send_slots = 8;
   size_t max_payload_bytes = 1024;
   size_t send_byte_budget = 8192;
+  // Unreleased messages one connection may hold on this lane; 0 = no own limit
+  // (the lane-wide send_slots only). Lane slots are shared by all peers, and a
+  // peer that stops acknowledging (killed without close) keeps its slots until
+  // GNS times it out: without a per-peer limit it can starve every other peer.
+  size_t peer_send_slots = 0;
   bool no_nagle = true;
 };
 
@@ -65,7 +70,9 @@ enum class gns_status : uint8_t {
   invalid_listener,
   listener_capacity_exceeded,
   invalid_options,
-  invalid_state
+  invalid_state,
+  // The peer holds peer_send_slots unreleased messages on this lane.
+  peer_budget_exceeded
 };
 
 struct gns_adopt_result {
@@ -131,6 +138,10 @@ struct gns_receive_result {
   gns_status status = gns_status::ok;
   size_t count = 0;
   size_t superseded = 0;
+  // invalid_message: соединение, которое адаптер закрыл сам за сообщение не по контракту полос.
+  // Своё закрытие GNS событием не сообщает, поэтому без этого поля вызывающий считал бы участника
+  // живым до собственного срока тишины.
+  gns_peer closed{};
 };
 
 struct gns_connection_event {
@@ -227,6 +238,8 @@ public:
                                       std::span<SteamNetConnectionRealTimeLaneStatus_t> lanes = {});
   size_t retained_send_count(uint16_t lane) const noexcept;
   size_t retained_send_bytes(uint16_t lane) const noexcept;
+  // Unreleased messages of this connection on the lane (0 for a stale peer).
+  size_t retained_send_count(gns_peer peer, uint16_t lane) const noexcept;
   size_t leased_receive_count() const noexcept;
 
 private:

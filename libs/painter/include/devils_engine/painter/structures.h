@@ -96,11 +96,20 @@ struct resource_container {
   // мультисемплинг?
 
   void* mem_ptr;
+  // Доступ хоста (host_access_*): от него зависит тип памяти, и пересоздание по размеру окна обязано
+  // его сохранить — по mem_ptr видно только «отображена», а не «пишет хост или читает».
+  uint32_t host_access = 0;
 
   bool is_image() const noexcept;
   bool host_visible() const noexcept;
-  void create_container(VmaAllocator alc, const uint32_t host_visible);
+  void create_container(VmaAllocator alc, const uint32_t host_access);
 };
+
+// Доступ хоста к контейнеру. Читаемой хостом памяти (readback) нужен кэш процессора: чтение
+// write-combined памяти на дискретной видеокарте медленнее в десятки раз.
+inline constexpr uint32_t host_access_none = 0;
+inline constexpr uint32_t host_access_write = 1;
+inline constexpr uint32_t host_access_read = 2;
 
 struct subresource_image {
   uint32_t aspect_mask;

@@ -16,6 +16,10 @@ Modules, registry, stable resource handles, staged load/unload. `module_system.h
 - Registry/override порядок определяет identity ресурса до исполнения Lua; не обходить modules
   прямым чтением файлов в production consumers.
 - Resource dependencies и external GPU steps gate-ят публикацию usable state.
+- Грузит владелец реестра: поток ассетов через `resource_loader` или, без потока,
+  `synchronous_loader`. Потребители не зовут `load()` в цикле `while (!usable())`, а проверяют
+  готовность: `require<T>(id, role)` / `require_usable(res, role)`. Наборы — каталоги
+  `directory<T>("dir")` (с `/` на конце или без), не подстрока `filter`.
 - Имя выводится из пути без расширения: x.lua и x.tavl рядом способны столкнуться по id.
 - Module listing/fingerprint уже реализованы в resource_manifest/modules_listing; новый import-rule
   longest-segment matching, migration и persistent artifact cache — отдельные открытые задачи.

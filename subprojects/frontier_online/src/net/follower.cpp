@@ -9,7 +9,7 @@
 #include <devils_engine/utils/core.h>
 
 #include "net/link.h"
-#include "net/secure_random.h"
+#include <devils_engine/network/secure_random.h>
 
 namespace frontier_online {
 namespace net {
@@ -25,7 +25,7 @@ clock::time_point deadline_after(const std::chrono::milliseconds span) {
 
 network::session_nonce random_nonce() {
   network::session_nonce value{};
-  secure_random_bytes(value);
+  devils_engine::network::secure_random_bytes(value);
   return value;
 }
 
@@ -45,8 +45,8 @@ struct follower::state {
   bool world_checked = false;
   checkpoint_begin header;
   bool header_seen = false;
-  std::vector<std::byte> document;
-  uint32_t received = 0;
+  // Checkpoint кусками одной упорядоченной полосы (network/document_chunks.h).
+  network::document_assembly document;
 
   join_report report;
   bool reported = false;
@@ -62,14 +62,25 @@ struct follower::state {
 
   std::vector<std::byte> scratch;
   std::vector<std::byte> reply;
+  std::vector<std::vector<std::byte>> pending_control;
+  std::optional<reconnect_grant> grant;
+  std::optional<resume_plan> plan;
 
-  // Ответ клиента на вызов. Удостоверения у стенда ещё нет, и пустая строка байт здесь — это не
-  // забытое место, а объявленный аноним: авторитет принимает РОВНО пустое.
+  // Ответ клиента на вызов. Новый вход — объявленный аноним (РОВНО пустое удостоверение).
+  // Продолжение — билет авторитета, подписанный выведенным секретом поверх НОВОГО транскрипта.
   struct answer_policy {
-    bool answer(const network::authority_challenge&, const utils::digest&,
+    const std::optional<resume_claim>& resume;
+    bool answer(const network::authority_challenge&, const utils::digest& transcript,
                 std::vector<std::byte>& credential) {
       credential.clear();
-      return true;
+      if (!resume) return true;
+      auto value = resume->grant.credential;
+      credential_policy mac;
+      network::credential_scratch scratch;
+      credential.reserve(network::reconnect_credential_bytes);
+      return network::seal_reconnect_presentation(resume->grant.secret, transcript, mac, scratch,
+                                                  value) == network::credential_status::accepted &&
+             network::try_encode_credential(value, credential) == network::credential_status::accepted;
     }
   };
 
@@ -111,14 +122,12 @@ struct follower::state {
   // узнать это надо до первого тика, а не по картинке.
   void check_world() {
     world_checked = true;
-    std::unique_ptr<core::terrain_source> source;
-    try {
-      source = content.make_terrain(world.generator, world.chunk_size, world.world_seed);
-    } catch (const std::exception& error) {
-      if (loud()) std::printf("follower: cannot build the declared generator: %s\n", error.what());
+    if (!content.has_generator(world.generator)) {
+      if (loud()) std::printf("follower: declared generator '%s' is not present\n", world.generator.c_str());
       fail(join_status::generator_missing);
       return;
     }
+    const auto source = content.make_terrain(world.generator, world.chunk_size, world.world_seed);
 
     report.world_fingerprint = source->fingerprint();
     report.probe_root = terrain_probe_root(*source);
@@ -139,13 +148,30 @@ struct follower::state {
     }
   }
 
+  // Управляющие сообщения, ещё не принятые транспортом, в порядке отправки. Повторяются каждый
+  // круг: отказ полосы — обратное давление, а не повод промолчать (ответ рукопожатия и отчёт
+  // авторитет иначе так и не получил бы и закрыл бы по сроку фазы).
+  void queue_control(const std::span<const std::byte> bytes) {
+    pending_control.emplace_back(bytes.begin(), bytes.end());
+    flush_control();
+  }
+
+  void flush_control() {
+    while (!pending_control.empty()) {
+      if (link.send(peer, lane_control, pending_control.front()) != send_result::sent) return;
+      pending_control.erase(pending_control.begin());
+    }
+  }
+
+  // Отчёт уходит только в установленной сессии: до неё у авторитета нет грамматики проектных
+  // сообщений, а после отказа рукопожатия говорить уже не о чем.
   void send_report() {
-    if (reported) return;
+    if (reported || !handshake.has_value() || !handshake->established()) return;
     reported = true;
     if (!encode(report, scratch)) {
       utils::error{}("frontier_online follower: join report does not encode");
     }
-    (void)link.send(peer, lane_control, scratch);
+    queue_control(scratch);
   }
 };
 
@@ -184,7 +210,7 @@ uint64_t follower::peer_id() const noexcept {
 }
 
 uint32_t follower::received_bytes() const noexcept {
-  return state_->received;
+  return state_->document.received();
 }
 
 uint32_t follower::expected_bytes() const noexcept {
@@ -216,6 +242,12 @@ std::optional<termination_reason> follower::termination() const noexcept {
   return state_->termination;
 }
 uint64_t follower::catchup_tick() const noexcept { return state_->catchup_tick; }
+bool follower::connected() const noexcept { return state_->handshake.has_value(); }
+bool follower::established() const noexcept {
+  return state_->handshake.has_value() && state_->handshake->established();
+}
+const std::optional<reconnect_grant>& follower::grant() const noexcept { return state_->grant; }
+const std::optional<resume_plan>& follower::plan() const noexcept { return state_->plan; }
 
 bool follower::start() {
   auto& self = *state_;
@@ -229,8 +261,17 @@ bool follower::start() {
   return true;
 }
 
+bool follower::leave() {
+  auto& self = *state_;
+  if (self.phase != follower_phase::joined || !self.live_ready || self.live_terminal) return false;
+  if (!encode_leave(self.scratch)) utils::error{}("frontier_online follower: leave does not encode");
+  self.queue_control(self.scratch);
+  return true;
+}
+
 bool follower::drain() {
   auto& self = *state_;
+  self.flush_control();
   std::array<net_link::observation, 4> events;
   const size_t count = self.link.poll(events);
   for (size_t i = 0; i < count; ++i) {
@@ -244,6 +285,7 @@ bool follower::drain() {
 
 void follower::step(checkpoint_sink& sink) {
   auto& self = *state_;
+  self.flush_control();
   if (self.phase == follower_phase::failed) return;
   if (self.phase == follower_phase::joined && (self.live_terminal || self.fault != follower_fault::none))
     return;
@@ -261,7 +303,14 @@ void follower::step(checkpoint_sink& sink) {
     }
     if (events[i].connected && self.phase == follower_phase::connecting) {
       // Рукопожатие начинает КЛИЕНТ, и только после того, как соединение действительно есть.
-      self.handshake.emplace(self.compatibility, random_nonce());
+      if (self.config.resume) {
+        const auto& claim = *self.config.resume;
+        self.handshake.emplace(self.compatibility, random_nonce(), claim.grant.session,
+                               network::recovery_anchor<uint64_t, utils::digest>{
+                                 claim.tick, anchor_digest(claim.root)});
+      } else {
+        self.handshake.emplace(self.compatibility, random_nonce());
+      }
       if (self.handshake->start(self.scratch) != network::session_wire_status::ok) {
         utils::error{}("frontier_online follower: client hello does not encode");
       }
@@ -321,6 +370,16 @@ void follower::step(checkpoint_sink& sink) {
         self.live_ready = true;
         return;
       }
+      if (type == uint8_t(message::reconnect_grant)) {
+        reconnect_grant value;
+        if (!decode(payload, value) || value.session != self.handshake->accepted().session ||
+            value.logical_peer != self.handshake->accepted().local_peer) {
+          self.live_failure(follower_fault::protocol_violation);
+          return;
+        }
+        self.grant = value;
+        return;
+      }
       if (type == uint8_t(message::live_caught_up)) {
         catchup_marker marker;
         if (self.catchup_tick != 0 || !decode(payload, marker) ||
@@ -346,10 +405,10 @@ void follower::step(checkpoint_sink& sink) {
 
     if (!self.handshake->established()) {
       if (lane != lane_control) return;
-      state::answer_policy policy;
+      state::answer_policy policy{self.config.resume};
       const auto status = self.handshake->consume(payload, self.reply, policy);
       if (!self.reply.empty()) {
-        (void)self.link.send(self.peer, lane_control, self.reply);
+        self.queue_control(self.reply);
         self.reply.clear();
       }
       if (self.handshake->phase() == network::handshake_phase::refused) {
@@ -362,7 +421,9 @@ void follower::step(checkpoint_sink& sink) {
         self.phase = follower_phase::failed;
       } else if (self.handshake->established()) {
         // Проверка на вшивость: «сессии нет» не может быть принятой сессией.
-        if (self.handshake->accepted().session == 0 || self.handshake->accepted().local_peer == 0) {
+        if (self.handshake->accepted().session == 0 || self.handshake->accepted().local_peer == 0 ||
+            (self.config.resume &&
+             self.handshake->accepted().local_peer != self.config.resume->grant.logical_peer)) {
           self.fail(join_status::handshake_refused, follower_fault::insane_authority);
           return;
         }
@@ -390,6 +451,38 @@ void follower::step(checkpoint_sink& sink) {
       self.phase = follower_phase::failed;
       if (self.fault == follower_fault::none) self.fault = follower_fault::terminated;
       self.reported = true; // авторитет уже решил; отчёт после его последнего слова не нужен
+      return;
+    }
+
+    if (lane == lane_control && self.config.resume) {
+      // Продолжение: мир у клиента уже есть, первое и единственное слово до отчёта — план.
+      resume_plan value;
+      const auto& accepted = self.handshake->accepted();
+      if (self.plan || peek_message_type(payload) != uint8_t(message::resume_plan) ||
+          !decode(payload, value) || value.session != accepted.session ||
+          value.logical_peer != accepted.local_peer || value.tick != accepted.start_tick) {
+        self.fail(join_status::checkpoint_refused, follower_fault::protocol_violation);
+        return;
+      }
+      self.plan = value;
+      self.world_checked = true;
+      self.deadline = clock::time_point::max();
+      if (value.mode == resume_mode::checkpoint) {
+        self.phase = follower_phase::receiving_state;
+        return;
+      }
+      // Якорь найден в истории авторитета: состояние уже на месте, тот же тик и корень.
+      if (value.tick != self.config.resume->tick || value.root != self.config.resume->root) {
+        self.fail(join_status::checkpoint_refused, follower_fault::insane_authority);
+        return;
+      }
+      self.report.status = join_status::loaded;
+      self.report.tick = value.tick;
+      self.report.root = value.root;
+      self.phase = follower_phase::joined;
+      self.progress_deadline = clock::time_point::max();
+      self.deadline = deadline_after(self.config.confirmation_timeout);
+      self.send_report();
       return;
     }
 
@@ -426,9 +519,12 @@ void follower::step(checkpoint_sink& sink) {
         self.fail(join_status::checkpoint_refused, follower_fault::insane_authority);
         return;
       }
+      // Предел проверен декодером заголовка; begin проверяет его ещё раз до выделения памяти.
+      if (!self.document.begin(self.header.total_bytes, max_checkpoint_bytes)) {
+        self.fail(join_status::checkpoint_refused, follower_fault::protocol_violation);
+        return;
+      }
       self.header_seen = true;
-      self.document.assign(self.header.total_bytes, std::byte{0});
-      self.received = 0;
       return;
     }
     if (type != uint8_t(message::checkpoint_chunk)) {
@@ -443,8 +539,7 @@ void follower::step(checkpoint_sink& sink) {
       return;
     }
     chunk_view chunk;
-    if (!decode_chunk(payload, chunk) ||
-        !append_checkpoint_chunk(self.document, self.received, chunk)) {
+    if (!decode_chunk(payload, chunk) || !self.document.append_in_order(chunk)) {
       self.fail(join_status::checkpoint_refused, follower_fault::protocol_violation);
       return;
     }
@@ -461,7 +556,6 @@ void follower::step(checkpoint_sink& sink) {
     if (self.fault == follower_fault::none) self.fault = follower_fault::connection_closed;
     return;
   }
-  if (closed && self.phase == follower_phase::joined) self.live_terminal = true;
 
   if (self.phase == follower_phase::failed) {
     if (!closed) self.send_report();
@@ -471,10 +565,10 @@ void follower::step(checkpoint_sink& sink) {
   // Документ собран. Загрузка — на границе приёма, не в обработчике сообщения: там ещё живёт
   // аренда на чужие байты.
   if (self.phase == follower_phase::receiving_state && self.header_seen &&
-      self.received == self.header.total_bytes) {
+      self.document.complete()) {
     self.report.tick = self.header.tick;
     uint64_t root = 0;
-    if (!sink.load(self.header, self.document, root)) {
+    if (!sink.load(self.header, self.document.bytes(), root)) {
       self.fail(join_status::checkpoint_refused);
     } else {
       self.report.root = root;
@@ -487,8 +581,7 @@ void follower::step(checkpoint_sink& sink) {
         self.deadline = deadline_after(self.config.confirmation_timeout);
       }
     }
-    self.document.clear();
-    self.document.shrink_to_fit();
+    self.document.release();
     if (self.loud()) {
       std::printf("follower: checkpoint %u bytes at tick %llu, root %llu (authority %llu): %s\n",
                   self.header.total_bytes,

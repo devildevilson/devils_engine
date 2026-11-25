@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_UTILS_STRING_H
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>

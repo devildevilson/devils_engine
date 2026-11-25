@@ -1,31 +1,38 @@
-#include "devils_engine/utils/log.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <span>
 
+#include <devils_engine/bindings/critical_error.h>
 #include <devils_engine/bindings/lua_header.h>
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>
-#include <devils_engine/input/events.h> // named actions camera_* — WASD-движение камеры
+#include <devils_engine/input/events.h>
+#include <devils_engine/simul/camera_input.h> // named actions camera_* — pan камеры
 #include <devils_engine/painter/gpu_texture_resource.h>
 #include <devils_engine/sound/sound_resource.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/core.h>
+#include <devils_engine/utils/log.h>
 #include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/time-utils.hpp>
 #include <devils_engine/visage/system.h>
 
-#include "brain_config_loader.h"
-#include "broker.h"
-#include "instance_layout.h"
-#include "messages.h"
-#include "frontier_online_game.h"
+#include "core/brain_config_loader.h"
+#include "core/causal_content.h"
+#include "core/broker.h"
+#include "core/messages.h"
+#include "core/frontier_online_game.h"
+#include "core/net_client.h"
 
 namespace frontier_online {
 namespace core {
 
 using namespace devils_engine;
+
+frontier_online_game::frontier_online_game() = default;
+frontier_online_game::~frontier_online_game() = default;
 
 void frontier_online_game::begin_scene(const scene_start_context& context) {
   sound_by_name_.clear();
@@ -58,68 +65,56 @@ void frontier_online_game::begin_scene(const scene_start_context& context) {
          "main: scene manifest '{}' selected {} tile textures and {} named sounds",
          context.scene_id, texture_count, sound_by_name_.size());
 
-  chunk_size_ = context.config.chunk_size;
-  chunks_x_ = context.config.chunks_x;
-  chunks_y_ = context.config.chunks_y;
-  grid_.tile_size = context.config.tile_size;
-  grid_.resize(chunks_x_ * chunk_size_, chunks_y_ * chunk_size_);
-  chunks_requested_.assign(size_t(chunks_x_) * chunks_y_, false);
-  chunks_loaded_.assign(size_t(chunks_x_) * chunks_y_, false);
-  chunks_loaded_count_ = 0;
-  chunks_logged_ = false;
-  tiles_logged_ = false;
-  actors_logged_ = false;
-
-  if (context.assets_available) {
-    for (uint32_t cy = 0; cy < chunks_y_; ++cy) {
-      for (uint32_t cx = 0; cx < chunks_x_; ++cx) {
-        const size_t index = size_t(cy) * chunks_x_ + cx;
-        command_load_chunk command;
-        command.generation = context.generation;
-        command.x = int32_t(cx);
-        command.y = int32_t(cy);
-        command.chunk_size = chunk_size_;
-        command.world_seed = context.config.world_seed;
-        command.generator = context.config.terrain_generator;
-        context.messages.load_chunk.try_push(std::move(command));
-        chunks_requested_[index] = true;
-      }
-    }
-    DE_LOG(catalogue::log_domain::gameplay, flow,
-           "main: requested {} world chunks from generator '{}' (seed {})",
-           chunks_requested_.size(), context.config.terrain_generator,
-           context.config.world_seed);
-  }
-
-  const glm::vec2 extent = grid_world_extent(grid_);
-  world_extent_ = extent;
-  camera_.center = extent * 0.5f;
-  camera_.half_width = context.config.camera_half_width;
+  scene_generation_ = context.generation;
+  assets_available_ = context.assets_available;
+  camera_config_ = context.config.camera;
+  camera_.half_width = camera_config_.half_width;
   camera_.aspect = float(context.viewport_width) / float(std::max(context.viewport_height, 1u));
+  grid_.tile_size = context.config.tile_size;
+  join_ = context.join;
+  networked_ = !join_.endpoint.empty();
+  net_world_built_ = false;
+  if (networked_) {
+    // Земля и бокс сессии придут от авторитета (объявление мира + checkpoint): сетку строит
+    // update_network, когда ведомый загрузит мир. Свой chunks_x/y и world_seed здесь не годятся.
+    build_world(context.messages, 0, 0, 0, 0, context.config.terrain_generator, false);
+  } else {
+    build_world(context.messages, context.config.chunk_size, context.config.chunks_x,
+                context.config.chunks_y, context.config.world_seed,
+                context.config.terrain_generator, context.assets_available);
+  }
 
   if (const auto result = tile_batch_.bind("v2ui1"); !result) {
     utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
-                   instance_layout::match_error::to_string(result.error), result.where,
+                   devils_engine::simul::instance_layout::match_error::to_string(result.error), result.where,
                    result.expected, result.actual);
   }
   if (const auto result = actor_batch_.bind("v2ui1c4v1"); !result) {
     utils::error{}("actor_instance layout mismatch vs 'v2ui1c4v1': {} (attr {}, expected {}, actual {})",
-                   instance_layout::match_error::to_string(result.error), result.where,
+                   devils_engine::simul::instance_layout::match_error::to_string(result.error), result.where,
                    result.expected, result.actual);
   }
 
-  auto brains = load_required_brain_config(
-    context.asset_registry, context.config.actor_script, context.config.fsm_prefix,
-    context.config.goap_prefix, context.config.prefab_prefix);
+  auto brains = load_brain_config(context.asset_registry);
   DE_LOG(catalogue::log_domain::gameplay, flow,
-         "main: required brain config <- script '{}', {} FSM brains ('{}'), {} GOAP brains ('{}'), {} prefabs",
-         context.config.actor_script, brains.fsms.size(), context.config.fsm_prefix,
-         brains.goaps.size(), context.config.goap_prefix, brains.prefabs.size());
+         "main: brain config <- {} FSM brains, {} GOAP brains, {} prefabs", brains.fsms.size(),
+         brains.goaps.size(), brains.prefabs.size());
+
+  net_.reset();
+  net_refused_ = false;
+  net_shown_tick_ = 0;
+  if (networked_) {
+    // Мир придёт checkpoint'ом авторитета; локальный спавн только тратил бы память и время.
+    reset_metrics();
+    DE_LOG(catalogue::log_domain::gameplay, flow, "main: networked scene, joining {}",
+           join_.endpoint);
+    return;
+  }
 
   actors_.init(
     context.config.actor_count,
     glm::vec2{0.5f, 0.5f},
-    glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
+    glm::max(world_extent_ - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
     texture_count,
     brains,
     context.config.actor_prefab_cycle);
@@ -132,6 +127,55 @@ void frontier_online_game::framebuffer_resized(const uint32_t width, const uint3
   camera_.aspect = float(width) / float(std::max(height, 1u));
 }
 
+void frontier_online_game::build_world(broker& messages, const uint32_t chunk_size,
+                                       const uint32_t chunks_x, const uint32_t chunks_y,
+                                       const uint64_t world_seed, const std::string& generator,
+                                       const bool request) {
+  chunk_size_ = chunk_size;
+  chunks_x_ = chunks_x;
+  chunks_y_ = chunks_y;
+  grid_.resize(chunks_x_ * chunk_size_, chunks_y_ * chunk_size_);
+  chunks_loaded_.assign(size_t(chunks_x_) * chunks_y_, false);
+  chunks_loaded_count_ = 0;
+  chunks_logged_ = false;
+  tiles_logged_ = false;
+  actors_logged_ = false;
+
+  ++world_build_;
+  next_chunk_request_ = 0;
+  chunk_request_count_ = request ? chunks_loaded_.size() : 0;
+  chunk_request_seed_ = world_seed;
+  chunk_request_generator_ = generator;
+  if (request) {
+    DE_LOG(catalogue::log_domain::gameplay, flow,
+           "main: requesting {} world chunks from generator '{}' (seed {})",
+           chunk_request_count_, generator, world_seed);
+    request_chunks(messages);
+  }
+
+  world_extent_ = grid_world_extent(grid_);
+  camera_.center = world_extent_ * 0.5f;
+}
+
+// Сетка сессии покрывает бокс авторитета целыми чанками: край бокса не обязан делиться на чанк.
+void frontier_online_game::build_session_world(broker& messages, const session_world& world) {
+  const float chunk_extent = float(world.chunk_size) * grid_.tile_size;
+  if (world.chunk_size == 0 || !(chunk_extent > 0.0f) || !(world.max_x > 0.0f) ||
+      !(world.max_y > 0.0f)) {
+    utils::error{}("frontier_online: session world from the authority is unusable: chunk {} x "
+                   "tile {}, box max ({}, {})",
+                   world.chunk_size, grid_.tile_size, world.max_x, world.max_y);
+  }
+  const auto chunks = chunks_covering({world.max_x, world.max_y}, world.chunk_size, grid_.tile_size);
+  build_world(messages, world.chunk_size, chunks.x, chunks.y, world.world_seed, world.generator,
+              assets_available_);
+  net_world_built_ = true;
+  utils::info("frontier_online: session world {}x{} chunks of {} (box [{}, {}]x[{}, {}], "
+              "generator '{}', seed {})",
+              chunks_x_, chunks_y_, chunk_size_, world.min_x, world.max_x, world.min_y,
+              world.max_y, world.generator, world.world_seed);
+}
+
 bool frontier_online_game::loading_complete() const noexcept {
   return chunks_loaded_count_ == chunks_loaded_.size();
 }
@@ -141,6 +185,7 @@ std::pair<std::size_t, std::size_t> frontier_online_game::loading_progress() con
 }
 
 void frontier_online_game::begin_frame(const presentation_context& context) {
+  request_chunks(context.messages);
   drain_loaded_chunks(context.messages, context.generation);
   if (context.render_available) {
     auto& state = context.messages.active_gameplay_state.write_slot();
@@ -153,9 +198,50 @@ void frontier_online_game::begin_frame(const presentation_context& context) {
 }
 
 void frontier_online_game::update_simulation(const simulation_context& context) {
+  if (networked_) {
+    update_network(context);
+    return;
+  }
   if (context.run_gameplay && actor_batch_.valid()) {
     update_actors(context);
   }
+}
+
+// Сетевой круг идёт и на локальной паузе: авторитет не ждёт, а отставший за удерживаемую
+// историю участник отключается. Тик клиента сюда не входит — мир шагает bundles авторитета.
+void frontier_online_game::update_network(const simulation_context& context) {
+  if (!net_) {
+    if (net_refused_) return;
+    // Тот же корень модулей, что у причинного содержимого сервера: отпечаток считается по нему.
+    net_ = net_client::connect(join_, project_modules_root(), context.pool);
+    if (!net_) {
+      // Причина уже в логе. Окно остаётся с пустым миром: локальный слайс в сетевой сцене не
+      // создан, и переключаться на него нельзя.
+      net_refused_ = true;
+      return;
+    }
+  }
+  net_->service();
+  if (session_world layout; net_->layout(layout) && (!net_world_built_ || *net_world_ != layout)) {
+    build_session_world(context.messages, layout);
+    net_world_ = std::make_unique<session_world>(std::move(layout));
+  }
+  const auto* world = net_->world();
+  if (world == nullptr || !actor_batch_.valid() || net_->tick() == net_shown_tick_) {
+    return;
+  }
+  const auto begin = std::chrono::steady_clock::now();
+  actor_batch_.read(world->ecs(), net_->tick());
+  const auto end = std::chrono::steady_clock::now();
+  net_shown_tick_ = net_->tick();
+  publish_actor_sounds(context.messages, context.sound_available, world->sound_events());
+  // Метрики показа: мир чужой, решения в нём считал ведомый, поэтому intents здесь не считаются.
+  actors_last_metrics_ = actor_metrics{
+    uint32_t(world->ecs().count<actor_position>()), 0u, actor_batch_.produced(),
+    uint32_t(world->ecs().count<actor_eating>()), net_->tick()};
+  metrics_actor_ticks_ += 1;
+  metrics_instances_ += actor_batch_.produced();
+  metrics_actor_update_us_ += uint64_t(std::max<int64_t>(utils::count_mcs(begin, end), 0));
 }
 
 void frontier_online_game::end_frame(const presentation_context& context) {
@@ -179,6 +265,11 @@ void frontier_online_game::collect_player_intents(const presentation_context& co
       glm::vec2{float(context.window_width), float(context.window_height)}),
     glm::vec2{0.0f}, world_extent_);
 
+  if (networked_) {
+    // Предложение авторитету: в мире еда появится, когда он запишет её в canonical bundle.
+    if (net_) static_cast<void>(net_->propose_food(point.x, point.y));
+    return;
+  }
   act::intent intent;
   intent.kind = act::intent_kind::spawn_prefab;
   intent.payload.spawn.prefab = utils::string_hash("food");
@@ -195,35 +286,34 @@ void frontier_online_game::move_camera(const presentation_context& context) {
   if (!context.gate.run_gameplay) {
     return;
   }
-  static const auto up = input::events::make_event_id("camera_up");
-  static const auto left = input::events::make_event_id("camera_left");
-  static const auto down = input::events::make_event_id("camera_down");
-  static const auto right = input::events::make_event_id("camera_right");
-
-  // По живому тесту экранный «верх» = -y мира (Vulkan clip-Y направлен вниз, ortho это не компенсирует).
-  glm::vec2 dir{0.0f, 0.0f};
-  dir.y -= input::events::is_pressed(up) ? 1.0f : 0.0f;
-  dir.y += input::events::is_pressed(down) ? 1.0f : 0.0f;
-  dir.x -= input::events::is_pressed(left) ? 1.0f : 0.0f;
-  dir.x += input::events::is_pressed(right) ? 1.0f : 0.0f;
-  if (dir.x == 0.0f && dir.y == 0.0f) {
-    return;
-  }
-
-  const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
   const float dt = float(context.time) / float(utils::global_time_resolution);
-  const float speed = camera_.half_width * 1.5f; // мировых единиц/сек — полтора экрана-полуширины
-  camera_.center = glm::clamp(camera_.center + dir * (speed * dt / len),
-                              glm::vec2{0.0f, 0.0f}, world_extent_);
+  simul::step_camera(camera_, camera_config_, simul::camera_pan_direction(), dt, glm::vec2{0.0f, 0.0f},
+                     world_extent_);
+}
+
+void frontier_online_game::request_chunks(broker& messages) {
+  while (next_chunk_request_ < chunk_request_count_) {
+    command_load_chunk command;
+    command.generation = scene_generation_;
+    command.world_build = world_build_;
+    command.x = int32_t(next_chunk_request_ % chunks_x_);
+    command.y = int32_t(next_chunk_request_ / chunks_x_);
+    command.chunk_size = chunk_size_;
+    command.world_seed = chunk_request_seed_;
+    command.generator = chunk_request_generator_;
+    if (!messages.load_chunk.try_push(std::move(command))) return; // очередь полна: следующий кадр
+    ++next_chunk_request_;
+  }
 }
 
 void frontier_online_game::drain_loaded_chunks(broker& messages, const uint64_t generation) {
   command_chunk_loaded command{};
   while (messages.chunk_loaded.try_pop(command)) {
-    if (command.generation != generation) {
+    if (command.generation != generation || command.world_build != world_build_) {
       DE_LOG(catalogue::log_domain::gameplay, flow,
-             "main: dropped stale chunk ({},{}) generation={} current={}",
-             command.x, command.y, command.generation, generation);
+             "main: dropped stale chunk ({},{}) generation={}/{} world build={}/{}",
+             command.x, command.y, command.generation, generation, command.world_build,
+             world_build_);
       continue;
     }
 
@@ -261,28 +351,33 @@ void frontier_online_game::publish_camera_and_tiles(const presentation_context& 
   // Камера уезжает в рендер снапшотом состояния, а не готовой матрицей: global_ubo («camera_buffer»)
   // собирает рендер-поток, интерполируя prev→cur по реальным часам (см. render_system.cpp) — иначе
   // камера шагала бы с частотой main-тика на фоне плавных акторов.
-  const glm::mat4 view_projection = camera_.view_proj();
-  if (context.render_available && context.gate.run_gameplay) {
+  // На паузе камера стоит, но окно может смениться (ресайз, полный экран): новый aspect обязан уйти
+  // в рендер, иначе мир растянут старым, а тайлы уже отобраны по новому.
+  const bool camera_changed = camera_.center != last_published_camera_.center ||
+                              camera_.half_width != last_published_camera_.half_width ||
+                              camera_.aspect != last_published_camera_.aspect;
+  if (context.render_available && (context.gate.run_gameplay || camera_changed)) {
+    last_published_camera_ = camera_;
     auto& cam = context.messages.draw_camera.write_slot();
     cam.center_x = camera_.center.x;
     cam.center_y = camera_.center.y;
     cam.half_width = camera_.half_width;
     cam.aspect = camera_.aspect;
-    cam.fb_width = float(std::max(context.framebuffer_width, 1u));
-    cam.fb_height = float(std::max(context.framebuffer_height, 1u));
     cam.frame_time = context.time;
     context.messages.draw_camera.publish();
+    published_cameras_.push(camera_);
   }
 
   if (!context.gate.in_game || !context.render_available) {
     return;
   }
 
-  const tile_span span = visible_tiles(camera_, grid_, 1.0f);
+  // Камера двигается до 1.5 полуширины экрана в секунду: при полуширине 28 это больше тайла за
+  // шаг, и запаса в один тайл вокруг ТЕКУЩЕЙ камеры не хватало на ту, что рисует рендер.
+  const tile_span span = visible_tiles(published_cameras_.bounds(camera_), grid_, 1.0f);
   tile_batch_.build(grid_, span, textures_);
 
   auto& slot = context.messages.draw_tiles.write_slot();
-  std::memcpy(slot.view_proj.data(), &view_projection[0][0], sizeof(float) * 16);
   slot.count = tile_batch_.count();
   slot.stride = tile_batch::stride();
   slot.bytes.resize(size_t(slot.count) * slot.stride);
@@ -303,7 +398,7 @@ void frontier_online_game::update_actors(const simulation_context& context) {
   const auto end = std::chrono::steady_clock::now();
   const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(begin, end), 0));
 
-  publish_actor_sounds(context.messages, context.sound_available);
+  publish_actor_sounds(context.messages, context.sound_available, actors_.sound_events());
   metrics_actor_ticks_ += 1;
   metrics_intents_ += actors_last_metrics_.intents;
   metrics_instances_ += actors_last_metrics_.instances;
@@ -348,12 +443,15 @@ void frontier_online_game::publish_sound_listener(broker& messages, const bool s
   messages.sound_listener.publish();
 }
 
-void frontier_online_game::publish_actor_sounds(broker& messages, const bool sound_available) {
+// Звуки тика показываемого мира: своего (одиночная игра) или проверенного мира ведомого (сеть).
+// Звучит последний показанный тик; тики догона, пройденные за один круг, молчат — проиграть их
+// задним числом значило бы озвучить прошлое.
+void frontier_online_game::publish_actor_sounds(broker& messages, const bool sound_available,
+                                                const std::span<const sound_emit> emits) {
   if (!sound_available) {
     return;
   }
 
-  const auto emits = actors_.sound_events();
   const glm::vec2 listener = camera_.center;
   // Радиус слышимости привязан к зуму; тот же радиус уходит в max_distance ⇒ отсечка ниже —
   // просто бюджет (не слать заведомо неслышимое), а реальную громкость/панораму считает
@@ -389,7 +487,8 @@ void frontier_online_game::publish_actor_sounds(broker& messages, const bool sou
     play.pos[1] = event.pos.y;
     play.min_distance = audible * 0.25f; // внутри четверти радиуса — полная громкость
     play.max_distance = audible;
-    messages.sound_play.try_push(play);
+    // Канал звука lossy: полная очередь — звук пропущен, и в счёт отправленных он не идёт.
+    if (!messages.sound_play.try_push(play)) continue;
     ++sent;
     DE_TRACE(catalogue::log_domain::sound,
              "sim-sound send task={} at ({:.1f},{:.1f})", play.taskid, event.pos.x, event.pos.y);
@@ -454,12 +553,14 @@ void frontier_online_game::reset_metrics() noexcept {
   metrics_last_log_ = std::chrono::steady_clock::now();
 }
 
-void frontier_online_game::register_ui_bindings(visage::system& ui) {
-  auto* ui_ptr = &ui;
-  sol::environment env = ui.script_env();
-  sol::table app = env["app"].get_or_create<sol::table>();
-  app.set_function("perf_stats", [ui_ptr]() -> sol::table {
-    auto& lua = ui_ptr->script_state();
+// Lua-биндинги игры: реализация — именованные методы (не лямбды: одинаковые сигнатуры лямбд одной
+// функции делят метатаблицу __gc в sol2), регистрация — в register_ui_bindings.
+struct frontier_online_game::lua_bindings {
+  frontier_online_game* game = nullptr;
+  visage::system* ui = nullptr;
+
+  sol::table perf_stats() const {
+    auto& lua = ui->script_state();
     sol::table out = lua.create_table();
     std::vector<uint64_t> samples;
     int32_t index = 0;
@@ -481,50 +582,85 @@ void frontier_online_game::register_ui_bindings(visage::system& ui) {
         out[++index] = entry;
       });
     return out;
-  });
-
-  // ── read-only шов к act-функциям (UI-проекция игрового состояния, ROADMAP п.13) ──
-  // Lua зовёт pure-категории по имени над entityid; effect-категории здесь НЕТ — Lua не мутирует
-  // геймплей (будущая кнопка атаки пойдёт через очередь интенций с анти-спамом, не через act).
-  // nil = нет функции / не та категория / нет сущности.
-  app.set_function("act_predicate", [this](const std::string& name, const uint32_t id) -> sol::optional<bool> {
-    const auto v = actors_.ui_predicate(name, aesthetics::entityid_t(id));
+  }
+  sol::optional<bool> act_predicate(const std::string& name, const uint32_t id) const {
+    const auto v = game->actors_.ui_predicate(name, aesthetics::entityid_t(id));
     return v.has_value() ? sol::optional<bool>(*v) : sol::optional<bool>(sol::nullopt);
-  });
-  app.set_function("act_number", [this](const std::string& name, const uint32_t id) -> sol::optional<double> {
-    const auto v = actors_.ui_number(name, aesthetics::entityid_t(id));
+  }
+  sol::optional<double> act_number(const std::string& name, const uint32_t id) const {
+    const auto v = game->actors_.ui_number(name, aesthetics::entityid_t(id));
     return v.has_value() ? sol::optional<double>(double(*v)) : sol::optional<double>(sol::nullopt);
-  });
-  // string-категория = хеш loc-ключа (utils::id); Lua 5.4 integer 64-битный, точности хватает.
-  app.set_function("act_string", [this](const std::string& name, const uint32_t id) -> sol::optional<int64_t> {
-    const auto v = actors_.ui_string(name, aesthetics::entityid_t(id));
+  }
+  sol::optional<int64_t> act_string(const std::string& name, const uint32_t id) const {
+    const auto v = game->actors_.ui_string(name, aesthetics::entityid_t(id));
     return v.has_value() ? sol::optional<int64_t>(int64_t(*v)) : sol::optional<int64_t>(sol::nullopt);
-  });
-  // describe: с коллбеком — вызывается по каждому узлу исполнения (Lua строит граф/тултип);
-  // без коллбека — простая строка узлов через перевод строки. nil = функции/сущности нет.
-  app.set_function("act_describe", [this, ui_ptr](const std::string& name, const uint32_t id,
-                                                  sol::optional<sol::protected_function> callback) -> sol::object {
-    auto& lua = ui_ptr->script_state();
+  }
+  sol::object act_describe(const std::string& name, const uint32_t id, sol::optional<sol::protected_function> callback) const {
+    auto& lua = ui->script_state();
     bool ok = false;
+    bool callback_failed = false;
     if (callback.has_value()) {
-      ok = actors_.ui_describe(name, aesthetics::entityid_t(id), [&](const std::string_view node) {
+      ok = game->actors_.ui_describe(name, aesthetics::entityid_t(id), [&](const std::string_view node) {
+        if (callback_failed) return;
         const auto result = (*callback)(std::string(node));
+        // Критическая ошибка внутри коллбека переносится через Lua и бросается дальше, а не
+        // превращается в предупреждение; обычная ошибка Lua — отказ всего describe (nil), а не
+        // успешный ответ с потерянными узлами.
+        bindings::rethrow_critical_error(lua.lua_state());
         if (!result.valid()) {
           const sol::error err = result;
           utils::warn("act_describe callback error: {}", err.what());
+          callback_failed = true;
         }
       });
-      return ok ? sol::make_object(lua, true) : sol::make_object(lua, sol::nil);
+      return ok && !callback_failed ? sol::make_object(lua, true) : sol::make_object(lua, sol::nil);
     }
     std::string text;
-    ok = actors_.ui_describe(name, aesthetics::entityid_t(id), [&](const std::string_view node) {
+    ok = game->actors_.ui_describe(name, aesthetics::entityid_t(id), [&](const std::string_view node) {
       if (!text.empty()) {
         text.push_back('\n');
       }
       text.append(node);
     });
     return ok ? sol::make_object(lua, text) : sol::make_object(lua, sol::nil);
-  });
+  }
+  // Сеть для интерфейса: nil — локальная симуляция (клиент запущен без --join).
+  sol::object net_status() const {
+    auto& lua = ui->script_state();
+    if (!game->networked_ || !game->net_) {
+      return sol::nil;
+    }
+    const auto status = game->net_->status();
+    sol::table out = lua.create_table();
+    out["phase"] = std::string(status.phase);
+    out["endpoint"] = game->join_.endpoint;
+    out["peer"] = double(status.peer);
+    out["tick"] = double(status.tick);
+    out["catchup_tick"] = double(status.catchup_tick);
+    out["silence_ms"] = double(status.silence_ms);
+    out["players"] = double(status.players);
+    out["sessions"] = double(status.sessions);
+    out["resumes"] = double(status.resumes);
+    out["attempts"] = double(status.attempts);
+    out["own_inputs"] = double(status.own_inputs);
+    out["rejected_inputs"] = double(status.rejected_inputs);
+    return out;
+  }
+};
+
+void frontier_online_game::register_ui_bindings(visage::system& ui) {
+  sol::environment env = ui.script_env();
+  sol::table app = env["app"].get_or_create<sol::table>();
+  const lua_bindings bindings{this, &ui};
+  app.set_function("perf_stats", &lua_bindings::perf_stats, bindings);
+  // ── read-only шов к act-функциям (UI-проекция игрового состояния, ROADMAP п.13) ──
+  // Lua зовёт pure-категории по имени над entityid; effect-категории здесь НЕТ — Lua не мутирует
+  // геймплей. nil = нет функции / не та категория / нет сущности. string-категория = хеш loc-ключа.
+  app.set_function("act_predicate", &lua_bindings::act_predicate, bindings);
+  app.set_function("act_number", &lua_bindings::act_number, bindings);
+  app.set_function("act_string", &lua_bindings::act_string, bindings);
+  app.set_function("act_describe", &lua_bindings::act_describe, bindings);
+  app.set_function("net_status", &lua_bindings::net_status, bindings);
 }
 
 void frontier_online_game::before_ui_update(visage::system& ui) const {

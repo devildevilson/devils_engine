@@ -115,6 +115,35 @@ struct command_gpu_done {
   resource_ref res;
 };
 
+// СЪЁМ КАДРА (снимок экрана). Один механизм для команды запуска (`--dump`) и клавиши пользователя:
+// главный поток просит рендер, рендер копирует кадр шагом графа (painter::frame_readback) и отдаёт
+// байты потоку ассетов, тот кодирует и пишет файл (AVIF, PNG или PPM по расширению) и сообщает итог.
+//
+// main → render. Снять первый кадр, нарисованный не раньше `not_before_frame` (счёт рисованных кадров
+// с запуска, с единицы; 0 — ближайший). Пока идёт съём, следующий запрос ждёт в очереди.
+struct command_capture_frame {
+  std::string path;
+  uint64_t not_before_frame = 0;
+};
+
+// render → assets: байты кадра (width*height*4, строки сверху вниз) и куда их записать.
+struct command_encode_frame {
+  std::string path;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  bool bgra = false;
+  std::vector<uint8_t> pixels;
+};
+
+// render/assets → main: итог съёма. ok = false — причина в error (кадр потерян при смене размера окна,
+// граф не умеет съёма, ошибка кодирования или записи). Снимок — действие пользователя, а не инвариант:
+// отказ — статус, процесс продолжает работу.
+struct command_frame_captured {
+  std::string path;
+  bool ok = false;
+  std::string error;
+};
+
 struct command_prepare_shaders {
   const demiurg::resource_system* registry = nullptr;
   std::string prefix;

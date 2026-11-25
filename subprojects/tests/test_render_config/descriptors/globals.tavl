@@ -1,6 +1,6 @@
 // Общий UBO-дескриптор: camera_buffer (view_proj + ui_proj + misc) как uniform-буфер.
-// camera_buffer — doublebuffer/per_update, поэтому descriptorCount = buffering (=2): в шейдере
-// это массив global_ubo[2], где элемент [0] = текущая копия (update_descriptors ротирует).
+// camera_buffer — копия на кадр в полёте (frames_in_flight/per_frame): набор дескрипторов у каждого
+// кадра свой, и update_descriptors направляет его на копию этого кадра (без history — одна).
 // Подключивший sets=[globals] шаг автоматически получает camera_buffer=uniform usage/barrier.
 {
   name = globals

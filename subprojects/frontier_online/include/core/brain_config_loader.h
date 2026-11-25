@@ -3,7 +3,7 @@
 
 #include <string_view>
 
-#include "actor_simulation.h"
+#include "core/actor_simulation.h"
 
 namespace devils_engine {
 namespace demiurg {
@@ -14,15 +14,17 @@ class resource_system;
 namespace frontier_online {
 namespace core {
 
-// Собирает multi-brain конфиг: script_id — предикат actor.is_hungry; fsm_prefix/goap_prefix —
-// префиксы наборов ресурсов (обычно "fsm"/"goap"): КАЖДЫЙ ресурс набора = отдельный именованный
-// мозг (имя = id без префикса), на который префабы ссылаются строками goap=/fsm= (per-entity refs).
-brain_config load_required_brain_config(
-  devils_engine::demiurg::resource_system& resources,
-  std::string_view script_id,
-  std::string_view fsm_prefix,
-  std::string_view goap_prefix,
-  std::string_view prefab_prefix);
+// Каталоги типов, из которых собираются мозги и префабы. Тип ресурса задаётся каталогом: под этими
+// именами реестры регистрируют типы, мод добавляет файлы в каталог — и они подхватываются. Других
+// строк, называющих те же каталоги, нет ни в коде, ни в конфигах.
+inline constexpr std::string_view fsm_resource_type = "fsm";
+inline constexpr std::string_view goap_resource_type = "goap";
+inline constexpr std::string_view prefab_resource_type = "prefab";
+
+// Собирает multi-brain конфиг: КАЖДЫЙ ресурс fsm/ и goap/ — отдельный именованный мозг (имя = id
+// без каталога типа), на который префабы ссылаются строками goap=/fsm= (per-entity refs); все
+// префабы prefab/ — в общий набор, обязательны `actor` и `food`.
+brain_config load_brain_config(devils_engine::demiurg::resource_system& resources);
 
 } // namespace core
 } // namespace frontier_online

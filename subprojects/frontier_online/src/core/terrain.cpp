@@ -1,5 +1,7 @@
 #include "core/terrain.h"
 
+#include <cmath>
+
 #include <devils_engine/originator/generator_resource.h>
 #include <devils_engine/originator/pipeline.h>
 #include <devils_engine/originator/primitives.h>
@@ -149,7 +151,15 @@ tile_chunk terrain_source::generate(const chunk_coord coord) {
   const auto* tiles = state_->line.find_buffer(tiles_buffer);
   const auto terrain = tiles->field(state_->terrain_field_index);
   for (size_t i = 0; i < chunk.tiles.size(); ++i) {
-    chunk.tiles[i].terrain = terrain_code(terrain.get(i));
+    // Код рельефа — целое [0, terrain_unknown): дробное, отрицательное, NaN или 255 из генератора —
+    // ошибка своего конфига, а не значение (приведение такого к uint8 — UB и разные биты на разных
+    // платформах).
+    const double value = terrain.get(i);
+    if (!(value >= 0.0 && value < double(terrain_unknown)) || value != std::floor(value)) {
+      utils::error{}("frontier_online terrain: generator '{}' produced terrain code {} at chunk ({}, {}) element {}; "
+                     "expected an integer in [0, {})", state_->package.entry_id, value, coord.x, coord.y, i, int(terrain_unknown));
+    }
+    chunk.tiles[i].terrain = terrain_code(value);
   }
   return chunk;
 }

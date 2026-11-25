@@ -1,4 +1,3 @@
-#include "devils_engine/utils/log.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -8,23 +7,22 @@
 #include <utility>
 
 #include <devils_engine/catalogue/logging.h> // доменные логи (render)
+#include <devils_engine/simul/draw_intent.h>
+#include <devils_engine/simul/interpolation.h>
 #include <devils_engine/simul/render_runtime.h>
 #include <devils_engine/utils/core.h>
+#include <devils_engine/utils/log.h>
 #include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/time-utils.hpp>
 
-#include "actor_batch.h"
-#include "actor_simulation.h"
-#include "broker.h"
-#include "draw_intent.h"
-#include "frame_capture.h"
-#include "global_ubo.h"
-#include "interpolation.h"
-#include "messages.h"
-#include "render_system.h"
-#include "tile_batch.h"
-#include "tile_map.h"
-#include "write_buffer_channel.h"
+#include "core/actor_batch.h"
+#include "core/actor_simulation.h"
+#include "core/broker.h"
+#include <devils_engine/simul/global_ubo.h>
+#include "core/messages.h"
+#include "core/render_system.h"
+#include "core/tile_batch.h"
+#include "core/tile_map.h"
 
 // Политика смешивания инстанса актёра (см. blend_traits в simul/interpolation.h). Позиция и размер —
 // непрерывные (лерп), texture/color — дискретные (снап к новейшему b). teleport-guard выключен
@@ -52,6 +50,19 @@ struct blend_traits<::frontier_online::core::actor_instance> {
   }
 };
 
+// Камера: позиция и масштаб смешиваются, aspect (и интервал) берутся у новейшего снапшота.
+template <>
+struct blend_traits<::frontier_online::core::command_draw_camera> {
+  using camera = ::frontier_online::core::command_draw_camera;
+  static camera mix(const camera& a, const camera& b, const float t) noexcept {
+    camera o = b;
+    o.center_x = a.center_x + (b.center_x - a.center_x) * t;
+    o.center_y = a.center_y + (b.center_y - a.center_y) * t;
+    o.half_width = a.half_width + (b.half_width - a.half_width) * t;
+    return o;
+  }
+};
+
 } // namespace simul
 } // namespace devils_engine
 
@@ -59,6 +70,8 @@ namespace frontier_online {
 namespace core {
 
 using namespace devils_engine;
+using simul::draw_intent;
+using simul::snapshot_interpolator;
 
 static uint32_t make_color(const float r, const float g, const float b, const float a) {
   const auto pack = [](const float v) {
@@ -71,20 +84,18 @@ struct render_simulation_init : public simul::standard_render_state<broker> {
   uint32_t tile_pair_index = painter::invalid_resource_slot;
   uint32_t actor_pair_index = painter::invalid_resource_slot;
   bool tiles_ready = false;
+  bool tiles_clamp_warned = false;
+  bool actors_clamp_warned = false;
   bool actors_ready = false;
   bool actor_draw_ready = false;
   snapshot_interpolator<actor_instance> actor_interp;         // prev/cur + timing + blend (см. interpolation.h)
   std::vector<uint8_t> actor_interp_bytes;                    // переиспользуемый выход resolve() -> GPU
-  std::chrono::steady_clock::time_point actor_draw_last_tp{}; // для РЕАЛЬНОГО wall-time между кадрами (п.①)
-  bool actor_draw_tp_valid = false;
 
-  // Камера — тот же трёхконцерновый рецепт, что и акторы: timing = nominal_clock, identity
-  // тривиальна (снапшот один), blend локальный (center/half_width лерп, aspect/fb_* снап).
-  command_draw_camera cam_prev{}, cam_cur{};
-  bool cam_have_prev = false, cam_have_cur = false;
-  nominal_clock cam_clock;
-  std::chrono::steady_clock::time_point cam_last_tp{};
-  bool cam_tp_valid = false;
+  // Камера: состояние считает главный поток и публикует снапшотами; здесь общий интерполятор одного
+  // значения (blend_traits<command_draw_camera>: center/half_width лерп, aspect снап).
+  simul::value_interpolator<command_draw_camera> camera;
+  // Настенное время рендер-кадра с паузой — одно на все потоки снапшотов (камера, акторы).
+  simul::render_frame_clock frame_clock;
   bool active_gameplay = true;
 
   ~render_simulation_init() noexcept = default;
@@ -94,9 +105,8 @@ static void render_reset_project_draw_state(render_simulation_init& c) {
   c.tiles_ready = false;
   c.actors_ready = false;
   c.actor_draw_ready = false;
-  c.actor_draw_tp_valid = false; // сброс wall-clock базы: после detach/shutdown не считаем гигантский dt
-  c.cam_tp_valid = false;
-  c.cam_have_prev = false; // последний снапшот камеры оставляем (UBO перезапишется после пересборки графа)
+  c.frame_clock.reset(); // после detach/shutdown не считаем гигантский dt
+  c.camera.forget_previous(); // последний снапшот камеры оставляем (UBO перезапишется после пересборки графа)
   c.tile_pair_index = painter::invalid_resource_slot;
   c.actor_pair_index = painter::invalid_resource_slot;
 }
@@ -104,6 +114,17 @@ static void render_reset_project_draw_state(render_simulation_init& c) {
 static void render_shutdown(render_simulation_init& c) {
   simul::standard_render_shutdown(c);
   render_reset_project_draw_state(c);
+}
+
+// Одна пара на группу отрисовки занимает весь её бюджет из рендер-конфига (`budget` группы):
+// число не дублируется в коде, где разошлось бы с конфигом молча.
+static uint32_t draw_group_budget(const render_simulation_init& c, const uint32_t dg_index) {
+  const auto& group = c.base->draw_groups[dg_index];
+  const size_t budget = c.base->constant_values[group.budget_constant].reduce_value();
+  if (budget == 0 || budget > UINT32_MAX) {
+    utils::error{}("render: draw group '{}' declares instance budget {}", group.name, budget);
+  }
+  return uint32_t(budget);
 }
 
 static void render_create_tile_draw(render_simulation_init& c) {
@@ -120,7 +141,7 @@ static void render_create_tile_draw(render_simulation_init& c) {
   draw_intent<tile_instance> intent;
   if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r) {
     utils::warn("render tiles: dg_tiles instance layout mismatch: {} (attr {}, expected {}, actual {})",
-                core::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+                simul::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
     return;
   }
 
@@ -146,16 +167,9 @@ static void render_create_tile_draw(render_simulation_init& c) {
   c.assets->populate_buffer_storage(quad_h, vertex_bytes, std::span<const uint8_t>());
   c.assets->mark_ready_buffer_slot(quad_h);
 
-  c.tile_pair_index = c.base->register_pair(dg_index, quad_h, 5000);
+  c.tile_pair_index = c.base->register_pair(dg_index, quad_h, draw_group_budget(c, dg_index));
 
-  for (uint32_t off = 0; off < 2; ++off) {
-    const auto indi = c.base->get_current_indirect_resource_frame(c.tile_pair_index, off);
-    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    cmd[0].vertexCount = 6;
-    cmd[0].instanceCount = 0;
-    cmd[0].firstVertex = 0;
-    cmd[0].firstInstance = 0;
-  }
+  simul::standard_render_write_draw_pair(c, c.tile_pair_index, {}, VkDrawIndirectCommand{6, 0, 0, 0});
 
   c.tiles_ready = true;
   DE_LOG(catalogue::log_domain::render, flow, "render tiles: registered tile quad draw pair");
@@ -175,7 +189,7 @@ static void render_create_actor_draw(render_simulation_init& c) {
   draw_intent<actor_instance> intent;
   if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r) {
     utils::warn("render actors: dg_actors instance layout mismatch: {} (attr {}, expected {}, actual {})",
-                core::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+                simul::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
     return;
   }
 
@@ -198,16 +212,9 @@ static void render_create_actor_draw(render_simulation_init& c) {
   c.assets->populate_buffer_storage(tri_h, vertex_bytes, std::span<const uint8_t>());
   c.assets->mark_ready_buffer_slot(tri_h);
 
-  c.actor_pair_index = c.base->register_pair(dg_index, tri_h, 5000);
+  c.actor_pair_index = c.base->register_pair(dg_index, tri_h, draw_group_budget(c, dg_index));
 
-  for (uint32_t off = 0; off < 2; ++off) {
-    const auto indi = c.base->get_current_indirect_resource_frame(c.actor_pair_index, off);
-    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    cmd[0].vertexCount = 3;
-    cmd[0].instanceCount = 0;
-    cmd[0].firstVertex = 0;
-    cmd[0].firstInstance = 0;
-  }
+  simul::standard_render_write_draw_pair(c, c.actor_pair_index, {}, VkDrawIndirectCommand{3, 0, 0, 0});
 
   c.actors_ready = true;
   DE_LOG(catalogue::log_domain::render, flow,
@@ -230,21 +237,19 @@ static void render_update_tile_draw(render_simulation_init& c, const command_dra
 
   const auto& pair = c.base->pairs[c.tile_pair_index];
   const uint32_t count = std::min(msg.count, pair.max_size);
+  if (count < msg.count && !c.tiles_clamp_warned) {
+    // Лишние тайлы не рисуются вовсе: край карты почернел бы молча.
+    utils::warn("render tiles: {} visible tiles exceed the draw group budget {}; the rest are not drawn",
+                msg.count, pair.max_size);
+    c.tiles_clamp_warned = true;
+  }
   const size_t bytes = std::min(msg.bytes.size(), size_t(count) * msg.stride);
 
-  for (uint32_t off = 0; off < 2; ++off) {
-    const auto inst = c.base->get_current_instance_resource_frame(c.tile_pair_index, off);
-    const auto indi = c.base->get_current_indirect_resource_frame(c.tile_pair_index, off);
-    if (bytes != 0) {
-      std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, msg.bytes.data(), bytes);
-    }
-
-    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    cmd[0].vertexCount = 6;
-    cmd[0].instanceCount = count;
-    cmd[0].firstVertex = 0;
-    cmd[0].firstInstance = 0;
-  }
+  // Копия текущего кадра пишется после prepare_frame (standard_render_flush_buffer_writes): остальные
+  // копии ещё читают кадры в полёте.
+  simul::standard_render_write_draw_pair(
+    c, c.tile_pair_index, std::as_bytes(std::span(reinterpret_cast<const uint8_t*>(msg.bytes.data()), bytes)),
+    VkDrawIndirectCommand{6, count, 0, 0});
 }
 
 static void render_update_actor_draw(render_simulation_init& c) {
@@ -258,21 +263,19 @@ static void render_update_actor_draw(render_simulation_init& c) {
   const auto& pair = c.base->pairs[c.actor_pair_index];
   c.actor_interp.resolve(c.actor_interp_bytes); // интерполяция prev->cur по alpha реальных часов
   const uint32_t count = std::min(c.actor_interp.count(), pair.max_size);
+  if (count < c.actor_interp.count() && !c.actors_clamp_warned) {
+    // Лишние актёры не рисуются вовсе: мир без части существ выглядел бы исправным.
+    utils::warn("render actors: {} actors exceed the draw group budget {}; the rest are not drawn",
+                c.actor_interp.count(), pair.max_size);
+    c.actors_clamp_warned = true;
+  }
   const size_t bytes = std::min(c.actor_interp_bytes.size(), size_t(count) * sizeof(actor_instance));
 
-  for (uint32_t off = 0; off < 2; ++off) {
-    const auto inst = c.base->get_current_instance_resource_frame(c.actor_pair_index, off);
-    const auto indi = c.base->get_current_indirect_resource_frame(c.actor_pair_index, off);
-    if (bytes != 0) {
-      std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, c.actor_interp_bytes.data(), bytes);
-    }
-
-    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    cmd[0].vertexCount = 3;
-    cmd[0].instanceCount = count;
-    cmd[0].firstVertex = 0;
-    cmd[0].firstInstance = 0;
-  }
+  // Копия текущего кадра пишется после prepare_frame (standard_render_flush_buffer_writes): остальные
+  // копии ещё читают кадры в полёте.
+  simul::standard_render_write_draw_pair(
+    c, c.actor_pair_index, std::as_bytes(std::span(reinterpret_cast<const uint8_t*>(c.actor_interp_bytes.data()), bytes)),
+    VkDrawIndirectCommand{3, count, 0, 0});
 }
 
 static void render_on_graph_ready(render_simulation_init& c) {
@@ -280,37 +283,21 @@ static void render_on_graph_ready(render_simulation_init& c) {
   render_create_actor_draw(c);
 }
 
-// Собрать global_ubo («camera_buffer») из интерполированного prev→cur состояния камеры — на КАЖДЫЙ
-// рендер-кадр, а не на main-тик. Камера рисуется с тем же лагом в один снапшот, что и акторы, поэтому
-// они визуально синхронны. aspect и размер фреймбуфера дискретны (resize) — снап к новейшему.
+// view_proj камеры из интерполированного prev→cur состояния — на КАЖДЫЙ рендер-кадр, а не на
+// main-тик: камера рисуется с тем же лагом в один снапшот, что и акторы, поэтому они визуально
+// синхронны. Проекцию интерфейса и размер кадра simul берёт из фреймбуфера, и UBO пишется каждый
+// кадр — интерфейс рисуется и до первого снапшота камеры (загрузка), и на паузе после ресайза.
 static void render_update_camera(render_simulation_init& c) {
-  if (!c.graph_ready || !c.cam_have_cur) {
-    return;
+  glm::mat4 view_proj(1.0f);
+  if (c.camera.has_data()) {
+    const command_draw_camera state = c.camera.resolve();
+    camera2d cam;
+    cam.center = {state.center_x, state.center_y};
+    cam.half_width = state.half_width;
+    cam.aspect = state.aspect;
+    view_proj = cam.view_proj();
   }
-  const auto& a = c.cam_have_prev ? c.cam_prev : c.cam_cur;
-  const auto& b = c.cam_cur;
-  const float t = c.cam_clock.alpha();
-
-  camera2d cam;
-  cam.center = {a.center_x + (b.center_x - a.center_x) * t,
-                a.center_y + (b.center_y - a.center_y) * t};
-  cam.half_width = a.half_width + (b.half_width - a.half_width) * t;
-  cam.aspect = b.aspect;
-
-  global_ubo_t ubo{};
-  ubo.view_proj = cam.view_proj();
-  ubo.ui_proj = glm::mat4(1.0f);
-  ubo.ui_proj[0][0] = 2.0f / b.fb_width;
-  ubo.ui_proj[1][1] = 2.0f / b.fb_height;
-  ubo.ui_proj[2][2] = -1.0f;
-  ubo.ui_proj[3][0] = -1.0f;
-  ubo.ui_proj[3][1] = -1.0f;
-  ubo.misc = glm::vec4(b.fb_width, b.fb_height, 4.0f, 0.0f);
-
-  static const uint64_t camera_buffer_hash = utils::string_hash("camera_buffer");
-  simul::standard_render_write_buffer_bytes(
-    c, camera_buffer_hash,
-    std::span<const std::byte>(reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo)));
+  simul::standard_render_write_global_ubo(c, view_proj);
 }
 
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept : simul::render_system<::frontier_online::core::broker>(frame_time),
@@ -330,22 +317,6 @@ void render_simulation::init() {
     simul::standard_render_create_device(*container);
     simul::standard_render_create_base_resources(*container);
   }
-
-  // еще дополнительно нужно создать менеджера GPU ресурсов
-  // я вот о чем подумал: должен быть менеджер ассетов, который
-  // раздаст память и займется вопросами копирования
-  // + к этому сделать реестр текущих ресурсов, то есть
-  // внешняя система получает id -> он ведет к менеджеру ->
-  // тот подсказывает в каком состоянии находится GPU ресурс ->
-  // если еще не готов, то получаем индекс ресурса по умолчанию (0) ->
-  // если готов то он к этому времени окажется в binding'е, отправляем индекс в сете
-  // ресурсы GPU могут находиться в нескольких состояниях
-  // empty, resource_exists, resource_has_data, ready
-
-  // тогда у менеджера ассетов задача такая: быть реестром всех возможных GPU ресурсов на текущий момент
-  // он будет иногда перекидывать информацию в поток ассетов и принимать задачи по загрузке из хоста
-  // чем тогда поток ассетов будет заниматься? вообще по идее его задача распарсить дерево
-  // ресурсов и поработать с диском, в том числе что то наоборот спихнуть на диск
 }
 
 bool render_simulation::stop_predicate() const {
@@ -353,17 +324,6 @@ bool render_simulation::stop_predicate() const {
 }
 
 void render_simulation::update([[maybe_unused]] const size_t time) {
-  // тут че вообще делаем? пробегаем события
-  // заходим в рендер граф, обрабатываем
-  // вообще ничего особо сложного
-
-  // событие изменения размеров окна
-  // событиe обновления данных
-  // событиe обновления настроек
-  // ...
-
-  // в конце заходим в рендер граф и рисуем все подряд
-
   if (container->br == nullptr) {
     return; // broker ещё не задан — нечего обрабатывать/рисовать
   }
@@ -392,32 +352,20 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   if (const command_active_gameplay_state* cmd = br.active_gameplay_state.consume()) {
     if (container->active_gameplay != cmd->active) {
       container->active_gameplay = cmd->active;
-      // Не включаем время, проведённое на паузе, в первый dt после возобновления.
-      container->cam_tp_valid = false;
-      container->actor_draw_tp_valid = false;
     }
   }
+  // На паузе часы стоят, и первый кадр после неё тоже даёт 0: время паузы в интерполяцию не попадает.
+  container->frame_clock.begin_frame(container->active_gameplay);
 
   // Снапшот камеры: prev <- cur, часы на ноль; между снапшотами alpha гоним по реальному wall-time
   // рендер-кадра только при active gameplay. UBO пересобирается каждый рендер-кадр.
   bool camera_snapshot = false;
   if (const command_draw_camera* cmd = br.draw_camera.consume()) {
-    container->cam_prev = container->cam_cur;
-    container->cam_have_prev = container->cam_have_cur;
-    container->cam_cur = *cmd;
-    container->cam_have_cur = true;
-    container->cam_clock.on_snapshot(cmd->frame_time);
+    container->camera.push(*cmd, cmd->frame_time);
     camera_snapshot = true;
   }
-  if (container->cam_have_cur) {
-    const auto now = std::chrono::steady_clock::now();
-    if (container->active_gameplay && !camera_snapshot && container->cam_tp_valid) {
-      container->cam_clock.advance(size_t(std::max<int64_t>(utils::count_mcs(container->cam_last_tp, now), 0)));
-    }
-    container->cam_last_tp = now;
-    container->cam_tp_valid = true;
-    render_update_camera(*container);
-  }
+  container->camera.advance(container->frame_clock.for_stream(camera_snapshot));
+  render_update_camera(*container);
 
   if (container->graph_ready) {
     if (const command_draw_tiles* cmd = br.draw_tiles.consume()) {
@@ -442,33 +390,12 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   if (container->graph_ready && container->actor_draw_ready) {
     // alpha гоним по РЕАЛЬНОМУ прошедшему времени активного render-кадра, а не по номинальному шагу.
     // На кадре прихода снапшота elapsed сброшен в push() -> не продвигаем (alpha=0 -> показываем prev).
-    const auto now = std::chrono::steady_clock::now();
-    if (container->active_gameplay && !actor_snapshot) {
-      const size_t real_dt = container->actor_draw_tp_valid
-                               ? size_t(std::max<int64_t>(utils::count_mcs(container->actor_draw_last_tp, now), 0))
-                               : 0;
-      container->actor_interp.advance(real_dt);
-    }
-    container->actor_draw_last_tp = now;
-    container->actor_draw_tp_valid = true;
+    container->actor_interp.advance(container->frame_clock.for_stream(actor_snapshot));
     render_update_actor_draw(*container);
   }
 
   if (container->graph_ready && container->draw_active && container->base->can_draw()) {
-    container->base->prepare_frame();
-    container->ctx.prepare();
-    container->ctx.draw();
-    container->base->submit_frame();
-
-    // Съём кадра — инструмент разработчика: посмотреть на результат, не имея перед собой экрана.
-    auto& capture = capture_request();
-    if (capture.wanted() && !capture.done.load(std::memory_order_relaxed)) {
-      const uint64_t drawn = capture.drawn.fetch_add(1, std::memory_order_relaxed) + 1;
-      if (drawn >= capture.at_frame) {
-        capture_frame(*container->base, "albedo_res", capture.path);
-        capture.done.store(true, std::memory_order_release);
-      }
-    }
+    simul::standard_render_draw_frame(*container, br);
   }
 }
 

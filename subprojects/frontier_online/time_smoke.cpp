@@ -1,4 +1,3 @@
-#include "devils_engine/utils/log.h"
 // TIME-02 acceptance: wall-time is only a fixed-step pacing source. Two deliberately different
 // presentation schedules must execute the same authoritative ticks and produce the same complete
 // frontier_online actor checkpoint.
@@ -11,12 +10,14 @@
 #include <vector>
 
 #include <devils_engine/thread/atomic_pool.h>
+#include <devils_engine/utils/log.h>
 #include <devils_engine/utils/simulation_time.h>
 #include <devils_engine/utils/timeline.h>
 #include <spdlog/spdlog.h>
 
 #include "core/actor_batch.h"
 #include "core/actor_simulation.h"
+#include "core/causal_content.h"
 #include "core/actor_checkpoint.h"
 #include "test_brain_fixture.h"
 
@@ -99,7 +100,7 @@ std::vector<uint64_t> fragmented_schedule(const uint64_t total) {
 
 int main() {
   spdlog::set_level(spdlog::level::err);
-  test_brain_fixture fixture(FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT);
+  test_brain_fixture fixture(frontier_online::core::project_modules_root());
 
   constexpr std::array<uint64_t, 1> coarse{2'000'000};
   const auto fragmented = fragmented_schedule(coarse.front());

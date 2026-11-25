@@ -11,7 +11,17 @@
 - `serialization.h`, `state_schema.h`, `serialization_sink.h` — общие bytes/schema.
   ECS-проекция остаётся в aesthetics, сетевой state projection — в network. Не копировать codec.
 - `atomic_file.h` — same-directory transaction; не заменять проверенную atomic publication на
-  запись прямо в destination. `fileio.h` сохраняет отдельную роль обычного I/O.
+  запись прямо в destination. `fileio.h` сохраняет отдельную роль обычного I/O: `read`/`read_text`
+  возвращают `std::expected<…, read_error>`; не возвращать «пустой вектор = ошибка» — пустой файл годен.
+- `root.h` — единственное место абсолютного пути: `root::open(abs)` проверяет корень, `resolve`
+  пускает только относительные пути внутри него. Абсолютный путь любой платформы (`/`, `C:`,
+  `\\server`), `..` за корень и `:` отвергаются статусом на всех платформах; `\` — разделитель.
+- `std::hash` и `std::*_distribution` не годятся для зёрен, идентичностей и канонических байтов: алгоритм у
+  каждой стандартной библиотеки свой (MSVC: FNV-1a). Строку хешировать `string_hash` (rapidhash).
+- То же с `std::sin/exp/pow/...`: libm меняет последние биты между версиями glibc и у MSVC своя.
+  Где результат влияет на мир/симуляцию — `deterministic_math.h` (double: порт musl 1.2.5, побитово
+  равен libm musl). Ветки `__FP_FAST_FMA` порта выключены намеренно; нужна сборка без FP contraction
+  (`devils_engine::options`). Эталон и сверка — `utils_math_platform_test`, `*_cross_compiler_probe`.
 - `simulation_time.h`, `timeline.h` — integer gameplay time; presentation/wall time не источник
   authoritative ticks. Шаги симуляции нумеруются с 1: `simulation_now() == 0` значит «ни одного
   шага ещё не было» (начальное состояние), и ни событие, ни действие не адресует тик 0. `prng.h`/`shared.h` — единые hash/random primitives.
@@ -25,10 +35,11 @@
 
 ## Проверка
 
-`utils_contract_test`, `utils_serialization_test`, `utils_general_test`, `thread_general_test`,
+`utils_contract_test`, `utils_serialization_test`, `utils_general_test`, `utils_root_test`, `thread_general_test`,
 `simulation_time_test`, `timeline_test` — выбирать по изменению. После изменения codec/schema
 добавить `aesthetics_serialization_test` и соответствующие network checkpoint/digest tests.
-CMake проверяет зависимости zstd/ZLIB; не предполагать единственное имя системной zstd-цели.
+Компрессор движка — системный zstd (`compression.h`); второй компрессор общего назначения не
+добавлять. CMake перебирает имена zstd-цели: не предполагать единственное имя.
 
 Собирать из корня: `cmake --build build-release --target <test_target> -j 8`, затем
 `ctest --test-dir build-release -R '<test_target>' --output-on-failure`.

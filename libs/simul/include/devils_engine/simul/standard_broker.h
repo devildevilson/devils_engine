@@ -26,6 +26,7 @@ struct standard_broker {
   thread::mailbox<command_render_set_graph> set_active_graph;
   thread::spsc_queue<command_render_update_constant> update_constant; // обновление render-graph константы
   write_buffer_channel write_buffer;                                  // camera + UI буферы
+  thread::spsc_queue<command_capture_frame> capture_frame;            // снимки (reliable)
 
   // assets → render
   thread::mailbox<command_shaders_prepared> shaders_prepared; // latest-wins (one-shot)
@@ -34,9 +35,16 @@ struct standard_broker {
   // render → assets
   thread::spsc_queue<command_gpu_done> gpu_done;               // reliable (ack)
   thread::spsc_queue<command_prepare_shaders> prepare_shaders; // reliable (one-shot)
+  thread::spsc_queue<command_encode_frame> encode_frame;       // байты снимка (reliable, мало мест: по ~8 МБ)
 
   // main → assets
   thread::spsc_queue<command_load_resource> load_resource; // reliable
+
+  // assets → main
+  thread::spsc_queue<command_frame_captured> frame_captured; // итог записи снимка (reliable)
+
+  // render → main
+  thread::spsc_queue<command_frame_captured> render_captured; // съём не удался до кодирования (reliable)
 
   // sound → main
   thread::mailbox<command_sound_state> sound_state; // latest-wins snapshot
@@ -53,7 +61,7 @@ struct standard_broker {
   thread::mailbox<command_sound_set_directional_coloration> sound_directional_coloration;
 
   standard_broker()
-    : update_constant(64), write_buffer(64, size_t(1) << 20), gpu_transition(256), gpu_done(256), prepare_shaders(8), load_resource(256), sound_play(64), sound_stop(64), sound_update(64), sound_devices(8), recreate_sound(8), sound_master_gain(8), sound_source_gain(16) {}
+    : update_constant(64), write_buffer(64, size_t(1) << 20), capture_frame(8), gpu_transition(256), gpu_done(256), prepare_shaders(8), encode_frame(2), load_resource(256), frame_captured(8), render_captured(8), sound_play(64), sound_stop(64), sound_update(64), sound_devices(8), recreate_sound(8), sound_master_gain(8), sound_source_gain(16) {}
 
   standard_broker(const standard_broker&) = delete;
   standard_broker& operator=(const standard_broker&) = delete;

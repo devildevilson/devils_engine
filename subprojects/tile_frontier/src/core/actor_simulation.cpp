@@ -104,8 +104,8 @@ constexpr size_t actor_update_perf = 1;
 }
 
 using actor_perf_domain = catalogue::domain<catalogue_domains::actor_update_perf>;
-using build_actor_batch_perf = actor_perf_domain::fn_traits<&actor_batch::build, "build", "batch", "world", "tick">;
-using build_actor_batch_fn_t = build_actor_batch_perf::loc_fn_t;
+using tick_tail_perf = actor_perf_domain::fn_traits<&tick_tail_reader::read, "tail.read", "reader", "world", "tick">;
+using tick_tail_fn_t = tick_tail_perf::loc_fn_t;
 
 // Общий catalogue-стат: агрегаты (avg/min/max/last) + кольцо последних замеров на каждую
 // обёрнутую функцию (окно под график в UI). Режим statistics (невиртуальный switch): в exit
@@ -603,7 +603,7 @@ struct deferred_effects {
   }
 };
 
-void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
+void actor_batch::read(const aesthetics::world& world, const uint64_t tick) {
   instances_.clear();
   ids_.clear();
   instances_.reserve(world.count<actor_visual>());
@@ -634,7 +634,7 @@ void actor_world_slice::setup_brain_registry() {
   brain_runtime_->functions = act::registry{};
   brain_runtime_->goaps = acumen::registry{};
   brain_runtime_->fsms = mood::registry{};
-  brain_runtime_->goap_origins.clear();
+  brain_runtime_->goap_names.clear();
   brain_runtime_->functions.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
                                      brain_runtime_->brains.is_hungry_program, &seed_entity_scope));
   // ВАЖНО: на "is_eating" (внутри building blocks) ссылается СТРОКА FSM (mood) как гвард — парсер
@@ -721,23 +721,11 @@ void actor_world_slice::setup_brain_registry() {
 
 void actor_world_slice::build_goap_from_config(const std::string_view name, const acumen::goap_config& cfg) {
   // Имена act-функций — ГЛОБАЛЬНОЕ пространство слайса; несколько мозгов обычно наследуют одну
-  // базу, поэтому одноимённые метрики/действия дедупятся по origin (resource id, где элемент
-  // определён): одинаковый origin ⇒ копии одного скомпилированного скрипта — регистрируем первый,
-  // разный origin ⇒ конфликт имён между мозгами — громкая ошибка.
-  const auto reg_deduped = [this](const std::string& key, const std::string& origin, auto make_fn) {
-    const uint64_t hash = utils::string_hash(key);
-    for (const auto& [known, known_origin] : brain_runtime_->goap_origins) {
-      if (known == hash) {
-        if (known_origin != origin) {
-          utils::error{}("tile_frontier: GOAP name '{}' is defined by both '{}' and '{}' — "
-                         "brains share act namespace, rename one of them",
-                         key, known_origin, origin);
-        }
-        return; // тот же origin: копия того же скрипта, уже зарегистрирован
-      }
+  // базу, поэтому одноимённые метрики/действия дедупятся по origin (acumen::goap_function_names).
+  const auto reg = [this](const std::string& key, const std::string& origin, auto make_fn) {
+    if (brain_runtime_->goap_names.claim(key, origin)) {
+      brain_runtime_->functions.reg(key, make_fn());
     }
-    brain_runtime_->goap_origins.emplace_back(hash, origin);
-    brain_runtime_->functions.reg(key, make_fn());
   };
 
   // Метрики ОПРЕДЕЛЯЮТ свои предикаты инлайн-скриптами: регистрируем каждый как script_function<bool>
@@ -745,7 +733,7 @@ void actor_world_slice::build_goap_from_config(const std::string_view name, cons
   // исполняется на per-worker execution_scratch; засев root-скоупа — seed_entity_scope. Контейнеры живут в
   // goap_config (shared_ptr в brain_runtime_->brains.goaps), поэтому заимствование &m.program валидно на всё время слайса.
   for (const auto& m : cfg.metrics) {
-    reg_deduped(m.key, m.origin, [&m] {
+    reg(m.key, m.origin, [&m] {
       return std::make_unique<act::script_function<bool>>(&m.program, &seed_entity_scope);
     });
   }
@@ -755,82 +743,15 @@ void actor_world_slice::build_goap_from_config(const std::string_view name, cons
   // every collect/elect commit lane.
   for (const auto& a : cfg.actions) {
     if (a.has_effect_program) {
-      reg_deduped(a.name, a.origin, [&a] {
+      reg(a.name, a.origin, [&a] {
         return std::make_unique<act::script_function<void>>(&a.effect_program, &seed_entity_scope);
       });
     }
   }
 
-  // Единое пространство имён битов: метрики (0..N-1, порядок = конфиг) + символические биты
-  // (next_state/goal, напр. "resolved") получают индексы ≥N при первой встрече. Линейный поиск — N крошечно.
-  std::vector<std::string> bit_names;
-  bit_names.reserve(cfg.metrics.size() + 4);
-  for (const auto& m : cfg.metrics) {
-    bit_names.push_back(m.key);
-  }
-
-  const auto bit_of = [&bit_names](const std::string& key) -> size_t {
-    for (size_t i = 0; i < bit_names.size(); ++i) {
-      if (bit_names[i] == key) {
-        return i;
-      }
-    }
-    bit_names.push_back(key);
-    return bit_names.size() - 1;
-  };
-
-  // "key" / "!key" / "not key" -> (ключ, значение бита). Пробелы обрезаем.
-  const auto parse_bit = [](std::string_view s) -> std::pair<std::string, bool> {
-    const auto trim = [](std::string_view v) {
-      while (!v.empty() && v.front() == ' ') {
-        v.remove_prefix(1);
-      }
-      while (!v.empty() && v.back() == ' ') {
-        v.remove_suffix(1);
-      }
-      return v;
-    };
-    s = trim(s);
-    bool value = true;
-    if (s.starts_with("!")) {
-      value = false;
-      s = trim(s.substr(1));
-    } else if (s.starts_with("not ")) {
-      value = false;
-      s = trim(s.substr(4));
-    }
-    return {std::string(s), value};
-  };
-
-  const auto build_ss = [&](const std::vector<std::string>& keys) {
-    acumen::scoped_state ss;
-    for (const auto& raw : keys) {
-      const auto [key, value] = parse_bit(raw);
-      ss.set(bit_of(key), value);
-    }
-    return ss;
-  };
-
-  std::vector<acumen::state_metric> metrics;
-  metrics.reserve(cfg.metrics.size());
-  for (const auto& m : cfg.metrics) {
-    metrics.emplace_back(m.key);
-  }
-
-  std::vector<acumen::action> actions;
-  actions.reserve(cfg.actions.size());
-  for (const auto& a : cfg.actions) {
-    actions.emplace_back(a.name, build_ss(a.requirements), build_ss(a.next_state), build_ss(a.weight_state));
-  }
-
-  std::vector<acumen::goal> goals;
-  goals.reserve(cfg.goals.size());
-  for (const auto& g : cfg.goals) {
-    goals.push_back(acumen::goal{g.name, build_ss(g.requirements), build_ss(g.goal)});
-  }
-
-  // резолвит предикаты (метрики) и эффекты (действия) по имени из brain_runtime_->functions, кидает при промахе.
-  brain_runtime_->goaps.add(name, acumen::system(&brain_runtime_->functions, std::move(metrics), std::move(goals), std::move(actions)));
+  // Нумерация битов и сборка system — в acumen; предикаты и эффекты резолвятся по имени из
+  // brain_runtime_->functions, промах — ошибка загрузки.
+  brain_runtime_->goaps.add(name, acumen::build_system(&brain_runtime_->functions, name, cfg));
 }
 
 // ── map-фазы на общем примитиве template_system + внешний run ──
@@ -919,19 +840,24 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   tick_ = 0;
   game_ticks_ = 0;
 
-  // СОЗДАЁМ аллокаторы пулов поедания заранее на ГЛАВНОМ потоке. Две причины: (1) view<>
-  // (в resolve_eating) кидает, если аллокатора нет, а компоненты появляются лишь при первом
-  // хвате; (2) component_type_id — sequential_type_id (присваивается при первом обращении),
-  // фиксируем его до любого MT-доступа. block_size как в world::create (sizeof(T)*250).
-  static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
-  static_cast<void>(world_.get_or_create_allocator<flag_set>(sizeof(flag_set) * 250));
-  static_cast<void>(world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250));
-
   // C2: границы для респавна еды, целевое число еды, кэш препятствий.
   spawn_min_ = min_bound;
   spawn_max_ = max_bound;
   texture_count_ = std::max(texture_count, 1u);
   food_target_ = std::max(count / 8u, 32u);
+
+  // Хранилища пулов поедания создаются заранее на ГЛАВНОМ потоке: view<> в resolve_eating падает
+  // без хранилища, а компоненты появляются лишь при первом хвате; component_type_id закрепляется
+  // до параллельного доступа. Ожидаемое число акторов и еды — память заранее (не предел).
+  world_.ensure_storage<actor_eating, flag_set, actor_grabbed>();
+  world_.reserve<actor_position>(size_t(count) + food_target_);
+  world_.reserve<actor_visual>(size_t(count) + food_target_);
+  world_.reserve<actor_velocity>(count);
+  world_.reserve<actor_brain>(count);
+  world_.reserve<actor_perception>(count);
+  world_.reserve<actor_cognition>(count);
+  world_.reserve<stats>(count);
+  world_.reserve<actor_state>(count);
   food_spawn_seq_ = 0;
   obstacles_.clear();
 
@@ -994,7 +920,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
 
 actor_metrics actor_world_slice::update(const utils::simulation_tick tick,
                                         const utils::game_duration game_delta,
-                                        actor_batch& batch,
+                                        tick_tail_reader* tail,
                                         thread::atomic_pool& pool) {
   if (tick.value <= tick_) {
     utils::error{}("actor_world_slice requires a newer external simulation tick");
@@ -1048,14 +974,17 @@ actor_metrics actor_world_slice::update(const utils::simulation_tick tick,
 
   // Snapshot semantics are unchanged: positions at the end of tick N are positions at the start of
   // tick N+1. Gather after structural changes, then build the next sense tree concurrently with the
-  // independent sim->render actor batch. finalize_sense_tree owns the shared pool barrier and waits
-  // for both its subtree jobs and this already-submitted batch task.
+  // independent tick-tail reader (the sim->render actor batch on the client). finalize_sense_tree owns
+  // the shared pool barrier and waits for both its subtree jobs and this already-submitted reader task.
+  // Без читателя (стенд без кадра) в хвосте тика просто нечего перекрывать с деревом.
   gather_sense_tree_fn_t{}(*this);
-  pool.submit(
-    [](actor_batch* out, const aesthetics::world* world, const uint64_t tick) {
-      build_actor_batch_fn_t{}(*out, *world, tick);
-    },
-    &batch, &world_, tick_);
+  if (tail != nullptr) {
+    pool.submit(
+      [](tick_tail_reader* out, const aesthetics::world* world, const uint64_t tick) {
+        tick_tail_fn_t{}(*out, *world, tick);
+      },
+      tail, &world_, tick_);
+  }
   finalize_sense_tree_fn_t{}(*this, pool);
   sense_tree_ready_ = true;
 
@@ -1066,7 +995,7 @@ actor_metrics actor_world_slice::update(const utils::simulation_tick tick,
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
     uint32_t(calls_.size()) + applied_player_intents,
-    batch.count(),
+    tail != nullptr ? tail->produced() : 0u,
     uint32_t(world_.count<actor_eating>()),
     tick_};
 }

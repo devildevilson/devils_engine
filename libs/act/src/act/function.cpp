@@ -25,51 +25,51 @@ bool ds_type(const std::string_view type, const std::string_view expected) noexc
 }
 
 bool value_from_ds(const std::string_view type, const ds::stack_element& el, value& out) {
-  if (type == utils::type_name<bool>()) {
+  if (type == ds::utils::type_name<bool>()) {
     out = value::of(el.get<bool>());
     return true;
   }
-  if (type == utils::type_name<int8_t>()) {
+  if (type == ds::utils::type_name<int8_t>()) {
     out = value::of(int64_t(el.get<int8_t>()));
     return true;
   }
-  if (type == utils::type_name<int16_t>()) {
+  if (type == ds::utils::type_name<int16_t>()) {
     out = value::of(int64_t(el.get<int16_t>()));
     return true;
   }
-  if (type == utils::type_name<int32_t>()) {
+  if (type == ds::utils::type_name<int32_t>()) {
     out = value::of(int64_t(el.get<int32_t>()));
     return true;
   }
-  if (type == utils::type_name<int64_t>()) {
+  if (type == ds::utils::type_name<int64_t>()) {
     out = value::of(el.get<int64_t>());
     return true;
   }
-  if (type == utils::type_name<uint8_t>()) {
+  if (type == ds::utils::type_name<uint8_t>()) {
     out = value::of(int64_t(el.get<uint8_t>()));
     return true;
   }
-  if (type == utils::type_name<uint16_t>()) {
+  if (type == ds::utils::type_name<uint16_t>()) {
     out = value::of(int64_t(el.get<uint16_t>()));
     return true;
   }
-  if (type == utils::type_name<uint32_t>()) {
+  if (type == ds::utils::type_name<uint32_t>()) {
     out = value::of(int64_t(el.get<uint32_t>()));
     return true;
   }
-  if (type == utils::type_name<uint64_t>()) {
+  if (type == ds::utils::type_name<uint64_t>()) {
     out = value::of(int64_t(el.get<uint64_t>()));
     return true;
   }
-  if (type == utils::type_name<float>()) {
+  if (type == ds::utils::type_name<float>()) {
     out = value::of(real_t(el.get<float>()));
     return true;
   }
-  if (type == utils::type_name<double>()) {
+  if (type == ds::utils::type_name<double>()) {
     out = value::of(real_t(el.get<double>()));
     return true;
   }
-  if (type == utils::type_name<entity_id>()) {
+  if (type == ds::utils::type_name<entity_id>()) {
     out = value::of(el.get<entity_id>());
     return true;
   }

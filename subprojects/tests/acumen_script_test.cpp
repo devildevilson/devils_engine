@@ -11,6 +11,7 @@
 #include "devils_engine/act/exec_context.h"
 #include "devils_engine/act/function.h"
 #include "devils_engine/act/registry.h"
+#include "devils_engine/act/script_parse.h"
 #include "devils_engine/acumen/system.h"
 
 // Обкатка co-parse GOAP-метрик (devils_script в tavl-потоке) + интеграция с acumen — контракт, на
@@ -100,8 +101,7 @@ std::vector<parsed_metric> co_parse_metrics(const devils_script::system& sys, ta
     parsed_metric m;
     m.key = p.to_string(key_ev.token);
     p.poll_event(); // got_token: '='
-    devils_script::system::parse_context ctx;
-    sys.parse<bool, test_scope>(m.key, p, ctx, m.program); // ds доедает выражение до row_end
+    m.program = act::parse_script<bool, test_scope>(sys, m.key, p); // ds доедает выражение до row_end
     out.push_back(std::move(m));
   }
   return out;
@@ -116,9 +116,7 @@ TEST_CASE("ds parses one bool expression [devils_script]") {
   p.flush("hunger > 0.5");
   p.finish();
 
-  devils_script::container c;
-  devils_script::system::parse_context ctx;
-  sys.parse<bool, test_scope>("is_hungry", p, ctx, c);
+  const auto c = act::parse_script<bool, test_scope>(sys, "is_hungry", p);
 
   CHECK(eval(c, test_scope{0.7, 0.0}) == true);
   CHECK(eval(c, test_scope{0.3, 0.0}) == false);
@@ -131,10 +129,8 @@ TEST_CASE("ds stops at row boundary — two expressions from one parser [devils_
   p.flush("hunger > 0.5\nboredom > 0.5");
   p.finish();
 
-  devils_script::container c0, c1;
-  devils_script::system::parse_context ctx0, ctx1;
-  sys.parse<bool, test_scope>("is_hungry", p, ctx0, c0);
-  sys.parse<bool, test_scope>("is_bored", p, ctx1, c1);
+  const auto c0 = act::parse_script<bool, test_scope>(sys, "is_hungry", p);
+  const auto c1 = act::parse_script<bool, test_scope>(sys, "is_bored", p);
 
   CHECK(eval(c0, test_scope{0.7, 0.0}) == true);
   CHECK(eval(c0, test_scope{0.3, 0.0}) == false);
@@ -196,4 +192,19 @@ TEST_CASE("co-parsed metrics drive acumen compute_state [acumen][devils_script]"
   const auto s2 = run(test_scope{0.2, 0.9}); // not hungry, bored
   CHECK(s2.test(0) == false);
   CHECK(s2.test(1) == true);
+}
+
+TEST_CASE("act::parse_script turns a rejected config script into a critical error [devils_script]") {
+  // ds на входе с tavl-парсером сообщает отказ значением; без проверки здесь осталась бы пустая
+  // программа, которую загрузчик принял бы за годную.
+  const auto sys = make_sys();
+  tavl::parser p;
+  sys.configure_parser(p);
+  p.flush("hunger > 0.5\nno_such_metric > 0.5");
+  p.finish();
+
+  const auto good = act::parse_script<bool, test_scope>(sys, "is_hungry", p);
+  CHECK(eval(good, test_scope{0.7, 0.0}) == true);
+  const auto parse_broken = [&] { return act::parse_script<bool, test_scope>(sys, "broken", p); };
+  CHECK_THROWS_AS(parse_broken(), utils::critical_error);
 }

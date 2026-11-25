@@ -21,6 +21,7 @@
 | принять модульный sequence, отличить новый/дубликат/старый/слишком далёкий | `sequence_window.h` |
 | хранить строго возрастающие bundle под count+byte budget | `bounded_history.h` |
 | хранить и выбирать последний checkpoint не позже тика | `checkpoint_ring.h` |
+| checkpoint кусками: `offset+length` за байтом типа, сборка по порядку с пределом до выделения | `document_chunks.h` |
 | восстановить checkpoint K и проиграть каждый bundle K+1..N | `replay.h` |
 | канонический state schema API | `state_schema.h` — только aliases к `utils::serial` |
 | корень полного состояния и локализация несовпавшей секции | `state_digest.h` |
@@ -48,8 +49,11 @@
 | Вопрос | Файл |
 |---|---|
 | детерминированная модель opaque-message доставки и fault injection | `in_memory_link.h` |
+| разбор `HOST:PORT` (IPv4) | `endpoint.h` |
 | публичная GNS-граница и lifetime-контракты | `gns_transport.h` |
-| единственная не-header-only реализация, работа с native GNS | `src/network/gns_transport.cpp` |
+| процессный GNS: Init/Kill со счётчиком владельцев, диспетчер, опции без аутентификации, listen с перебором порта, `classify_send`, `describe(gns_status)` | `gns_runtime.h` |
+| непредсказуемые байты (CSPRNG OpenSSL, пришедшего с GNS) для nonce, сессий, ключей билетов | `secure_random.h` |
+| не-header-only реализации, работа с native GNS | `src/network/gns_transport.cpp`, `src/network/gns_runtime.cpp`, `src/network/secure_random.cpp` |
 | нейтральный umbrella include | `network.h` |
 
 Цели сборки разделены намеренно:
@@ -140,6 +144,11 @@
     обязана закрывать обе гонки между lanes. Shape fingerprint не включает adaptive cadence/budget.
 22. **GNS release не ACK.** `poll_send_releases` сообщает возврат памяти, а не доставку. Accepted send
     может освободиться после disconnect недоставленным; gameplay acknowledgement живёт выше.
+    Слоты полосы общие для всех peers; `gns_lane_config::peer_send_slots` (0 — без своего предела)
+    ограничивает неотпущенные сообщения ОДНОГО соединения (`peer_budget_exceeded`,
+    `retained_send_count(peer, lane)`), иначе молчащий peer (убит без close) держит весь пул до
+    таймаута GNS. Слоты возвращаются только при наблюдённом release — consumer зовёт
+    `poll_send_releases` сам.
 23. **GNS lifetime шире объекта adapter.** Borrowed GNS runtime живёт дольше transport И всех receive
     leases. Send callback удерживает slab, не `gns_transport*`. Один `gns_dispatcher` на native
     interface владеет ВСЕМИ `RunCallbacks` через `pump()` и переживает зарегистрированные transports.

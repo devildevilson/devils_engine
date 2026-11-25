@@ -11,6 +11,7 @@ set(SRC_LIST
   src/acumen/cache.cpp
   src/acumen/registry.cpp
   src/acumen/goap_resource.cpp
+  src/acumen/goap_system.cpp
 )
 
 set(HDR_LIST
@@ -21,6 +22,7 @@ set(HDR_LIST
   include/devils_engine/acumen/execution_scratch.h
   include/devils_engine/acumen/registry.h
   include/devils_engine/acumen/goap_resource.h
+  include/devils_engine/acumen/goap_system.h
 )
 
 add_library(devils_acumen ${SRC_LIST} ${HDR_LIST})

@@ -59,7 +59,7 @@ run_result run_schedule(const std::span<const uint64_t> frame_microseconds,
           utils::error{}("TIME-02 recorded intent was rejected");
         }
       }
-      actors.update(tick, clocks.advance_simulation(tick), batch, pool);
+      actors.update(tick, clocks.advance_simulation(tick), &batch, pool);
       if (pool.tasks_count() != 0 || pool.working_count() != 0) {
         utils::error{}("TIME-02 update returned before its batch task completed");
       }

@@ -517,7 +517,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
 
   if (!options.preset.empty()) {
     const std::string presets_path = std::string(PF07_RESOURCE_ROOT) + "/celestial/presets.tavl";
-    const std::string text = file_io::read(presets_path, file_io::type::text);
+    const std::string text = file_io::read_text(presets_path).value_or(std::string{});
     if (text.empty()) utils::error{}("PF07 could not read presets '{}'", presets_path);
 
     view_preset_list list;
@@ -814,7 +814,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     colour_script script;
     {
       const std::string script_path = std::string(PF07_RESOURCE_ROOT) + "/celestial/colour_script.tavl";
-      const std::string text = file_io::read(script_path, file_io::type::text);
+      const std::string text = file_io::read_text(script_path).value_or(std::string{});
       if (text.empty()) utils::error{}("PF07 could not read colour script '{}'", script_path);
 
       std::string diagnostics;

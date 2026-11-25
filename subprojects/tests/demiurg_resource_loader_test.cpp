@@ -10,6 +10,8 @@
 #include "devils_engine/demiurg/resource_base.h"
 #include "devils_engine/demiurg/resource_loader.h"
 #include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/demiurg/synchronous_loader.h"
+#include "devils_engine/utils/core.h"
 #include "devils_engine/utils/safe_handle.h"
 
 using namespace devils_engine;
@@ -632,4 +634,75 @@ TEST_CASE("resource_loader waits for dependencies before CPU-heavy pipeline prep
   CHECK(jobs.empty());
   CHECK(pipeline.state() == 2);
   CHECK(pipeline.compile_cpu_count == 1);
+}
+
+TEST_CASE("synchronous_loader settles CPU steps and dependencies on the caller [demiurg]") {
+  cpu_ready_resource shader_source;
+  staged_pipeline_resource pipeline;
+  pipeline.add_dependency(&shader_source);
+
+  demiurg::synchronous_loader loader;
+  loader.load(&pipeline, 2); // до первой внешней ступени
+  CHECK(shader_source.usable());
+  CHECK(pipeline.state() == 2);
+  CHECK(pipeline.compile_cpu_count == 1);
+  CHECK(pipeline.commit_gpu_count == 0);
+
+  // Внешнего шага у безпоточного контекста нет: просить final у ресурса с GPU-ступенью — ошибка.
+  CHECK_THROWS_AS(loader.load(&pipeline), utils::critical_error);
+  CHECK(pipeline.commit_gpu_count == 0);
+}
+
+TEST_CASE("resource_system::directory selects by id prefix, not substring [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_directory_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "fsm");
+  fs::create_directories(root / "core" / "goap");
+  for (const auto* file : {"fsm/actor.tavl", "fsm/prey.tavl", "goap/fsm_like.tavl"}) {
+    std::ofstream out(root / "core" / file);
+    out << "name = x\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+  demiurg::resource_system resources;
+  resources.register_type<cpu_ready_resource>("fsm", "tavl");
+  resources.register_type<list_test_resource>("goap", "tavl");
+  resources.parse_resources(&modules);
+
+  std::vector<demiurg::resource_interface*> fsm;
+  CHECK(resources.directory<demiurg::resource_interface>("fsm/", fsm) == 2);
+  REQUIRE(fsm.size() == 2);
+  CHECK(fsm[0]->id == "fsm/actor");
+  CHECK(fsm[1]->id == "fsm/prey");
+  std::vector<demiurg::resource_interface*> substring;
+  CHECK(resources.filter<demiurg::resource_interface>("fsm", substring) == 3); // filter — подстрока
+  std::vector<list_test_resource*> typed;
+  CHECK(resources.directory<list_test_resource>("fsm/", typed) == 0); // чужой тип пропущен
+
+  std::vector<demiurg::resource_interface*> no_slash;
+  CHECK(resources.directory<demiurg::resource_interface>("fsm", no_slash) == 2); // тот же каталог
+  std::vector<demiurg::resource_interface*> partial;
+  CHECK(resources.directory<demiurg::resource_interface>("fs", partial) == 0); // не префикс имени
+  CHECK(demiurg::resource_system::in_directory("fsm/actor", "fsm"));
+  CHECK_FALSE(demiurg::resource_system::in_directory("fsmx/actor", "fsm"));
+  CHECK(demiurg::resource_system::name_in_directory("goap/fsm_like", "goap") == "fsm_like");
+  CHECK(demiurg::resource_system::name_in_directory("goap/fsm_like", "goap/") == "fsm_like");
+  CHECK(demiurg::resource_system::name_in_directory("goap/fsm_like", "fsm") == "goap/fsm_like");
+
+  // require<T>: ресурс не грузится сам — неготовый, отсутствующий и чужого типа отказывают.
+  CHECK_THROWS_AS(resources.require<cpu_ready_resource>("fsm/actor", "test FSM"), utils::critical_error);
+  CHECK_THROWS_AS(resources.require<cpu_ready_resource>("fsm/missing", "test FSM"), utils::critical_error);
+  CHECK_THROWS_AS(resources.require<cpu_ready_resource>("goap/fsm_like", "test FSM"), utils::critical_error);
+
+  demiurg::synchronous_loader loader;
+  CHECK(loader.load_directory(resources, "fsm/") == 2);
+  CHECK(fsm[0]->usable());
+  CHECK(fsm[1]->usable());
+  CHECK(&resources.require<cpu_ready_resource>("fsm/actor", "test FSM") == fsm[0]);
+  CHECK(loader.load_directory(resources, "missing/") == 0);
+
+  fs::remove_all(root);
 }

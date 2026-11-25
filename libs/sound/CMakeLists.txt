@@ -33,12 +33,23 @@ set(HDR_LIST
   include/devils_engine/sound/sound_resource.h
 )
 
+# opusfile системный. vcpkg ставит CMake-конфиг (OpusFile::opusfile), дистрибутивы Linux — только
+# pkg-config.
+find_package(OpusFile CONFIG QUIET)
+if (TARGET OpusFile::opusfile)
+  set(DEVILS_SOUND_OPUSFILE OpusFile::opusfile)
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(opusfile REQUIRED IMPORTED_TARGET opusfile)
+  set(DEVILS_SOUND_OPUSFILE PkgConfig::opusfile)
+endif()
+
 add_library(devils_sound ${SRC_LIST} ${HDR_LIST})
 target_link_libraries(devils_sound
   PUBLIC devils_engine::options devils_engine::utils devils_engine::demiurg
   PRIVATE devils_engine::catalogue
   miniaudio
-  OpusFile::opusfile)
+  ${DEVILS_SOUND_OPUSFILE})
 target_include_directories(devils_sound PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>" "$<BUILD_INTERFACE:${dr_libs_SOURCE_DIR}>")
 target_include_directories(devils_sound PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/sound>")
 target_include_directories(devils_sound PRIVATE "${stb_SOURCE_DIR}" "${dr_libs_SOURCE_DIR}")

@@ -29,7 +29,8 @@ Bundled документы используют именованные секц�
 - `key_bingings.tavl` — прежнее имя файла bindings сохранено.
 
 Defaults debug берутся из bundled `resources/engine/config/debug.tavl`, после них применяются
-пользовательские `debug.tavl`. Если отдельного debug-файла ещё нет, runtime переносит logging/metrics
+пользовательские `debug.tavl`. Это технический файл: он появляется на диске, только когда logging/metrics
+отличаются от bundled defaults (или если он уже есть). Если отдельного debug-файла ещё нет, runtime переносит logging/metrics
 из старого combined `settings.tavl`, сначала записывает debug, затем очищает player settings от
 этих секций. Уже существующий debug-файл имеет приоритет; повторно из legacy settings он не заполняется.
 Save/reload settings работают с обоими файлами. Топологические изменения требуют пересоздания runtime;

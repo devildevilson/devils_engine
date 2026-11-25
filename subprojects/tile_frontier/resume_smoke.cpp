@@ -70,8 +70,8 @@ int main() {
     for (int i = 1; i <= 45 && worker_count_diverged_at < 0; ++i) {
       const auto tick = clocks.simulation_now() + utils::simulation_duration{1};
       const auto game_delta = clocks.advance_simulation(tick);
-      one_worker.update(tick, game_delta, batch_a, single_pool);
-      four_workers.update(tick, game_delta, batch_b, pool);
+      one_worker.update(tick, game_delta, &batch_a, single_pool);
+      four_workers.update(tick, game_delta, &batch_b, pool);
       if (dump(one_worker) != dump(four_workers)) {
         worker_count_diverged_at = i;
       }
@@ -88,7 +88,7 @@ int main() {
   clocks_a.set_game_scale(utils::game_time_scale{7, 3});
   for (int i = 0; i < 61; ++i) {
     const auto tick = clocks_a.simulation_now() + utils::simulation_duration{1};
-    a.update(tick, clocks_a.advance_simulation(tick), batch_a, pool);
+    a.update(tick, clocks_a.advance_simulation(tick), &batch_a, pool);
   }
   CHECK(clocks_a.causal_state().game_remainder != 0);
 
@@ -141,8 +141,8 @@ int main() {
     const auto dt_b = clocks_b.advance_simulation(tick_b);
     CHECK(tick_a == tick_b);
     CHECK(dt_a == dt_b);
-    const auto ma = a.update(tick_a, dt_a, batch_a, pool);
-    const auto mb = b.update(tick_b, dt_b, batch_b, pool);
+    const auto ma = a.update(tick_a, dt_a, &batch_a, pool);
+    const auto mb = b.update(tick_b, dt_b, &batch_b, pool);
     CHECK(tf::write_actor_checkpoint(a, clocks_a, checkpoint));
     CHECK(tf::write_actor_checkpoint(b, clocks_b, resumed_checkpoint));
     if (ma.actors != mb.actors || ma.ticks != mb.ticks ||

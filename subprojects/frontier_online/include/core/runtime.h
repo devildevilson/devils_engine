@@ -10,20 +10,53 @@
 #include <devils_engine/simul/boot_config.h>
 #include <devils_engine/simul/main_runtime.h>
 
-#include "app_config_resource.h"
-#include "assets_system.h"
-#include "broker.h"
-#include "config.h"
-#include "render_system.h"
-#include "simulation.h"
+#include "core/app_config_resource.h"
+#include "core/assets_system.h"
+#include "core/broker.h"
+#include "core/config.h"
+#include "core/launch_options.h"
+#include "core/render_system.h"
+#include "core/simulation.h"
 
 namespace frontier_online {
 namespace core {
 
 struct runtime_bootstrap
   : public devils_engine::simul::standard_runtime_bootstrap<app_config, user_settings> {
+  // Опции клиента из аргументов запуска (init_bootstrap); системы получают свою часть при создании.
+  launch_options launch;
+
   runtime_bootstrap() {
     engine.app_name = "frontier_online";
+    // Проект знает свою топологию и свои правила мира сам. Документы движка config/engine,
+    // config/project и config/debug — предварительные числа для тестов и площадок, у которых своих
+    // настроек нет; в проект они не копируются, а пустой id движок не ищет.
+    engine.engine_config_id.clear();
+    engine.project_config_id.clear();
+    engine.debug_config_id.clear();
+    settings.simulation = simulation_config{
+      .main_fps = 20,
+      .tick_rate = 60,
+      .max_steps_per_frame = 8,
+      .sound_fps = 60,
+      .sound_mixing = "owner",
+      .sound_output_buffer_ms = 50,
+      .render_fps = 60,
+      .assets_fps = 60,
+      .sound_enabled = true,
+      .assets_enabled = true,
+      .worker_threads_reserved = 4,
+      .min_worker_threads = 1,
+      .thread_start_gap_divisor = 4,
+    };
+    settings.render = render_config{
+      .enabled = true,
+      .headless = false,
+      .config_folder = "render_config", // resources/engine/render_config
+      .shader_folder = "shaders",       // resources/engine/shaders
+      .cache_folder = "cache",
+    };
+    settings.time = world_time_rules(); // правило мира, а не настройка: модули его не меняют
   }
 
   void export_persisted_settings() {
@@ -49,6 +82,7 @@ struct runtime_traits : public devils_engine::simul::standard_app_runtime_traits
   using bootstrap_type = runtime_bootstrap;
   using broker_type = broker;
   using main_type = simulation;
+  static void init_bootstrap(bootstrap_type& boot);
   static devils_engine::simul::worker_systems<broker_type> make_workers(bootstrap_type& boot);
 };
 

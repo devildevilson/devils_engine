@@ -24,6 +24,8 @@ struct nk_user_font;
 namespace devils_engine {
 namespace visage {
 
+struct image;
+
 struct font_t;
 
 // Нейтральный снапшот ввода за кадр: главный поток собирает его из своей системы ввода
@@ -93,6 +95,17 @@ public:
 
 private:
   static void lua_hook(lua_State* state, lua_Debug* debug);
+
+  // Lua-биндинги nk: регистрация — в конструкторе, реализация — методами (не лямбдами: одинаковые
+  // сигнатуры лямбд одной функции делят метатаблицу __gc в sol2).
+  void lua_push_font(const sol::object arg);
+  void lua_pop_font();
+  void lua_style_default();
+  void lua_style_from_table(const sol::table& colors);
+  void lua_image(const visage::image& img, sol::optional<uint32_t> placement_flags, sol::optional<sol::table> color);
+  void lua_image_gradient(sol::table t);
+  void lua_image_mix(sol::table t);
+
   void discard_frame() noexcept;
   void register_failure(std::string_view reason);
 

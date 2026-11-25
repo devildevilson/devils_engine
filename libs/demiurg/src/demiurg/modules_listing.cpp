@@ -121,7 +121,10 @@ void modules_listing::load_mod(const fs::directory_entry& entry) {
   std::string hash;
   if (!folder) {
     const auto data = file_io::read<uint8_t>(path.generic_string());
-    hash = utils::SHA256::easy(data.data(), data.size());
+    if (!data) {
+      utils::error{}("demiurg: module archive '{}' cannot be read: {}", path.generic_string(), file_io::describe(data.error()));
+    }
+    hash = utils::SHA256::easy(data->data(), data->size());
   }
   auto relative = path.filename().generic_string();
   if (folder) relative += '/';

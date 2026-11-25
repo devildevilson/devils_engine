@@ -43,7 +43,8 @@ resource loader.
 Сейчас есть две реализации:
 
 - `folder_module` - рекурсивно обходит папку;
-- `zip_module` - читает zip/mod архив через minizip.
+- `zip_module` - читает zip/mod архив через miniz: записи store и deflate, другой метод сжатия —
+  отказ с его номером. Модули для раздачи пакуются без сжатия (store) со стабильным порядком файлов.
 
 Путь, который получает ресурс, относительный к корню модуля. Например файл
 
@@ -346,6 +347,22 @@ entries.
 
 Важно: ресурс с dependencies нужно продвигать через `resource_loader`, а не
 звать `res->load()` напрямую. Прямой вызов обходит dependency gating.
+
+Контекст без потока ассетов (headless-сервер, тесты, инструменты) берёт
+`synchronous_loader` (`synchronous_loader.h`) как свой «поток ассетов»: тот же
+`resource_loader`, сведённый до конца на вызывающем потоке. `load(res, target)`,
+`load(res)` (до `final_state`), `load_directory(registry, "fsm/")`. Внешний (GPU)
+шаг до target — `utils::error`. Свой реестр — свой загрузчик: два загрузчика над
+одним реестром — гонка. Потребитель ресурса (загрузчик мозгов, `resolve_goap_config`)
+сам ничего не грузит и только проверяет готовность: `resource_system::require<T>(id, role)`
+возвращает `T&` или останавливает процесс `utils::error` у места вызова (не найден, другой тип,
+не `usable()` — с ролью, id и уровнем загрузки); для элементов каталога —
+`resource_system::require_usable(res, role)`.
+
+`resource_system::directory<T>(dir, out)` выбирает ресурсы внутри каталога `dir`, в порядке id:
+`"fsm"` и `"fsm/"` — один каталог, `"fsm"` не захватывает `"fsmx/a"`, пустой `dir` — весь реестр.
+`name_in_directory("goap/actor", "goap")` → `"actor"`. `filter<T>` ищет подстроку:
+`filter("fsm")` находит и `goap/fsm_like`.
 
 ## Resource Loader
 

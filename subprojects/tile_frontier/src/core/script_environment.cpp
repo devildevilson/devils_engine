@@ -1,8 +1,10 @@
 #include "devils_engine/utils/log.h"
+#include "devils_engine/act/script_math.h"
 #include <cstdint>
 #include <string>
 #include <tuple>
 
+#include <devils_engine/act/script_parse.h>
 #include <devils_engine/act/building_blocks.h>
 #include <devils_engine/act/stat_accessors.h>
 #include <devils_engine/aesthetics/common.h> // entityid_t
@@ -42,7 +44,7 @@ static devils_script::system::options make_options() {
   //
   // Бросок отсюда библиотека ГЛУШИТ: перегрузка `parse`, принимающая tavl::parser, вызывает этот
   // обработчик внутри своего catch и держит свой контракт «отказ = возвращаемое значение». Поэтому
-  // остановка загрузки живёт не тут, а в проверке возврата у compile_predicate/compile_effect.
+  // остановка загрузки живёт не тут, а в act::parse_script у compile_predicate/compile_effect.
   opts.error = [](const std::string& m) {
     utils::error{}("devils_script: {}", m);
   };
@@ -54,7 +56,7 @@ static devils_script::system::options make_options() {
 
 script_environment::script_environment() : sys(make_options()) {
   sys.init_basic_functions();
-  sys.init_math();
+  devils_engine::act::init_deterministic_math(sys); // не init_math: libm у платформ расходится
 
   // ds-словарь gameplay building blocks (deferred-эффекты + аксессоры восприятия + spawn_at) —
   // один декларативный список в actor_simulation.cpp; здесь только его ds-часть.
@@ -82,32 +84,16 @@ act::compiled_script script_environment::compile(
   utils::error{}("script '{}': return type '{}' is not supported by tile_frontier", name, return_type);
 }
 
-// Эта перегрузка `parse` сообщает об отказе ВОЗВРАЩАЕМЫМ значением, а не исключением (см.
-// make_options), поэтому непроверенный возврат означает «принять полупустую программу за годную»:
-// компилятор скриптов отдал бы дальше контейнер, который загрузчик мозгов считает валидным.
-// Критично != предупреждение: у tavl предупреждения разбор не останавливают.
-static void require_parsed(const tavl::error& err, const std::string_view name) {
-  if (err.is_critical()) {
-    utils::error{}("script '{}': devils_script parse failed ({})", name, tavl::to_string(err.type));
-  }
-}
-
 devils_script::container script_environment::compile_predicate(
   const std::string_view name,
   tavl::parser& parser) const {
-  devils_script::container program;
-  devils_script::system::parse_context ctx;
-  require_parsed(std::get<1>(sys.parse<bool, entity_scope>(name, parser, ctx, program)), name);
-  return program;
+  return act::parse_script<bool, entity_scope>(sys, name, parser);
 }
 
 devils_script::container script_environment::compile_effect(
   const std::string_view name,
   tavl::parser& parser) const {
-  devils_script::container program;
-  devils_script::system::parse_context ctx;
-  require_parsed(std::get<1>(sys.parse<void, entity_scope>(name, parser, ctx, program)), name);
-  return program;
+  return act::parse_script<void, entity_scope>(sys, name, parser);
 }
 
 } // namespace core

@@ -21,10 +21,12 @@ class resource_system;
 //     threat_present = threat_present //   остаток строки доедает devils_script::system → container
 //   ]
 //   actions = [
-//     { name = think  effect = think  requirements = [ !is_hungry ]  next_state = [ resolved ]  weight_state = [ ] }
+//     { name = think, effect = think, requirements = [ !is_hungry ], next_state = [ resolved ], weight_state = [ ] }
 //   ]
-//   goals = [ { name = resolved  requirements = [ ]  goal = [ resolved ] } ]
+//   goals = [ { name = resolved, requirements = [ ], goal = [ resolved ] } ]
 //
+// Поля в строке разделяют запятая или перевод строки, НЕ пробел: `effect` — ds-выражение, и ds доедает
+// его до конца строки, так что без разделителя следующие поля стали бы частью эффекта.
 // Метрика ОПРЕДЕЛЯЕТ предикат прямо тут (скрипт компилируется и регистрируется под ключом — не нужно
 // регистрировать предикаты отдельно в C++). В requirements/next_state префикс "!" / "not " = инверт.
 // бит. Символические биты (не-метрики, напр. "resolved") индексируются после метрик.
@@ -41,11 +43,20 @@ struct goap_metric {
   std::string origin;
 };
 
+// Бит состояния в требованиях, эффектах и цели: ключ метрики или символического бита и его значение.
+// В тексте `!key` / `not key` дают value = false; префиксы разбирает goap_resource, дальше их нет.
+struct goap_bit {
+  std::string key;
+  bool value = true;
+
+  bool operator==(const goap_bit&) const = default;
+};
+
 struct goap_action_config {
-  std::string name;                      // имя эффект-функции в act::registry
-  std::vector<std::string> requirements; // ключи метрик (префикс !/not = инвертированный бит)
-  std::vector<std::string> next_state;   // биты, которые ставит действие
-  std::vector<std::string> weight_state; // биты веса (опц.)
+  std::string name;                    // имя эффект-функции в act::registry
+  std::vector<goap_bit> requirements;  // биты, которые должны совпасть до действия
+  std::vector<goap_bit> next_state;    // биты, которые ставит действие
+  std::vector<goap_bit> weight_state;  // биты веса (опц.)
   // Optional inline void devils_script program. The consumer registers an act::script_function<void>
   // under `name`; the resource only owns the compiled program and symbolic GOAP data.
   devils_script::container effect_program;
@@ -55,8 +66,8 @@ struct goap_action_config {
 
 struct goap_goal_config {
   std::string name;
-  std::vector<std::string> requirements;
-  std::vector<std::string> goal;
+  std::vector<goap_bit> requirements;
+  std::vector<goap_bit> goal;
 };
 
 struct goap_config {

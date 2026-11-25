@@ -1,6 +1,13 @@
 project = "worlds/house1"
 
 resources = [
+  // Мозги и префабы нужны проекту уже в начале сцены: каталоги грузит поток ассетов, проект
+  // начинается, когда они готовы (prepare = true), и только проверяет готовность.
+  { id = "scripts/", target = "final", group = "brains", prepare = true, startup = true }
+  { id = "fsm/", target = "final", group = "brains", prepare = true, startup = true }
+  { id = "goap/", target = "final", group = "brains", prepare = true, startup = true }
+  { id = "prefab/", target = "final", group = "brains", prepare = true, startup = true }
+
   { id = "textures/grass",    target = "final", group = "tile_textures", alias = "grass",    startup = true }
   { id = "textures/grass1_0", target = "final", group = "tile_textures", alias = "grass1_0", startup = true }
   { id = "textures/grass3",   target = "final", group = "tile_textures", alias = "grass3",   startup = true }

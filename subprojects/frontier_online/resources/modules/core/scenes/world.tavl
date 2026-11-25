@@ -1,12 +1,21 @@
 project = "worlds/world"
 
 resources = [
-  { id = "textures/grass",    target = "final", group = "tile_textures", alias = "grass",    startup = true }
-  { id = "textures/grass1_0", target = "final", group = "tile_textures", alias = "grass1_0", startup = true }
-  { id = "textures/grass3",   target = "final", group = "tile_textures", alias = "grass3",   startup = true }
-  { id = "textures/grad1",    target = "final", group = "aux_textures", alias = "grad1", startup = true }
-  { id = "textures/grad2",    target = "final", group = "aux_textures", alias = "grad2", startup = true }
-  { id = "textures/quad",     target = "final", group = "aux_textures", alias = "quad",  startup = true }
+  // Мозги и префабы нужны проекту уже в начале сцены: каталоги грузит поток ассетов, проект
+  // начинается, когда они готовы (prepare = true), и только проверяет готовность.
+  { id = "fsm/", target = "final", group = "brains", prepare = true, startup = true }
+  { id = "goap/", target = "final", group = "brains", prepare = true, startup = true }
+  { id = "prefab/", target = "final", group = "brains", prepare = true, startup = true }
+
+  // i-я текстура tile_textures = рельеф с кодом i (0 вода, 1 сухая суша, 2 обычная, 3 влажная): их
+  // четыре, как кодов. Три текстуры на четыре кода молча сворачивали код 3 на текстуру 0.
+  { id = "textures/terrain_water",  target = "final", group = "tile_textures", alias = "terrain_water",  startup = true }
+  { id = "textures/terrain_dry",    target = "final", group = "tile_textures", alias = "terrain_dry",    startup = true }
+  { id = "textures/terrain_normal", target = "final", group = "tile_textures", alias = "terrain_normal", startup = true }
+  { id = "textures/terrain_wet",    target = "final", group = "tile_textures", alias = "terrain_wet",    startup = true }
+  { id = "textures/quad",  target = "final", group = "aux_textures", alias = "quad",  startup = true }
+  { id = "textures/grass", target = "final", group = "aux_textures", alias = "grass", startup = true }
+  { id = "textures/grad2", target = "final", group = "aux_textures", alias = "grad2", startup = true }
 
   { id = "sounds/eating/freesound_community-chomp-chew-bite-102031", target = "warm", group = "sounds", alias = "eating", startup = false }
   { id = "sounds/fleeing/freesound_community-escaping-downstairs-104907", target = "warm", group = "sounds", alias = "fleeing", startup = false }

@@ -1,56 +1,30 @@
-#include <charconv>
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <locale>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #ifdef _WIN32
+// Без LEAN_AND_MEAN windows.h тянет objbase.h с макросом `interface`, а он ломает simul::interface.
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
 #  include <windows.h>
+// minwindef.h определяет IN/OUT (параметры шаблона devils_script::subblock) и near/far.
+#  undef IN
+#  undef OUT
+#  undef near
+#  undef far
 #endif
 
-#include "core/frame_capture.h"
-#include "runtime.h"
+#include <devils_engine/simul/launch_arguments.h>
+
+#include "core/launch_options.h"
+#include "core/runtime.h"
 
 using namespace frontier_online;
-
-namespace {
-
-// Разбор аргументов клиента. Их ровно два и оба — инструмент разработчика: снять кадр и выйти.
-// Неопознанный аргумент отвергается, а не игнорируется: молча запущенный не тот режим потом
-// объясняют часами.
-bool parse_arguments(const int argc, char** argv) {
-  auto& capture = frontier_online::core::capture_request();
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg(argv[i]);
-    if (arg.starts_with("--dump=")) {
-      capture.path = std::string(arg.substr(std::string_view("--dump=").size()));
-      if (capture.at_frame == 0) capture.at_frame = 1;
-      continue;
-    }
-    if (arg.starts_with("--frames=")) {
-      const auto text = arg.substr(std::string_view("--frames=").size());
-      uint64_t value = 0;
-      const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
-      if (result.ec != std::errc{} || result.ptr != text.data() + text.size() || value == 0) {
-        std::fprintf(stderr, "frontier_online: bad --frames value\n");
-        return false;
-      }
-      capture.at_frame = value;
-      continue;
-    }
-    if (arg == "--stay") { // снять кадр и продолжать жить (смотреть глазами)
-      capture.exit_after = false;
-      continue;
-    }
-    std::fprintf(stderr, "frontier_online: unknown argument '%.*s'\n", int(arg.size()), arg.data());
-    return false;
-  }
-  return true;
-}
-
-} // namespace
 
 int main(int argc, char** argv) {
   // Полная независимость от системной локали (Windows и Linux одинаково).
@@ -69,10 +43,18 @@ int main(int argc, char** argv) {
   SetConsoleCP(CP_UTF8);
 #endif
 
-  if (!parse_arguments(argc, argv)) {
-    return EXIT_FAILURE;
+  // Аргументы проверяются здесь, до старта: ошибка в них — сообщение и выход, а не критическая
+  // ошибка изнутри запуска. В bootstrap они попадут через app_runtime::run.
+  devils_engine::simul::launch_arguments arguments(argc, argv);
+  {
+    core::launch_options probe;
+    std::string problem;
+    if (!core::parse_launch_options(arguments, probe, problem)) {
+      std::fprintf(stderr, "frontier_online: %s\n", problem.c_str());
+      return EXIT_FAILURE;
+    }
   }
 
   core::runtime app;
-  return app.run();
+  return app.run(std::move(arguments));
 }

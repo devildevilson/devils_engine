@@ -6,27 +6,30 @@ project(
   LANGUAGES CXX C
 )
 
-# компрессия: zstd (уже в дереве — minizip-ng собран с MZ_ZSTD, системный libzstd).
-find_package(zstd CONFIG QUIET)
-if (TARGET zstd::libzstd)
-  set(ZSTD_TARGET zstd::libzstd)
-elseif (TARGET zstd::libzstd_shared)
-  set(ZSTD_TARGET zstd::libzstd_shared)
-elseif (TARGET zstd::libzstd_static)
-  set(ZSTD_TARGET zstd::libzstd_static)
-elseif (TARGET zstd)
-  set(ZSTD_TARGET zstd)
-elseif (TARGET libzstd)
-  set(ZSTD_TARGET libzstd)
-elseif (TARGET libzstd_static)
+# Компрессия движка — zstd, системный (пакетный менеджер; vcpkg на Windows). Ветка libzstd_static —
+# на случай, если zstd всё же соберёт кто-то из зависимостей: тогда в бинарнике остаётся один zstd.
+if (TARGET libzstd_static)
   set(ZSTD_TARGET libzstd_static)
 else()
-  find_library(ZSTD_LIBRARY NAMES zstd REQUIRED)
-  find_path(ZSTD_INCLUDE_DIR NAMES zstd.h REQUIRED)
-  add_library(zstd_local INTERFACE)
-  target_link_libraries(zstd_local INTERFACE ${ZSTD_LIBRARY})
-  target_include_directories(zstd_local INTERFACE ${ZSTD_INCLUDE_DIR})
-  set(ZSTD_TARGET zstd_local)
+  find_package(zstd CONFIG QUIET)
+  if (TARGET zstd::libzstd)
+    set(ZSTD_TARGET zstd::libzstd)
+  elseif (TARGET zstd::libzstd_shared)
+    set(ZSTD_TARGET zstd::libzstd_shared)
+  elseif (TARGET zstd::libzstd_static)
+    set(ZSTD_TARGET zstd::libzstd_static)
+  elseif (TARGET zstd)
+    set(ZSTD_TARGET zstd)
+  elseif (TARGET libzstd)
+    set(ZSTD_TARGET libzstd)
+  else()
+    find_library(ZSTD_LIBRARY NAMES zstd REQUIRED)
+    find_path(ZSTD_INCLUDE_DIR NAMES zstd.h REQUIRED)
+    add_library(zstd_local INTERFACE)
+    target_link_libraries(zstd_local INTERFACE ${ZSTD_LIBRARY})
+    target_include_directories(zstd_local INTERFACE ${ZSTD_INCLUDE_DIR})
+    set(ZSTD_TARGET zstd_local)
+  endif()
 endif()
 
 set(SRC_LIST
@@ -38,10 +41,12 @@ set(SRC_LIST
   src/thread/lock.cpp
   src/thread/stack_pool.cpp
   src/thread/atomic_pool.cpp
+  src/utils/deterministic_math.cpp
   src/utils/prng.cpp
   src/utils/process_memory.cpp
   src/utils/atomic_file.cpp
   src/utils/fileio.cpp
+  src/utils/root.cpp
   src/utils/time.cpp
   src/utils/timeline.cpp
   src/utils/string_id.cpp
@@ -86,6 +91,7 @@ set(HDR_LIST
   include/devils_engine/utils/deterministic_sort.h
 
   include/devils_engine/utils/serialization.h
+  include/devils_engine/utils/serial_glm.h
   include/devils_engine/utils/state_schema.h
   include/devils_engine/utils/atomic_file.h
   include/devils_engine/utils/fileio.h
@@ -93,6 +99,7 @@ set(HDR_LIST
   include/devils_engine/utils/simulation_time.h
   include/devils_engine/utils/timeline.h
   include/devils_engine/utils/sha256.h
+  include/devils_engine/utils/hmac.h
   include/devils_engine/utf/utf.hpp
   include/devils_engine/utils/compression.h
   include/devils_engine/utils/serialization_sink.h
@@ -120,8 +127,10 @@ target_compile_options(engine_c_part1 PRIVATE
 )
 
 target_link_libraries(devils_utils
-  PUBLIC atomic_queue::atomic_queue Threads::Threads spdlog::spdlog gtl #ReflexLibStatic #alpaca::alpaca
-  PRIVATE engine_c_part1 ${ZSTD_TARGET} ZLIB::ZLIB devils_engine::options cpuinfo
+  # glm: the public header utils/shared.h uses glm types. Without the target its consumers found
+  # glm only when the system happened to have it installed.
+  PUBLIC atomic_queue::atomic_queue Threads::Threads spdlog::spdlog gtl glm::glm #ReflexLibStatic #alpaca::alpaca
+  PRIVATE engine_c_part1 ${ZSTD_TARGET} devils_engine::options cpuinfo
 )
 
 if (WIN32)
@@ -137,6 +146,24 @@ target_include_directories(engine_c_part1 PRIVATE "$<BUILD_INTERFACE:${CMAKE_CUR
 if (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   target_link_libraries(devils_utils PUBLIC stdc++exp) # std:: print, println, ...
 endif()
+
+# Проверка набора инструкций до первого кода под DEVILS_ENGINE_ARCH (src/utils/isa_guard.h). Отдельная
+# библиотека без devils_engine::options: сама проверка собрана без флагов архитектуры, а isa_required.cpp
+# получает их, чтобы компилятор назвал требуемый набор своими макросами. Якорь тянет объект в каждый
+# исполняемый файл: из статической библиотеки иначе не взялся бы никто, ведь вызывать его некому.
+add_library(devils_isa_guard STATIC src/utils/isa_guard.cpp src/utils/isa_required.cpp src/utils/isa_guard.h)
+target_compile_features(devils_isa_guard PRIVATE cxx_std_20)
+target_compile_options(devils_isa_guard PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic> $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+set_source_files_properties(src/utils/isa_required.cpp PROPERTIES COMPILE_OPTIONS
+  "$<$<CXX_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC}>;$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU}>")
+target_link_libraries(devils_isa_guard PRIVATE cpuinfo)
+if (MSVC)
+  target_link_libraries(devils_isa_guard PRIVATE user32) # MessageBoxA: у игры без консоли stderr не видно
+  target_link_options(devils_isa_guard INTERFACE "/INCLUDE:devils_isa_guard_anchor")
+else()
+  target_link_options(devils_isa_guard INTERFACE "LINKER:--undefined=devils_isa_guard_anchor")
+endif()
+target_link_libraries(devils_utils PUBLIC devils_isa_guard)
 
 add_library(devils_engine::utils ALIAS devils_utils)
 add_library(devils_engine::thread ALIAS devils_utils)

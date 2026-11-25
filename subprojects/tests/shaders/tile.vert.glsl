@@ -20,10 +20,14 @@ out gl_PerVertex {
   vec4 gl_Position;
 };
 
+const float tile_texture_span = 4.0;
+
 void main() {
   const vec2 world_pos = in_tile_center + in_vertex_pos.xy;
   gl_Position = g.view_proj * vec4(world_pos, 0.0, 1.0);
   vertex_color = in_color;
-  out_uv = in_vertex_pos.xy + vec2(0.5);
+  // Текстура лежит в МИРОВЫХ координатах и повторяется раз в tile_texture_span тайлов: соседние
+  // тайлы одного рельефа продолжают друг друга, а не повторяют одну картинку с сеткой швов.
+  out_uv = world_pos / tile_texture_span;
   out_tex = int(in_tex);
 }

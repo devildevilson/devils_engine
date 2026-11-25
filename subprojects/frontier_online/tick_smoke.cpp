@@ -1,4 +1,3 @@
-#include "devils_engine/utils/log.h"
 // A real actor world predicts an input which the authority never accepts.
 // Canonical tick messages close every tick; replay from the join checkpoint
 // removes that prediction and reaches the authority's full causal root.
@@ -18,6 +17,7 @@
 #include <devils_engine/network/sequence_window.h>
 #include <devils_engine/network/tick_journal.h>
 #include <devils_engine/thread/atomic_pool.h>
+#include <devils_engine/utils/log.h>
 #include <devils_engine/utils/simulation_time.h>
 #include <devils_engine/utils/timeline.h>
 #include <spdlog/spdlog.h>
@@ -55,10 +55,21 @@ devils_engine::act::intent food_action(const double x, const double y) {
   return action;
 }
 
-bool decode_and_enqueue(fo::actor_world_slice& actors, const std::span<const std::byte> bytes) {
-  fn::canonical_food_action action;
-  return fn::decode(bytes, action) &&
-         actors.enqueue_canonical_intent(food_action(action.x, action.y));
+// The same reading the live session gives a canonical record: a join creates the peer's
+// player, a leave removes it, food is executed by the player of its origin peer.
+bool decode_and_enqueue(fo::actor_world_slice& actors, const uint64_t peer, const uint64_t sequence,
+                        const std::span<const std::byte> bytes) {
+  switch (fn::classify(bytes, sequence)) {
+    case fn::canonical_action_kind::peer_joined: return actors.enqueue_canonical_join(peer);
+    case fn::canonical_action_kind::peer_left: return actors.enqueue_canonical_leave(peer);
+    case fn::canonical_action_kind::spawn_food: {
+      fn::canonical_food_action action;
+      return fn::decode(bytes, action) &&
+             actors.enqueue_canonical_intent(food_action(action.x, action.y), peer);
+    }
+    case fn::canonical_action_kind::invalid: break;
+  }
+  return false;
 }
 
 uint64_t root_of(const fo::actor_world_slice& actors, const utils::timelines& clocks) {
@@ -120,7 +131,7 @@ using input_journal = net::tick_journal<accepted_input, uint64_t, input_tick, in
 int main() {
   try {
     spdlog::set_level(spdlog::level::err);
-    fo::causal_content content(FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT);
+    fo::causal_content content(frontier_online::core::project_modules_root());
     host authority;
     authority.actors.init(128, {0.5f, 0.5f}, {64.0f, 64.0f}, 1, content.config());
     fo::actor_checkpoint_buffers initial;
@@ -162,6 +173,16 @@ int main() {
     size_t wire_bytes = 0;
     for (uint64_t tick = 1; tick <= 6; ++tick) {
       const auto tag = journal.begin(tick, net::canonical_tick_max_records);
+      if (tick == 1) {
+        // Peer 1 agreed on the checkpoint: its player enters the world by a canonical record.
+        accepted_input join;
+        join.tick = tick;
+        join.origin_peer = 1;
+        join.sequence = fn::canonical_join_sequence;
+        join.payload = fn::encode_join();
+        require(journal.try_record(std::move(join)) == net::tick_record_result::recorded,
+                "join did not enter the journal");
+      }
       if (tick == 4) {
         const auto admit = [&](const uint64_t authenticated_peer) {
           // Ownership comes from the established membership, not from bytes.
@@ -195,7 +216,8 @@ int main() {
       require(journal.seal() == net::tick_seal_result::sealed, "tick journal did not seal");
       auto sealed = journal.consume(tag);
       for (const auto& record : sealed.records())
-        require(authority.actors.enqueue_canonical_intent(record.action),
+        require(decode_and_enqueue(authority.actors, record.origin_peer, record.sequence,
+                                   record.payload),
                 "sealed action could not enter causal ECS");
       step(authority, tick);
       const auto root = root_of(authority.actors, authority.clocks);
@@ -244,8 +266,10 @@ int main() {
       target.pending_tick = view.tick;
       target.expected_root = *view.state_root;
       for (const auto& record : view.records) {
-        if (record.origin_peer != 1 || record.input_sequence != 2 ||
-            !decode_and_enqueue(target.actors, record.payload)) return false;
+        if (record.origin_peer != 1 ||
+            (record.input_sequence != 2 && record.input_sequence != fn::canonical_join_sequence) ||
+            !decode_and_enqueue(target.actors, record.origin_peer, record.input_sequence,
+                                record.payload)) return false;
       }
       return true;
     };
@@ -266,6 +290,56 @@ int main() {
             "replayed root differs from authority");
     require(root_of(predicted.actors, predicted.clocks) == predicted_root,
             "detached replay changed live prediction");
+
+    // One player per peer, created only by the canonical join. None of these refusals mutates.
+    const auto corrected_root = root_of(corrected.actors, corrected.clocks);
+    require(corrected.actors.player_of(1) != devils_engine::aesthetics::invalid_entityid &&
+              corrected.actors.player_of(1) == authority.actors.player_of(1) &&
+              corrected.actors.player_of(1) != corrected.actors.player_entity(),
+            "peer 1 has no player of its own after the replayed join");
+    require(!corrected.actors.enqueue_canonical_intent(food_action(5.0, 5.0), 2),
+            "an action of a peer without a player was accepted");
+    require(!corrected.actors.enqueue_canonical_join(1) && !corrected.actors.enqueue_canonical_join(0),
+            "a duplicate or local join was accepted");
+    require(!decode_and_enqueue(corrected.actors, 1, 7, fn::encode_join()) &&
+              !decode_and_enqueue(corrected.actors, 1, fn::canonical_join_sequence,
+                                  food_action_bytes(1.0, 1.0)),
+            "a join with an input sequence or food with the join sequence was accepted");
+    require(!corrected.actors.player_inputs_pending() &&
+              root_of(corrected.actors, corrected.clocks) == corrected_root,
+            "a refused record changed the world");
+
+    // Canonical leave: the player of peer 1 disappears on the same tick boundary everywhere.
+    // A leave in the tick of its own action is refused (the authority drops the actions of a
+    // departed peer), and nothing acts for the peer once its leave is queued.
+    const auto departed_player = authority.actors.player_of(1);
+    for (host* target : {&authority, &corrected}) {
+      auto& actors = target->actors;
+      require(!actors.enqueue_canonical_leave(0) && !actors.enqueue_canonical_leave(2),
+              "a leave of the local player or of a peer without a player was accepted");
+      require(!decode_and_enqueue(actors, 1, fn::canonical_join_sequence, fn::encode_leave()) &&
+                !decode_and_enqueue(actors, 1, 9, fn::encode_leave()) &&
+                !decode_and_enqueue(actors, 1, fn::canonical_leave_sequence, fn::encode_join()),
+              "a leave with a foreign sequence or a join with the leave sequence was accepted");
+      require(actors.enqueue_canonical_intent(food_action(3.0, 3.0), 1) &&
+                !actors.enqueue_canonical_leave(1),
+              "a leave in the tick of the peer's own action was accepted");
+      step(*target, 7);
+      require(decode_and_enqueue(actors, 1, fn::canonical_leave_sequence, fn::encode_leave()),
+              "a valid canonical leave was refused");
+      require(!actors.enqueue_canonical_leave(1) &&
+                !actors.enqueue_canonical_intent(food_action(4.0, 4.0), 1) &&
+                actors.player_inputs_pending(),
+              "a second leave or an action after the leave was accepted");
+      step(*target, 8);
+      require(actors.player_of(1) == devils_engine::aesthetics::invalid_entityid &&
+                !actors.ecs().exists(departed_player) && !actors.player_inputs_pending() &&
+                actors.player_of(0) == actors.player_entity(),
+              "the departed player survived its leave");
+    }
+    require(root_of(authority.actors, authority.clocks) ==
+              root_of(corrected.actors, corrected.clocks),
+            "a canonical leave diverged between the authority and a follower");
 
     // Missing a reliable bundle must refuse before checkpoint restoration or
     // partial replay, even if the missing tick would have been empty.

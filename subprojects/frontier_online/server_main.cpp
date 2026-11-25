@@ -31,13 +31,17 @@
 
 #include <devils_engine/network/state_digest.h>
 #include <devils_engine/thread/atomic_pool.h>
+#include <devils_engine/utils/platform.h>
+#include <devils_engine/utils/root.h>
 #include <devils_engine/utils/simulation_time.h>
 #include <devils_engine/utils/timeline.h>
+#include <devils_engine/utils/type_traits.h> // murmur_hash64A
 
 #include "core/actor_checkpoint.h"
 #include "core/actor_simulation.h"
 #include "core/causal_content.h"
 #include "core/terrain.h"
+#include "core/world_rules.h"
 
 #ifdef FRONTIER_ONLINE_HAS_NETWORK
 #  include "net/authority.h"
@@ -49,10 +53,6 @@ using namespace devils_engine;
 namespace fo = frontier_online::core;
 
 namespace {
-
-#ifndef FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT
-#  define FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT "resources/modules/"
-#endif
 
 struct options {
   uint64_t ticks = 600;      // сколько причинных тиков выполнить
@@ -74,7 +74,9 @@ struct options {
   // земля — функция зерна, а число тиков к ней отношения не имеет.
   uint64_t world_seed = 20260911;
   std::string generator = "generator/world";
-  std::string resource_root = FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT;
+  // Каталог модулей ОТНОСИТЕЛЬНО папки проекта (папка бинарника без bin/), как у клиента.
+  // Абсолютный путь здесь не допускается: ключ значит одно и то же на любой машине.
+  std::string resource_root = "resources/modules/";
   std::string dump_path;     // куда положить канонический документ состояния (для сверки байтами)
   // Смесь стартовых префабов: i-й актор = cycle[i % size]. Ключ существует потому, что состав
   // мира РЕШАЕТ, какие пути симуляции вообще исполнятся: без prey в мире некого есть, и весь
@@ -86,6 +88,8 @@ struct options {
   bool listen = false;
   bool live = false;         // длительная headless-сессия с тиками и проверкой root
   bool live_loopback = false;
+  bool play = false;          // живая сессия для людей: число участников и действий решают они
+  bool verbose = false;       // живые режимы: печатать события рукопожатия
   uint16_t listen_port = 0;   // 0 при --listen без числа — порт спрашивается у ОС
   std::string join;           // "host:port"
   uint32_t expect_joins = 1;  // сколько присоединений ждёт авторитет, прежде чем выйти
@@ -136,7 +140,7 @@ bool parse_options(const int argc, char** argv, options& out) {
       continue;
     }
     if (const auto v = value_of("--actors="); !v.empty()) {
-      if (!parse_u64(v, number)) return false;
+      if (!parse_u64(v, number) || number > UINT32_MAX) return false;
       out.actors = uint32_t(number);
       continue;
     }
@@ -160,6 +164,11 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.chunk_size = uint32_t(number);
       continue;
     }
+    if (const auto v = value_of("--extent="); !v.empty()) {
+      if (!parse_u64(v, number) || number < 8 || number > 1024) return false;
+      out.extent = float(number);
+      continue;
+    }
     if (const auto v = value_of("--generator="); !v.empty()) {
       out.generator = std::string(v);
       continue;
@@ -180,8 +189,16 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.live = true;
       continue;
     }
+    if (arg == "--play") {
+      out.play = true;
+      continue;
+    }
     if (arg == "--live-loopback") {
       out.live_loopback = true;
+      continue;
+    }
+    if (arg == "--verbose") {
+      out.verbose = true;
       continue;
     }
     if (const auto v = value_of("--listen="); !v.empty()) {
@@ -225,6 +242,23 @@ bool parse_options(const int argc, char** argv, options& out) {
                  int(arg.size()), arg.data());
     return false;
   }
+  // Единственный абсолютный путь — корень проекта; `--resources` разрешается только внутрь него.
+  const auto project = utils::root::open(utils::project_folder());
+  if (!project) {
+    std::fprintf(stderr, "frontier_online_server: project folder '%s' is not usable: %.*s\n",
+                 utils::project_folder().c_str(), int(utils::to_string(project.error()).size()),
+                 utils::to_string(project.error()).data());
+    return false;
+  }
+  const auto resolved = project->resolve(out.resource_root);
+  if (!resolved) {
+    std::fprintf(stderr, "frontier_online_server: --resources='%s' must stay inside the project "
+                 "folder: %.*s\n", out.resource_root.c_str(),
+                 int(utils::to_string(resolved.error()).size()),
+                 utils::to_string(resolved.error()).data());
+    return false;
+  }
+  out.resource_root = *resolved;
   return true;
 }
 
@@ -405,6 +439,7 @@ int serve_session(const options& opts, const fo::causal_content& content) {
 
   fnet::net_runtime runtime(1);
   fnet::authority_config config;
+  config.apply(fnet::load_network_settings());
   // Объявленный порт — для прогона, где участники на других машинах: слушаем на всех интерфейсах.
   // Порт «какой дадут» — это локальный опыт, и уезжать за пределы петли ему незачем.
   config.port = opts.listen_port;
@@ -426,6 +461,7 @@ int serve_session(const options& opts, const fo::causal_content& content) {
 
   const utils::simulation_rate rate(opts.rate);
   utils::timelines clocks(rate);
+  clocks.set_game_scale(fo::world_time_scale()); // правило мира (core/world_rules.h)
   thread::atomic_pool pool(opts.workers);
 
   fo::actor_world_slice actors;
@@ -484,15 +520,17 @@ int serve_session(const options& opts, const fo::causal_content& content) {
 // КЛИЕНТ ПРИСОЕДИНЯЕТСЯ. Здесь он безглазый нарочно: сравнивается ПРИЧИННОЕ состояние, и окно к
 // этому сравнению ничего не добавляет.
 int join_session(const options& opts, const fo::causal_content& content) {
-  uint32_t host = 0;
-  uint16_t port = 0;
-  if (!fnet::parse_endpoint(opts.join, host, port)) {
+  const auto endpoint = devils_engine::network::parse_endpoint(opts.join);
+  if (!endpoint) {
     std::fprintf(stderr, "frontier_online_server: bad --join endpoint '%s'\n", opts.join.c_str());
     return EXIT_FAILURE;
   }
+  const uint32_t host = endpoint->host;
+  const uint16_t port = endpoint->port;
 
   fnet::net_runtime runtime(1);
   fnet::follower_config config;
+  config.apply(fnet::load_network_settings());
   config.host = host;
   config.port = port;
   config.verbose = !opts.verify;
@@ -570,11 +608,23 @@ int join_session(const options& opts, const fo::causal_content& content) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+namespace {
+
+int run_server(int argc, char** argv) {
   options opts;
   if (!parse_options(argc, argv, opts)) return EXIT_FAILURE;
+  // Живые прогоны печатают немного, но их снимают снаружи: тест убивает зависший авторитет, а
+  // падение процесса не сбрасывает буфер. В трубу stdout буферизован целиком (у MSVC построчного
+  // режима нет вовсе), и без этого причина пропадала вместе с выводом.
+  if (opts.live) std::setvbuf(stdout, nullptr, _IONBF, 0);
 
+#ifdef FRONTIER_ONLINE_HAS_NETWORK
+  fnet::trace_live_phase(opts.live && opts.verbose, "content");
+#endif
   fo::causal_content content(opts.resource_root);
+#ifdef FRONTIER_ONLINE_HAS_NETWORK
+  fnet::trace_live_phase(opts.live && opts.verbose, "content_ready");
+#endif
 
   if (opts.terrain_probe != 0) {
     return probe_terrain(opts, content);
@@ -588,13 +638,19 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "frontier_online_server: --live requires --listen=PORT or --join=HOST:PORT\n");
     return EXIT_FAILURE;
   }
+  if (opts.play && (!opts.live || !opts.listen)) {
+    std::fprintf(stderr, "frontier_online_server: --play requires --live --listen=PORT\n");
+    return EXIT_FAILURE;
+  }
   if (opts.live_loopback && (!opts.live || !opts.listen)) {
     std::fprintf(stderr, "frontier_online_server: --live-loopback requires --live --listen=PORT\n");
     return EXIT_FAILURE;
   }
 #ifdef FRONTIER_ONLINE_HAS_NETWORK
-  // Занятый порт, недостижимый адрес, отсутствующий генератор — это обычные обстоятельства
-  // оператора, а не нарушение инварианта. Сообщение и код возврата, а не terminate.
+  // Граница процесса. Занятый порт, отсутствующие или испорченные ресурсы — критические ошибки
+  // (`utils::error` у причины): серверу нужен другой порт или исправное содержимое, продолжать
+  // нечем. Здесь их только печатают и возвращают код — процесс после них не работает дальше.
+  // Сетевые исходы (отказы, обрывы, рассинхрон) сюда не доходят: это статусы.
   try {
     if (opts.live) {
       fnet::live_run_options live;
@@ -609,7 +665,12 @@ int main(int argc, char** argv) {
       live.final_tick = opts.ticks;
       live.world_seed = opts.world_seed;
       live.generator = opts.generator;
+      live.chunk_size = opts.chunk_size;
+      live.extent = opts.extent;
       live.prefab_cycle = opts.prefab_cycle;
+      live.scripted_inputs = !opts.play;
+      live.verbose = opts.verbose;
+      live.network = fnet::load_network_settings();
       if (opts.listen) return fnet::run_live_authority(live, content);
       return fnet::run_live_follower(live, content);
     }
@@ -628,6 +689,7 @@ int main(int argc, char** argv) {
 
   const utils::simulation_rate rate(opts.rate);
   utils::timelines clocks(rate);
+  clocks.set_game_scale(fo::world_time_scale()); // правило мира (core/world_rules.h)
   thread::atomic_pool pool(opts.workers);
 
   fo::actor_world_slice actors;
@@ -702,8 +764,13 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "frontier_online_server: cannot open '%s'\n", opts.dump_path.c_str());
       return EXIT_FAILURE;
     }
-    std::fwrite(buffers.document.data(), 1, buffers.document.size(), out);
-    std::fclose(out);
+    // Документ для побайтовой сверки: обрезанный файл с кодом 0 хуже отказа.
+    const size_t written = std::fwrite(buffers.document.data(), 1, buffers.document.size(), out);
+    const bool closed = std::fclose(out) == 0;
+    if (written != buffers.document.size() || !closed) {
+      std::fprintf(stderr, "frontier_online_server: could not write '%s'\n", opts.dump_path.c_str());
+      return EXIT_FAILURE;
+    }
   }
 
   if (opts.verify) {
@@ -730,4 +797,16 @@ int main(int argc, char** argv) {
     std::printf("frontier_online_server: ok\n");
   }
   return EXIT_SUCCESS;
+}
+
+} // namespace
+
+// Граница процесса: критическая ошибка (utils::error у причины уже напечатала её) — код выхода, а не
+// std::terminate (на MSVC — диалог падения вместо кода у скрипта и CI).
+int main(int argc, char** argv) {
+  try {
+    return run_server(argc, argv);
+  } catch (const devils_engine::utils::critical_error&) {
+    return EXIT_FAILURE;
+  }
 }

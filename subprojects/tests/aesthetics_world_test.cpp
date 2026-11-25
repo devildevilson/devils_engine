@@ -61,6 +61,40 @@ TEST_CASE("world view iterates sparse storage without a separate dense entity li
   CHECK(ids[1] == c);
 }
 
+TEST_CASE("ensure_storage makes empty views valid and reserve keeps components in place [aesthetics::world]") {
+  aesthetics::world world;
+  CHECK(!world.is_allocators_exist<position, velocity>());
+  CHECK(world.capacity<position>() == 0);
+
+  world.ensure_storage<position, velocity>();
+  CHECK(world.is_allocators_exist<position, velocity>());
+  CHECK(collect_ids(world.view<position, velocity>()).empty());
+  CHECK(world.count<position>() == 0);
+
+  world.reserve<marker>(64);
+  CHECK(world.is_allocators_exist<marker>());
+  CHECK(world.capacity<marker>() >= 64);
+  const auto first = world.gen_entityid();
+  const marker* first_ptr = world.create<marker>(first, marker{1});
+  for (int i = 2; i <= 64; ++i) {
+    world.create<marker>(world.gen_entityid(), marker{i});
+  }
+  // Внутри зарезервированной ёмкости вставки не переносят компоненты.
+  CHECK(world.get<marker>(first) == first_ptr);
+  CHECK(world.count<marker>() == 64);
+  // Сверх ёмкости хранилище растёт как обычно; доступ по entityid остаётся верным.
+  for (int i = 0; i < 64; ++i) {
+    world.create<marker>(world.gen_entityid(), marker{100 + i});
+  }
+  CHECK(world.count<marker>() == 128);
+  CHECK(world.get<marker>(first)->value == 1);
+
+  // Ёмкость только растёт: меньший reserve ничего не отнимает.
+  const size_t grown = world.capacity<marker>();
+  world.reserve<marker>(4);
+  CHECK(world.capacity<marker>() == grown);
+}
+
 TEST_CASE("world reconstructs raw iterator entity versions from sparse storage [aesthetics::world]") {
   aesthetics::world world;
   const auto old_id = world.gen_entityid();

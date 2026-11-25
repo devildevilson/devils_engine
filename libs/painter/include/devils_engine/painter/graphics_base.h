@@ -200,6 +200,10 @@ struct graphics_base {
   buffer_frame get_current_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset = 0) const;
   image_frame get_current_image_resource_frame(const uint32_t res_index, const uint32_t counter_offset = 0) const;
 
+  // Сделать видимой хосту запись GPU в копию буферного ресурса — после того, как fence кадра-писателя
+  // пройден. Для когерентной памяти ничего не делает; ресурс не буфер или не отображён — тоже.
+  void invalidate_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset = 0) const;
+
   buffer_frame get_current_instance_resource_frame(const uint32_t pair_index, const uint32_t counter_offset = 0) const;
   buffer_frame get_current_indirect_resource_frame(const uint32_t pair_index, const uint32_t counter_offset = 0) const;
 

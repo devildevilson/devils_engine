@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "net/link.h"
+#include "net/network_settings.h"
 #include "net/protocol.h"
 
 // КЛИЕНТ ПРИСОЕДИНЯЕТСЯ.
@@ -60,6 +61,14 @@ enum class follower_fault : uint8_t {
 
 [[nodiscard]] const char* describe(follower_fault fault) noexcept;
 
+// Заявка на продолжение: ключ, выданный авторитетом (`reconnect_grant`), и подтверждённое состояние
+// клиента — тик и корень после него. Авторитет догонит от него или от снимка своего кольца.
+struct resume_claim {
+  reconnect_grant grant;
+  uint64_t tick = 0;
+  uint64_t root = 0;
+};
+
 struct follower_config {
   uint32_t host = 0x7f000001;
   uint16_t port = 0;
@@ -74,16 +83,29 @@ struct follower_config {
   // СРОКИ — базовая проверка на вшивость авторитета: сервер, который замолчал посреди фазы, не
   // должен держать клиента вечно. 0 — срока нет. Авторитет шлёт bundle каждый тик, поэтому
   // секунды тишины в живой сессии — это уже беда, а не задержка.
-  std::chrono::milliseconds connect_timeout{5000};
-  std::chrono::milliseconds handshake_timeout{5000};
-  std::chrono::milliseconds world_timeout{5000};
-  std::chrono::milliseconds transfer_stall_timeout{5000};
-  std::chrono::milliseconds confirmation_timeout{5000};
-  std::chrono::milliseconds live_silence_timeout{5000};
+  // Умолчания — из network_settings.h (один источник); `network.tavl` переопределяет через apply().
+  std::chrono::milliseconds connect_timeout{default_network_settings.follower.connect_ms};
+  std::chrono::milliseconds handshake_timeout{default_network_settings.follower.handshake_ms};
+  std::chrono::milliseconds world_timeout{default_network_settings.follower.world_ms};
+  std::chrono::milliseconds transfer_stall_timeout{default_network_settings.follower.transfer_stall_ms};
+  std::chrono::milliseconds confirmation_timeout{default_network_settings.follower.confirmation_ms};
+  std::chrono::milliseconds live_silence_timeout{default_network_settings.follower.live_silence_ms};
+
+  // Есть — рукопожатие с продолжением той же сессии тем же участником; нет — новый вход.
+  std::optional<resume_claim> resume;
 
   // Сколько канонических тиков ведомый держит непрочитанными. Это ёмкость, а не предел ошибки:
   // заполнив её, ведомый перестаёт забирать сообщения из транспорта, и они ждут в очереди GNS.
   size_t canonical_capacity = 32;
+
+  void apply(const network_settings& settings) noexcept {
+    connect_timeout = std::chrono::milliseconds(settings.follower.connect_ms);
+    handshake_timeout = std::chrono::milliseconds(settings.follower.handshake_ms);
+    world_timeout = std::chrono::milliseconds(settings.follower.world_ms);
+    transfer_stall_timeout = std::chrono::milliseconds(settings.follower.transfer_stall_ms);
+    confirmation_timeout = std::chrono::milliseconds(settings.follower.confirmation_ms);
+    live_silence_timeout = std::chrono::milliseconds(settings.follower.live_silence_ms);
+  }
 };
 
 class follower {
@@ -100,6 +122,9 @@ public:
   // записал бы пропавшего участника. Возвращает true, когда авторитет закрыл соединение, то есть
   // отчёт дошёл.
   [[nodiscard]] bool drain();
+  // Уйти самому (только в живой сессии): авторитет освобождает слот сразу и закрывает соединение;
+  // дождаться закрытия — drain(). false — уходить не из чего.
+  [[nodiscard]] bool leave();
 
   [[nodiscard]] follower_phase phase() const noexcept;
   [[nodiscard]] bool finished() const noexcept;
@@ -122,6 +147,13 @@ public:
   // Причина, которую авторитет назвал в `session_terminated`, если назвал.
   [[nodiscard]] std::optional<termination_reason> termination() const noexcept;
   [[nodiscard]] uint64_t catchup_tick() const noexcept;
+  // Рукопожатие уже идёт (транспорт соединился) / сессия установлена.
+  [[nodiscard]] bool connected() const noexcept;
+  [[nodiscard]] bool established() const noexcept;
+  // Последний ключ повторного входа от авторитета (после подтверждения; обновляется).
+  [[nodiscard]] const std::optional<reconnect_grant>& grant() const noexcept;
+  // План продолжения, если это рукопожатие с продолжением и план пришёл.
+  [[nodiscard]] const std::optional<resume_plan>& plan() const noexcept;
 
 private:
   struct state;

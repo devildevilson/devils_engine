@@ -296,98 +296,15 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
   // push_font(arg): arg = число (только размер) или таблица {font=, size=, bold=, softness=, outline={color={r,g,b,a}, width=}}.
   // Меняет и размер (nk_style_push_font), и SDF-эффекты (через userdata = offset в effect_arena).
   sol::table nk_tbl = env["nk"];
-  nk_tbl.set_function("push_font", [this](const sol::object arg) {
-    const font_t* base = this->default_font;
-    float size = float(base->nkfont->height);
-    ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};
-
-    if (arg.is<double>()) {
-      size = float(arg.as<double>());
-    } else if (arg.is<sol::table>()) {
-      const sol::table t = arg.as<sol::table>();
-      // выбор базового шрифта demiurg-хендлом: lua берёт его из request("fonts/...").
-      // Пока CPU-уровни font_resource не пройдены (font() == nullptr) — молча дефолт
-      // (транзиентное состояние); не-хендл/не-шрифт в поле font — ошибка скрипта, один warn.
-      const sol::object font_obj = t["font"];
-      if (font_obj.valid() && font_obj != sol::nil) {
-        const font_t* picked = nullptr;
-        if (font_obj.is<demiurg::resource_handle>()) {
-          const auto h = font_obj.as<demiurg::resource_handle>();
-          if (auto* fr = h.get<font_resource>()) {
-            picked = fr->font();
-          } else {
-            static bool warned = false;
-            if (!warned) {
-              warned = true;
-              utils::warn("nk.push_font: 'font' handle does not resolve to a font resource");
-            }
-          }
-        } else {
-          static bool warned = false;
-          if (!warned) {
-            warned = true;
-            utils::warn("nk.push_font: 'font' must be a demiurg resource handle (see request('fonts/...'))");
-          }
-        }
-        if (picked != nullptr) {
-          base = picked;
-        }
-      }
-      size = float(t.get_or("size", double(base->nkfont->height)));
-      eff.boldness = float(t.get_or("bold", 0.0));
-      eff.softness = float(t.get_or("softness", 0.0));
-      const sol::optional<sol::table> outline = t["outline"];
-      if (outline.has_value()) {
-        const sol::table o = outline.value();
-        eff.outline_width = float(o.get_or("width", 0.0));
-        const sol::optional<sol::table> col = o["color"];
-        if (col.has_value()) {
-          eff.outline_color = pack_color01(col.value());
-        }
-      }
-    }
-
-    // эффект в арену, offset -> userdata (его подхватят последующие text-команды)
-    auto* e = effect_arena.create<ui_text_effect>(eff);
-    nk_handle h;
-    h.id = int(effect_arena.offset_of(e));
-    userdata_stack.push_back(ctx->userdata.id); // для восстановления на pop
-    nk_set_user_data(ctx.get(), h);
-    nk_style_push_font(ctx.get(), this->sized_font(base, size));
-  });
-  nk_tbl.set_function("pop_font", [this]() {
-    nk_style_pop_font(ctx.get());
-    if (!userdata_stack.empty()) {
-      nk_handle h;
-      h.id = userdata_stack.back();
-      userdata_stack.pop_back();
-      nk_set_user_data(ctx.get(), h);
-    }
-  });
+  nk_tbl.set_function("push_font", &system::lua_push_font, this);
+  nk_tbl.set_function("pop_font", &system::lua_pop_font, this);
 
   // Стилизация Nuklear (шаг 2c). Скрипт грузит тему из lua. style_default() — сброс к дефолту;
   // style_from_table{ text={r,g,b,a}, window=..., button=... } — тема из именованных цветов
   // (неуказанные берут дефолт). Это «загрузка темы», а не мутация одного цвета: nk_style_from_table
   // применяет цвета во все под-стили разом.
-  nk_tbl.set_function("style_default", [this]() {
-    nk_style_from_table(ctx.get(), nullptr);
-  });
-  nk_tbl.set_function("style_from_table", [this](const sol::table& colors) {
-    nk_color table[NK_COLOR_COUNT];
-    seed_default_theme(table);
-    for (const auto& kv : colors) {
-      if (!kv.first.is<std::string>() || !kv.second.is<sol::table>()) {
-        continue;
-      }
-      const int idx = nk_color_index_from_name(kv.first.as<std::string>());
-      if (idx < 0) {
-        utils::warn("nk.style_from_table: unknown element '{}'", kv.first.as<std::string>());
-        continue;
-      }
-      table[idx] = table_to_nk_color(kv.second.as<sol::table>());
-    }
-    nk_style_from_table(ctx.get(), table);
-  });
+  nk_tbl.set_function("style_default", &system::lua_style_default, this);
+  nk_tbl.set_function("style_from_table", &system::lua_style_from_table, this);
 
   // Картинки (шаг: image + placement). Регистрируем тут (а не в bindings — тот не зависит от visage;
   // + нужен nk_context). visage::image — POD-хендл (слот текстуры + регион), строит хост (app.image),
@@ -414,115 +331,213 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
   // nk.image(img [, placement_flags] [, color]) — берёт слот виджета (nk_widget), считает целевой
   // прямоугольник по placement (вписать/растянуть/выровнять) и рисует nk_draw_image. mode=image в
   // convert() выставится сам (ненулевая не-шрифтовая текстура), ui.frag mode 2 сэмплит.
-  nk_tbl.set_function("image",
-                      [this](const visage::image& img, sol::optional<uint32_t> placement_flags, sol::optional<sol::table> color) {
-                        if (ctx->current == nullptr) {
-                          return; // не внутри begin/end окна — рисовать некуда
-                        }
-                        struct nk_rect bounds;
-                        const auto state = nk_widget(&bounds, ctx.get()); // продвигает layout + отдаёт bounds
-                        if (state == NK_WIDGET_INVALID) {
-                          return; // виджет вне видимой области
-                        }
-
-                        // регион: если задан (region[2]!=0) — суб-прямоугольник, иначе вся картинка
-                        const struct nk_rect region = img.region[2] != 0
-                                                        ? nk_rect(float(img.region[0]), float(img.region[1]), float(img.region[2]), float(img.region[3]))
-                                                        : nk_rect(0.0f, 0.0f, float(img.w), float(img.h));
-                        const uint32_t flags = placement_flags.value_or(uint32_t(img_placement::fill));
-                        // пакуем тип(image)+mirror+индекс в id: тип отличает картинку от фигуры (слот 0 больше не путается),
-                        // mirror и индекс декодит шейдер (см. tex_id в render_output.h).
-                        const uint32_t packed = tex_id::pack(gui_draw_mode::image, img.texture_id,
-                                                             (flags & img_placement::mirror_u) != 0u, (flags & img_placement::mirror_v) != 0u);
-                        const struct nk_image nkimg = nk_subimage_id(int(packed), img.w, img.h, region);
-                        const struct nk_rect target = image_placement_rect(bounds, region.w, region.h, flags);
-                        const struct nk_color c = color.has_value() ? table_to_nk_color(color.value()) : nk_rgba(255, 255, 255, 255);
-                        nk_draw_image(&ctx->current->buffer, target, &nkimg, c);
-                      });
+  nk_tbl.set_function("image", &system::lua_image, this);
 
   // Стенсил-эффект COOLDOWN: картинка проявляется по градиент-маске на долю fill (незаполненное
   // затемнено). nk.image_gradient{ img=<image>, mask=<image>, fill=0..1, placement=? }. Параметры —
   // в effect_arena (offset в userdata), тип cooldown — в id; шейдер сэмплит img + mask, ревил по fill.
-  nk_tbl.set_function("image_gradient", [this](sol::table t) {
-    if (ctx->current == nullptr) {
-      return;
-    }
-    const sol::optional<visage::image> img = t["img"];
-    const sol::optional<visage::image> mask = t["mask"];
-    if (!img || !mask) {
-      return;
-    }
-    const float fill = float(t.get_or("fill", 1.0));
-    const uint32_t flags = uint32_t(t.get_or("placement", double(img_placement::fill)));
-
-    struct nk_rect bounds;
-    if (nk_widget(&bounds, ctx.get()) == NK_WIDGET_INVALID) {
-      return;
-    }
-    const struct nk_rect region = img->region[2] != 0
-                                    ? nk_rect(float(img->region[0]), float(img->region[1]), float(img->region[2]), float(img->region[3]))
-                                    : nk_rect(0.0f, 0.0f, float(img->w), float(img->h));
-    const struct nk_rect target = image_placement_rect(bounds, region.w, region.h, flags);
-
-    auto* e = effect_arena.create<ui_image_effect>(ui_image_effect{mask->texture_id, fill, {0, 0, 0, 0}, 0});
-    nk_handle h;
-    h.id = int(effect_arena.offset_of(e));
-    const int prev_ud = ctx->userdata.id;
-    nk_set_user_data(ctx.get(), h);
-    const uint32_t packed = tex_id::pack(gui_draw_mode::cooldown, img->texture_id,
-                                         (flags & img_placement::mirror_u) != 0u, (flags & img_placement::mirror_v) != 0u);
-    const struct nk_image nkimg = nk_subimage_id(int(packed), img->w, img->h, region);
-    nk_draw_image(&ctx->current->buffer, target, &nkimg, nk_rgba(255, 255, 255, 255));
-    nk_handle ph;
-    ph.id = prev_ud;
-    nk_set_user_data(ctx.get(), ph); // вернуть прежний userdata
-  });
+  nk_tbl.set_function("image_gradient", &system::lua_image_gradient, this);
 
   // Стенсил-эффект MIX (4-blend): до 4 компонентов (картинки/цвета) смешиваются по каналам маски
   // (R/G/B = вес comp0..2, comp3 = 1-R-G-B, альфа = непрозрачность). nk.image_mix{ comps={…≤4}, mask= }.
   // Каждый comp — visage::image (картинка) ИЛИ таблица цвета {r,g,b,a}. Заливает весь слот виджета.
-  nk_tbl.set_function("image_mix", [this](sol::table t) {
-    if (ctx->current == nullptr) {
-      return;
-    }
-    const sol::optional<visage::image> mask = t["mask"];
-    if (!mask) {
-      return;
-    }
-    const sol::optional<sol::table> comps = t["comps"];
+  nk_tbl.set_function("image_mix", &system::lua_image_mix, this);
+}
 
-    ui_image_effect eff{};
-    eff.mask_index = mask->texture_id;
-    if (comps) {
-      for (int i = 0; i < 4; ++i) {
-        sol::object c = (*comps)[i + 1]; // lua 1-based
-        if (c.is<visage::image>()) {
-          eff.comp[i] = c.as<visage::image>().texture_id;
-          eff.is_image |= (1u << i);
-        } else if (c.is<sol::table>()) {
-          eff.comp[i] = pack_color01(c.as<sol::table>());
-        } // RGBA8-цвет
-        // иначе comp остаётся 0 (чёрный цвет, вес по маске)
+// --- Lua-биндинги nk (регистрация — в конструкторе; реализация — методами, а не лямбдами: см. AGENTS) ---
+
+void system::lua_push_font(const sol::object arg) {
+  const font_t* base = this->default_font;
+  float size = float(base->nkfont->height);
+  ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};
+
+  if (arg.is<double>()) {
+    size = float(arg.as<double>());
+  } else if (arg.is<sol::table>()) {
+    const sol::table t = arg.as<sol::table>();
+    // выбор базового шрифта demiurg-хендлом: lua берёт его из request("fonts/...").
+    // Пока CPU-уровни font_resource не пройдены (font() == nullptr) — молча дефолт
+    // (транзиентное состояние); не-хендл/не-шрифт в поле font — ошибка скрипта, один warn.
+    const sol::object font_obj = t["font"];
+    if (font_obj.valid() && font_obj != sol::nil) {
+      const font_t* picked = nullptr;
+      if (font_obj.is<demiurg::resource_handle>()) {
+        const auto h = font_obj.as<demiurg::resource_handle>();
+        if (auto* fr = h.get<font_resource>()) {
+          picked = fr->font();
+        } else {
+          static bool warned = false;
+          if (!warned) {
+            warned = true;
+            utils::warn("nk.push_font: 'font' handle does not resolve to a font resource");
+          }
+        }
+      } else {
+        static bool warned = false;
+        if (!warned) {
+          warned = true;
+          utils::warn("nk.push_font: 'font' must be a demiurg resource handle (see request('fonts/...'))");
+        }
+      }
+      if (picked != nullptr) {
+        base = picked;
       }
     }
-
-    struct nk_rect bounds;
-    if (nk_widget(&bounds, ctx.get()) == NK_WIDGET_INVALID) {
-      return;
+    size = float(t.get_or("size", double(base->nkfont->height)));
+    eff.boldness = float(t.get_or("bold", 0.0));
+    eff.softness = float(t.get_or("softness", 0.0));
+    const sol::optional<sol::table> outline = t["outline"];
+    if (outline.has_value()) {
+      const sol::table o = outline.value();
+      eff.outline_width = float(o.get_or("width", 0.0));
+      const sol::optional<sol::table> col = o["color"];
+      if (col.has_value()) {
+        eff.outline_color = pack_color01(col.value());
+      }
     }
+  }
 
-    auto* e = effect_arena.create<ui_image_effect>(eff);
+  // эффект в арену, offset -> userdata (его подхватят последующие text-команды)
+  auto* e = effect_arena.create<ui_text_effect>(eff);
+  nk_handle h;
+  h.id = int(effect_arena.offset_of(e));
+  userdata_stack.push_back(ctx->userdata.id); // для восстановления на pop
+  nk_set_user_data(ctx.get(), h);
+  nk_style_push_font(ctx.get(), this->sized_font(base, size));
+}
+
+void system::lua_pop_font() {
+  nk_style_pop_font(ctx.get());
+  if (!userdata_stack.empty()) {
     nk_handle h;
-    h.id = int(effect_arena.offset_of(e));
-    const int prev_ud = ctx->userdata.id;
+    h.id = userdata_stack.back();
+    userdata_stack.pop_back();
     nk_set_user_data(ctx.get(), h);
-    // тип mix; index не сэмплится шейдером (используются comps+mask). uv [0,1] на весь виджет (w=h=1).
-    const struct nk_image nkimg = nk_subimage_id(int(tex_id::pack(gui_draw_mode::mix, 0)), 1, 1, nk_rect(0.0f, 0.0f, 1.0f, 1.0f));
-    nk_draw_image(&ctx->current->buffer, bounds, &nkimg, nk_rgba(255, 255, 255, 255));
-    nk_handle ph;
-    ph.id = prev_ud;
-    nk_set_user_data(ctx.get(), ph);
-  });
+  }
+}
+
+void system::lua_style_default() {
+  nk_style_from_table(ctx.get(), nullptr);
+}
+
+void system::lua_style_from_table(const sol::table& colors) {
+  nk_color table[NK_COLOR_COUNT];
+  seed_default_theme(table);
+  for (const auto& kv : colors) {
+    if (!kv.first.is<std::string>() || !kv.second.is<sol::table>()) {
+      continue;
+    }
+    const int idx = nk_color_index_from_name(kv.first.as<std::string>());
+    if (idx < 0) {
+      utils::warn("nk.style_from_table: unknown element '{}'", kv.first.as<std::string>());
+      continue;
+    }
+    table[idx] = table_to_nk_color(kv.second.as<sol::table>());
+  }
+  nk_style_from_table(ctx.get(), table);
+}
+
+void system::lua_image(const visage::image& img, sol::optional<uint32_t> placement_flags, sol::optional<sol::table> color) {
+  if (ctx->current == nullptr) {
+    return; // не внутри begin/end окна — рисовать некуда
+  }
+  struct nk_rect bounds;
+  const auto state = nk_widget(&bounds, ctx.get()); // продвигает layout + отдаёт bounds
+  if (state == NK_WIDGET_INVALID) {
+    return; // виджет вне видимой области
+  }
+
+  // регион: если задан (region[2]!=0) — суб-прямоугольник, иначе вся картинка
+  const struct nk_rect region = img.region[2] != 0
+                                  ? nk_rect(float(img.region[0]), float(img.region[1]), float(img.region[2]), float(img.region[3]))
+                                  : nk_rect(0.0f, 0.0f, float(img.w), float(img.h));
+  const uint32_t flags = placement_flags.value_or(uint32_t(img_placement::fill));
+  // пакуем тип(image)+mirror+индекс в id: тип отличает картинку от фигуры (слот 0 больше не путается),
+  // mirror и индекс декодит шейдер (см. tex_id в render_output.h).
+  const uint32_t packed = tex_id::pack(gui_draw_mode::image, img.texture_id,
+                                       (flags & img_placement::mirror_u) != 0u, (flags & img_placement::mirror_v) != 0u);
+  const struct nk_image nkimg = nk_subimage_id(int(packed), img.w, img.h, region);
+  const struct nk_rect target = image_placement_rect(bounds, region.w, region.h, flags);
+  const struct nk_color c = color.has_value() ? table_to_nk_color(color.value()) : nk_rgba(255, 255, 255, 255);
+  nk_draw_image(&ctx->current->buffer, target, &nkimg, c);
+}
+
+void system::lua_image_gradient(sol::table t) {
+  if (ctx->current == nullptr) {
+    return;
+  }
+  const sol::optional<visage::image> img = t["img"];
+  const sol::optional<visage::image> mask = t["mask"];
+  if (!img || !mask) {
+    return;
+  }
+  const float fill = float(t.get_or("fill", 1.0));
+  const uint32_t flags = uint32_t(t.get_or("placement", double(img_placement::fill)));
+
+  struct nk_rect bounds;
+  if (nk_widget(&bounds, ctx.get()) == NK_WIDGET_INVALID) {
+    return;
+  }
+  const struct nk_rect region = img->region[2] != 0
+                                  ? nk_rect(float(img->region[0]), float(img->region[1]), float(img->region[2]), float(img->region[3]))
+                                  : nk_rect(0.0f, 0.0f, float(img->w), float(img->h));
+  const struct nk_rect target = image_placement_rect(bounds, region.w, region.h, flags);
+
+  auto* e = effect_arena.create<ui_image_effect>(ui_image_effect{mask->texture_id, fill, {0, 0, 0, 0}, 0});
+  nk_handle h;
+  h.id = int(effect_arena.offset_of(e));
+  const int prev_ud = ctx->userdata.id;
+  nk_set_user_data(ctx.get(), h);
+  const uint32_t packed = tex_id::pack(gui_draw_mode::cooldown, img->texture_id,
+                                       (flags & img_placement::mirror_u) != 0u, (flags & img_placement::mirror_v) != 0u);
+  const struct nk_image nkimg = nk_subimage_id(int(packed), img->w, img->h, region);
+  nk_draw_image(&ctx->current->buffer, target, &nkimg, nk_rgba(255, 255, 255, 255));
+  nk_handle ph;
+  ph.id = prev_ud;
+  nk_set_user_data(ctx.get(), ph); // вернуть прежний userdata
+}
+
+void system::lua_image_mix(sol::table t) {
+  if (ctx->current == nullptr) {
+    return;
+  }
+  const sol::optional<visage::image> mask = t["mask"];
+  if (!mask) {
+    return;
+  }
+  const sol::optional<sol::table> comps = t["comps"];
+
+  ui_image_effect eff{};
+  eff.mask_index = mask->texture_id;
+  if (comps) {
+    for (int i = 0; i < 4; ++i) {
+      sol::object c = (*comps)[i + 1]; // lua 1-based
+      if (c.is<visage::image>()) {
+        eff.comp[i] = c.as<visage::image>().texture_id;
+        eff.is_image |= (1u << i);
+      } else if (c.is<sol::table>()) {
+        eff.comp[i] = pack_color01(c.as<sol::table>());
+      } // RGBA8-цвет
+      // иначе comp остаётся 0 (чёрный цвет, вес по маске)
+    }
+  }
+
+  struct nk_rect bounds;
+  if (nk_widget(&bounds, ctx.get()) == NK_WIDGET_INVALID) {
+    return;
+  }
+
+  auto* e = effect_arena.create<ui_image_effect>(eff);
+  nk_handle h;
+  h.id = int(effect_arena.offset_of(e));
+  const int prev_ud = ctx->userdata.id;
+  nk_set_user_data(ctx.get(), h);
+  // тип mix; index не сэмплится шейдером (используются comps+mask). uv [0,1] на весь виджет (w=h=1).
+  const struct nk_image nkimg = nk_subimage_id(int(tex_id::pack(gui_draw_mode::mix, 0)), 1, 1, nk_rect(0.0f, 0.0f, 1.0f, 1.0f));
+  nk_draw_image(&ctx->current->buffer, bounds, &nkimg, nk_rgba(255, 255, 255, 255));
+  nk_handle ph;
+  ph.id = prev_ud;
+  nk_set_user_data(ctx.get(), ph);
 }
 
 system::~system() noexcept {

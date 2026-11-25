@@ -178,7 +178,9 @@ size_t constant_value::reduce_value() const {
   return size_t(x) + size_t(y) + size_t(z);
 }
 
-void resource_container::create_container(VmaAllocator alc, const uint32_t host_visible) {
+void resource_container::create_container(VmaAllocator alc, const uint32_t host_access_value) {
+  host_access = host_access_value;
+  const bool host_visible = host_access_value != host_access_none;
   vma::Allocator al(alc);
 
   if (is_image()) {
@@ -238,7 +240,9 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
     bci.size = size;
 
     vma::AllocationCreateInfo aci{};
-    aci.usage = bool(host_visible) ? vma::MemoryUsage::eCpuOnly : vma::MemoryUsage::eGpuOnly;
+    aci.usage = host_access_value == host_access_read ? vma::MemoryUsage::eGpuToCpu
+              : bool(host_visible)                    ? vma::MemoryUsage::eCpuOnly
+                                                      : vma::MemoryUsage::eGpuOnly;
     if (
       aci.usage == vma::MemoryUsage::eCpuOnly ||
       aci.usage == vma::MemoryUsage::eCpuCopy ||
@@ -300,11 +304,8 @@ std::tuple<size_t, extent> resource::compute_frame_size(const graphics_base* bas
     buffer_size = size_hint; // ???
   } else if (role::is_indirect(role)) {
     // Ёмкость приходит из ОБЪЯВЛЕНИЯ (`draw_capacity` группы отрисовки) и лежит в `size`, откуда её
-    // и посчитал общий путь выше. Прежде эта строка её затирала фиксированными тридцатью двумя
-    // командами, то есть объявленная ёмкость не значила ничего: буфер группы всегда выходил на
-    // килобайт. Пара при этом резервирует место под КАЖДЫЙ свой инстанс (см. register_pair), поэтому
-    // первая же пара на несколько тысяч инстансов уезжала за границу буфера, и слой проверки ловил
-    // это как выход drawIndirect за размер.
+    // и посчитал общий путь выше: одна команда на пару, `draw_capacity` — число пар группы (проверяет
+    // register_pair).
     //
     // Максимум, а не присваивание: конфиги, объявившие ёмкость меньше прежней константы, не должны
     // внезапно получить буфер меньше того, на котором они работали.
@@ -1501,13 +1502,15 @@ static std::vector<T> parse_config_content(const std::string_view content, const
 
 template <typename T>
 std::vector<T> parse_file(const std::string& file) {
-  if (!file_io::exists(file)) {
+  const auto content = file_io::read_text(file);
+  if (!content) {
+    if (content.error() != file_io::read_error::not_found) {
+      utils::error{}("Config file '{}' cannot be read: {}", file, file_io::describe(content.error()));
+    }
     utils::warn("File '{}' not found", file);
     return {};
   }
-
-  const auto content = file_io::read(file);
-  return parse_config_content<T>(content, file);
+  return parse_config_content<T>(*content, file);
 }
 
 template <typename T>
@@ -1525,8 +1528,12 @@ std::vector<T> parse_folder(const std::string& folder) {
       continue;
     }
 
-    const auto content = file_io::read(entry.path().generic_string());
-    auto local_arr = parse_config_content<T>(content, entry.path().generic_string());
+    const auto file = entry.path().generic_string();
+    const auto content = file_io::read_text(file);
+    if (!content) {
+      utils::error{}("Config file '{}' cannot be read: {}", file, file_io::describe(content.error()));
+    }
+    auto local_arr = parse_config_content<T>(*content, file);
     for (auto& el : local_arr) {
       arr.emplace_back(std::move(el));
     }
@@ -1568,11 +1575,15 @@ static config_source make_fs_config_source(std::string path) {
   config_source src;
   src.read_file = [path](const std::string& name) -> std::string {
     const auto file = path + name;
-    if (!file_io::exists(file)) {
+    auto content = file_io::read_text(file);
+    if (!content) {
+      if (content.error() != file_io::read_error::not_found) {
+        utils::error{}("Config file '{}' cannot be read: {}", file, file_io::describe(content.error()));
+      }
       utils::warn("File '{}' not found", file);
       return {};
     }
-    return file_io::read(file);
+    return std::move(*content);
   };
   src.read_folder = [path](const std::string& name) -> std::vector<config_source::config_text> {
     std::vector<config_source::config_text> out;
@@ -1586,7 +1597,11 @@ static config_source make_fs_config_source(std::string path) {
         continue;
       }
       const auto file = entry.path().generic_string();
-      out.push_back(config_source::config_text{file, file_io::read(file), 0});
+      auto content = file_io::read_text(file);
+      if (!content) {
+        utils::error{}("Config file '{}' cannot be read: {}", file, file_io::describe(content.error()));
+      }
+      out.push_back(config_source::config_text{file, std::move(*content), 0});
     }
     return out;
   };
@@ -1846,20 +1861,20 @@ static void parse_data_impl(render_config_storage& lctx, const config_source& sr
   for (auto& group : lctx.draw_groups) {
     // нужно создать 3 ресурса: 2 буфера и дескриптор
 
-    // если тип host_visible то роль соответственно должна быть input
-    auto inst_counter_index = lctx.per_frame_counter_index;
-    auto indi_counter_index = lctx.per_frame_counter_index;
-    auto inst_type = type::frames_in_flight;
-    auto indi_type = type::frames_in_flight;
+    // если тип host_visible то роль соответственно должна быть input.
+    // Копия на каждый кадр в полёте у ОБОИХ типов. Хост пишет копию текущего кадра после prepare_frame
+    // (fence её прошлого читателя пройден), остальные копии принадлежат кадрам в полёте. Прежде
+    // host_visible группы вращались счётчиком per_update, а его никто не двигает: копия всегда была
+    // одна и та же, и хост переписывал инстансы, которые ещё читал кадр в полёте.
+    const auto inst_counter_index = lctx.per_frame_counter_index;
+    const auto indi_counter_index = lctx.per_frame_counter_index;
+    const auto inst_type = type::frames_in_flight;
+    const auto indi_type = type::frames_in_flight;
     auto inst_role = role::instance_output;
     auto indi_role = role::indirect_output;
     if (group.type == draw_group::type::host_visible) {
       inst_role = role::instance_input;
       indi_role = role::indirect_input;
-      inst_type = type::doublebuffer;
-      indi_type = type::doublebuffer;
-      inst_counter_index = lctx.per_update_counter_index;
-      indi_counter_index = lctx.per_update_counter_index;
     }
 
     {
@@ -2163,7 +2178,13 @@ command_params parse_command(render_config_storage* ctx, const step_base& step, 
 
     // хотя строго говоря это не ошибка...
     // нужно научиться расчитывать размер ресурса не только при создании
-    if (res1.format_hint != res2.format_hint) {
+    // Картинка с картинкой — один VkFormat. Если одна из сторон буфер, у него VkFormat нет
+    // (format_hint = UINT32_MAX), и сверяется размер элемента: копия раскладывает тексели подряд.
+    const bool both_images = role::is_image(res1.role) && role::is_image(res2.role);
+    const bool both_buffers = !role::is_image(res1.role) && !role::is_image(res2.role);
+    const bool formats_match = both_images || both_buffers ? res1.format_hint == res2.format_hint
+                                                           : res1.size_hint == res2.size_hint;
+    if (!formats_match) {
       utils::error{}("Resource1 '{}' has format '{}', resource2 '{}' has format '{}'. Invalid copy command", res1.name, res1.format, res2.name, res2.format);
     }
 

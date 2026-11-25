@@ -40,13 +40,14 @@ bool enter_block(tavl::parser& p, const ev_t begin) {
   }
 }
 
-// Прочитать [ k0, !k1, not k2, ... ] в список строк, склеивая префиксы "!"/"not " с ключом.
-std::vector<std::string> read_key_list(tavl::parser& p) {
-  std::vector<std::string> out;
+// [ k0, !k1, ! k2, not k3, ... ]: `!k1` tavl отдаёт одним токеном, `! k2` и `not k3` — двумя; во всех
+// случаях инверсия становится значением бита, а ключ остаётся чистым.
+std::vector<goap_bit> read_bit_list(tavl::parser& p) {
+  std::vector<goap_bit> out;
   if (!enter_block(p, ev_t::array_begin)) {
     return out;
   }
-  std::string prefix;
+  bool inverted = false;
   for (;;) {
     const auto e = p.peek();
     if (e.type == ev_t::array_end || e.type == ev_t::eof) {
@@ -58,17 +59,30 @@ std::vector<std::string> read_key_list(tavl::parser& p) {
       continue;
     } // row_begin/row_end/comma
     const auto [tev, terr] = p.poll_event();
-    const std::string tok = p.to_string(tev.token);
-    if (tok == "!") {
-      prefix = "!";
+    std::string tok = p.to_string(tev.token);
+    if (tok == "!" || tok == "not") {
+      inverted = true;
       continue;
     }
-    if (tok == "not") {
-      prefix = "not ";
-      continue;
+    if (tok.starts_with('!')) {
+      inverted = true;
+      tok.erase(0, 1);
     }
-    out.push_back(prefix + tok);
-    prefix.clear();
+    out.push_back(goap_bit{std::move(tok), !inverted});
+    inverted = false;
+  }
+  return out;
+}
+
+// [ name0, name1, ... ] для disable_*: имена элементов, инверсия тут бессмысленна.
+std::vector<std::string> read_name_list(tavl::parser& p, const std::string_view section) {
+  std::vector<std::string> out;
+  for (auto& bit : read_bit_list(p)) {
+    if (!bit.value) {
+      utils::error{}("GOAP config: '{}' lists element names, '!{}' inverts a state bit and is not allowed there",
+                     section, bit.key);
+    }
+    out.push_back(std::move(bit.key));
   }
   return out;
 }
@@ -147,11 +161,11 @@ void parse_actions(const act::script_compiler& compiler, tavl::parser& p,
         a.effect_program = compiler.compile_effect(effect_name, p);
         a.has_effect_program = true;
       } else if (field == "requirements") {
-        a.requirements = read_key_list(p);
+        a.requirements = read_bit_list(p);
       } else if (field == "next_state") {
-        a.next_state = read_key_list(p);
+        a.next_state = read_bit_list(p);
       } else if (field == "weight_state") {
-        a.weight_state = read_key_list(p);
+        a.weight_state = read_bit_list(p);
       }
     });
     out.push_back(std::move(a));
@@ -178,9 +192,9 @@ void parse_goals(tavl::parser& p, std::vector<goap_goal_config>& out) {
         const auto [v, err] = p.poll_event();
         g.name = p.to_string(v.token);
       } else if (field == "requirements") {
-        g.requirements = read_key_list(p);
+        g.requirements = read_bit_list(p);
       } else if (field == "goal") {
-        g.goal = read_key_list(p);
+        g.goal = read_bit_list(p);
       }
     });
     out.push_back(std::move(g));
@@ -212,11 +226,11 @@ void parse_goap(const act::script_compiler& compiler, tavl::parser& p, goap_conf
     } else if (section == "goals") {
       parse_goals(p, cfg.goals);
     } else if (section == "disable_metrics") {
-      cfg.disable_metrics = read_key_list(p);
+      cfg.disable_metrics = read_name_list(p, section);
     } else if (section == "disable_actions") {
-      cfg.disable_actions = read_key_list(p);
+      cfg.disable_actions = read_name_list(p, section);
     } else if (section == "disable_goals") {
-      cfg.disable_goals = read_key_list(p);
+      cfg.disable_goals = read_name_list(p, section);
     }
     // неизвестная секция: значение (массив) будет пропущено обычным ходом цикла
   }
@@ -259,13 +273,9 @@ goap_config resolve_impl(demiurg::resource_system& resources, const std::string&
   if (std::find(stack.begin(), stack.end(), id) != stack.end()) {
     utils::error{}("GOAP config inheritance cycle at '{}'", id);
   }
-  auto* resource = resources.get<goap_resource>(id);
-  if (resource == nullptr) {
-    utils::error{}("GOAP config '{}' not found", id);
-  }
-  while (!resource->usable()) {
-    resource->load(utils::safe_handle_t{});
-  }
+  // Конфиг грузит не acumen: его и базы цепочки запрашивает владелец реестра (состояние загрузки
+  // или synchronous_loader) до resolve.
+  auto* resource = &resources.require<goap_resource>(id, "GOAP config");
 
   stack.push_back(id);
   goap_config out;

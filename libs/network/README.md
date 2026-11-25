@@ -23,7 +23,7 @@ checkpoint принадлежат проекту.
 | Цель | Что внутри | Зависимости |
 |---|---|---|
 | `devils_engine::network` | нейтральные templates, session/wire codecs, history, replay, replication | C++23, `utils` |
-| `devils_engine::network_gns` | concrete adapter GameNetworkingSockets | `network`, GNS |
+| `devils_engine::network_gns` | concrete adapter GameNetworkingSockets, процессный рантайм GNS, `secure_random` | `network`, GNS, OpenSSL (Crypto) |
 
 Основная цель header-only и не тянет GNS. Адаптер подключается явно через
 `<devils_engine/network/gns_transport.h>`; `network.h` остаётся нейтральным umbrella header.
@@ -455,9 +455,13 @@ transform frame не записывает причинный ECS. Для rollbac
 по своему тику — полоса упорядочена и bundle есть на каждый тик, так что поле служит проверкой;
 код сообщения 68, прежний 67 с 64-битным тиком отвергается), необязательный root состояния
 после шага и bounded список принятых внешних действий с `(logical peer, full input sequence)` и
-opaque project payload. Пустой bundle тоже полноценное сообщение. Библиотека проверяет границы,
-повторы origin/sequence и целостность сообщения; проект проверяет payload и применяет действия
-перед simulation step. Оболочка не создаёт live session сама по себе.
+opaque project payload. Пустой bundle тоже полноценное сообщение. Записи идут строго по возрастанию
+`(origin, sequence)` — порядок часть формата (запечатанный `tick_journal` его и даёт); кодировщик и
+декодер отвергают повтор (`duplicate_input`) и нарушение порядка (`unsorted_input`), а не
+переупорядочивают. Библиотека проверяет границы, порядок и целостность сообщения; проект проверяет
+payload и применяет действия перед simulation step. Собираемый тик планируется той же арифметикой,
+что у кодировщика: `canonical_tick_budget` (`take` принимает запись, только если тик остаётся в
+пределах записей и байт) и `canonical_tick_record_capacity(with_root, payload)`. Оболочка не создаёт live session сама по себе.
 `frontier_live_tick_smoke` собирает её в проекте поверх GNS: join сохраняет соединение,
 authority подтверждает `join_report` до первого intent (полосы не имеют общего порядка),
 unreliable intent проходит с logical peer из membership, а шесть reliable bundles доходят до
@@ -493,6 +497,12 @@ leases.
 
 Reconnect всегда создаёт новую connection и новую peer generation. Восстановление logical session
 выполняют handshake, credential и recovery уровнем выше.
+
+Случайность нейтральный `network` не делает — её приносит вызывающий. Для nonce рукопожатия,
+идентификаторов сессий и ключей билетов `network_gns` даёт `secure_random_bytes` и
+`secure_random_nonzero_u64` (`secure_random.h`) — CSPRNG OpenSSL, который уже в процессе через GNS.
+Генератор, засеянный 64 битами, дал бы 256-битному nonce не больше 64 бит неопределённости. Отказ
+источника — `utils::error`.
 
 ---
 

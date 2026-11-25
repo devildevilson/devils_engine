@@ -87,7 +87,7 @@ return function(step)
           assert(reach <= constants.terrain_max_reach, 'gallery profile exceeds declared terrain_max_reach')
           local route_bound = constants.main_neighbour_radius + constants.route_bend + constants.route_branch_length
           for _, endpoint in ipairs({last, point}) do
-            assert(math.sqrt((endpoint.x - owner.x) ^ 2 + (endpoint.z - owner.z) ^ 2) <= route_bound,
+            assert(math.sqrt(math.pow(endpoint.x - owner.x, 2) + math.pow(endpoint.z - owner.z, 2)) <= route_bound,
               'spline exceeds its declared owner reach')
           end
           passages:field('reach'):set(np, reach)

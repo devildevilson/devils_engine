@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_SIMUL_INTERPOLATION_H
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -63,6 +64,52 @@ struct nominal_clock {
   float alpha() const noexcept {
     return interpolation_alpha(elapsed, frame_time);
   }
+};
+
+// Настенные часы рендер-кадра с паузой — общий источник real_elapsed для всех потоков снапшотов
+// рендера (акторы, камера). Один begin_frame на рендер-кадр; на паузе (active=false) часы стоят, и
+// первый кадр после паузы тоже даёт 0 — длина паузы в интерполяцию не попадает. reset() — после
+// detach/shutdown, чтобы не принести гигантский dt.
+class render_frame_clock {
+public:
+  void begin_frame(const bool active) noexcept {
+    begin_frame(active, std::chrono::steady_clock::now());
+  }
+
+  // То же с явным моментом кадра: тесты и повтор записи не зависят от планировщика ОС (на Windows
+  // sleep_for(1 мс) спит до кванта таймера, ~16 мс).
+  void begin_frame(const bool active, const std::chrono::steady_clock::time_point now) noexcept {
+    elapsed_ = 0;
+    if (valid_ && active && was_active_) {
+      const auto mcs = std::chrono::duration_cast<std::chrono::microseconds>(now - last_).count();
+      elapsed_ = mcs > 0 ? size_t(mcs) : 0; // единицы utils::global_time_resolution (мкс)
+    }
+    last_ = now;
+    valid_ = true;
+    was_active_ = active;
+  }
+
+  // Прошедшее время этого кадра (0 на паузе и на первом кадре).
+  size_t elapsed() const noexcept {
+    return elapsed_;
+  }
+
+  // Сколько отдать потоку снапшотов: на кадре прихода его снапшота часы потока только что сброшены
+  // (push/on_snapshot) — не продвигать, alpha = 0 показывает prev.
+  size_t for_stream(const bool snapshot_arrived) const noexcept {
+    return snapshot_arrived ? 0 : elapsed_;
+  }
+
+  void reset() noexcept {
+    valid_ = false;
+    elapsed_ = 0;
+  }
+
+private:
+  std::chrono::steady_clock::time_point last_{};
+  size_t elapsed_ = 0;
+  bool valid_ = false;
+  bool was_active_ = false;
 };
 
 // ── (3) blend: как смешать ОДИН инстанс. Первичный шаблон намеренно БЕЗ определения — забыл
@@ -149,6 +196,57 @@ private:
 
   frame prev_, cur_;
   interpolation_track<Key> track_;
+  Clock clock_;
+  bool have_prev_ = false;
+  bool have_cur_ = false;
+};
+
+// Интерполятор ОДНОГО значения (камера): тот же рецепт, что у snapshot_interpolator, без identity —
+// prev/cur + часы + blend_traits<T>. Состояние считает главный поток и публикует снапшотами; рендер
+// только смешивает два последних.
+template <typename T, typename Clock = nominal_clock>
+class value_interpolator {
+  static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+
+public:
+  void push(const T& value, const size_t snap_frame_time) noexcept {
+    prev_ = cur_;
+    have_prev_ = have_cur_;
+    cur_ = value;
+    have_cur_ = true;
+    clock_.on_snapshot(snap_frame_time);
+  }
+
+  void advance(const size_t real_elapsed) noexcept {
+    clock_.advance(real_elapsed);
+  }
+
+  // Забыть prev (после пересборки графа/detach): следующий resolve отдаёт cur без смешивания.
+  void forget_previous() noexcept {
+    have_prev_ = false;
+  }
+
+  bool has_data() const noexcept {
+    return have_cur_;
+  }
+  float alpha() const noexcept {
+    return clock_.alpha();
+  }
+
+  // Нет prev — cur как есть. Без данных — T{}.
+  T resolve() const noexcept {
+    if (!have_cur_) {
+      return T{};
+    }
+    if (!have_prev_) {
+      return cur_;
+    }
+    return blend_traits<T>::mix(prev_, cur_, clock_.alpha());
+  }
+
+private:
+  T prev_{};
+  T cur_{};
   Clock clock_;
   bool have_prev_ = false;
   bool have_cur_ = false;

@@ -112,7 +112,7 @@ return function(step)
         break
       end
 
-      local distance = math.max(patch_distance, primary_distance * 0.5 ^ (pass - 1))
+      local distance = math.max(patch_distance, primary_distance * math.pow(0.5, pass - 1))
       local placed = originator.reduce_max{ inputs = { seed_field } }
       originator.poisson_seeds{
         inputs = { position, island_mask, score },

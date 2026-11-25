@@ -79,8 +79,9 @@ struct options {
   std::vector<std::pair<std::string, double>> overrides;
   // Чанк, на котором идёт проверка. Ключ существует потому, что «где именно» у объёма имеет
   // значение: у поля шума есть места, где оно почти постоянно, и проверка, ставшая на такое место,
-  // отчитывается о пустом мире, ничего при этом не сломав.
-  originator::chunk_key probe{2, 0, -1};
+  // отчитывается о пустом мире, ничего при этом не сломав. Ключ привязан к миру: когда зёрна шагов
+  // перешли с std::hash на string_hash, поверхность ушла из {2, 0, -1}, и проверка переехала к соседу.
+  originator::chunk_key probe{3, 0, -1};
   // С какого чанка начинает камера. Ключ существует ради проверки плавающего начала координат: мир
   // должен рисоваться одинаково и рядом с нулём, и в миллионе чанков от него, а нажать кнопку в
   // автоматическом прогоне некому.
@@ -1630,7 +1631,7 @@ int main_verify(const options& opts) {
       // насквозь, а индекс читал точки за концом массива. Здесь портится одно смещение — ровно то,
       // что делает обрезанная копия файла.
       {
-        auto bytes = file_io::read<char>(path, file_io::type::binary);
+        auto bytes = file_io::read<char>(path).value_or(std::vector<char>{});
         checks.check(!bytes.empty(), "the package can be read as bytes at all");
         // Первое смещение CSR лежит сразу за узлами и точками: заголовок, узлы, точки, смещения.
         const size_t offsets_at = 64 + skeleton.nodes().size() * sizeof(gn03::skeleton_node) +
@@ -1703,12 +1704,21 @@ int main_verify(const options& opts) {
   // 16. ПАМЯТЬ МИРА. Проверяется главное свойство модели «выводимое + отличие»: соединение это
   // ФУНКЦИЯ от (выводимые сущности, склад), и ничего кроме. Иначе «вернулся — а стало иначе» ловилось
   // бы только глазами и только иногда.
-  {
-    const originator::chunk_key key{4, 0, -2};
+  // Лямбда ради `return`: без сущностей проверять нечего, а ниже берётся derived.front().
+  [&] {
+    // Пробный чанк ИЩЕТСЯ, а не назначается: есть ли в нём сущности, решает мир, и при другом зерне
+    // шагов (так было на Windows, где std::hash другой) {4, 0, -2} оказался пустым, а проверка
+    // продолжала читать за концом пустого списка.
+    originator::chunk_key key{4, 0, -2};
     gn03::chunk_mesh mesh;
-    worker.generate(key, mesh);
+    for (int64_t attempt = 0; attempt < 16; ++attempt) {
+      key = originator::chunk_key{4 + attempt, 0, -2};
+      worker.generate(key, mesh);
+      if (!mesh.props.empty()) break;
+    }
     const auto derived = mesh.props;
     checks.check(!derived.empty(), "the memory probe chunk has entities to remember");
+    if (derived.empty()) return;
 
     gn03::world_memory memory;
     std::vector<gn03::world_memory::joined_prop> visible;
@@ -1802,8 +1812,8 @@ int main_verify(const options& opts) {
                  "the round trip keeps flags and counters");
     const std::string twin_path = std::string("gn03_memory_check_twin.bin");
     checks.check(restored.save(twin_path), "the restored memory writes itself out again");
-    const auto first_bytes = file_io::read<char>(path, file_io::type::binary);
-    const auto second_bytes = file_io::read<char>(twin_path, file_io::type::binary);
+    const auto first_bytes = file_io::read<char>(path).value_or(std::vector<char>{});
+    const auto second_bytes = file_io::read<char>(twin_path).value_or(std::vector<char>{});
     checks.check(!first_bytes.empty() && first_bytes.size() == second_bytes.size() &&
                    std::memcmp(first_bytes.data(), second_bytes.data(), first_bytes.size()) == 0,
                  "saving the same memory twice gives the same bytes");
@@ -1812,7 +1822,7 @@ int main_verify(const options& opts) {
                 memory.size(), first_bytes.size());
     std::filesystem::remove(path);
     std::filesystem::remove(twin_path);
-  }
+  }();
 
   // 17. ОТПЕЧАТОК ЭТАЛОННЫХ ЧАНКОВ. Это ДИАГНОСТИКА, а не критерий, и разница принципиальная: как
   // только меняется правило поля или хеш, отпечаток меняется целиком, и проверять его равенство

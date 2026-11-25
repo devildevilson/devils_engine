@@ -509,50 +509,69 @@ void install_window_lua_bindings(
   auto* cptr = &c;
   auto* settings_ptr = &settings;
   app.set_function("quit_game", std::forward<QuitFn>(quit));
-  app.set_function("maximize", [cptr]() {
-    if (cptr->window != nullptr) {
-      input::maximize_window(cptr->window);
+  // Реализация биндингов — именованные методы, регистрация ниже. Не лямбды: одинаковые сигнатуры
+  // лямбд одной функции делят метатаблицу __gc в sol2.
+  using cptr_type = std::remove_cvref_t<decltype(cptr)>;
+  using settings_ptr_type = std::remove_cvref_t<decltype(settings_ptr)>;
+  using sound_enabled_type = std::remove_cvref_t<decltype(sound_enabled)>;
+  struct lua_impl {
+    cptr_type cptr;
+    settings_ptr_type settings_ptr;
+    sound_enabled_type sound_enabled;
+    auto maximize() const {
+      if (cptr->window != nullptr) {
+        input::maximize_window(cptr->window);
+      }
     }
-  });
-  app.set_function("restore", [cptr]() {
-    if (cptr->window != nullptr) {
-      input::restore_window(cptr->window);
+    auto restore() const {
+      if (cptr->window != nullptr) {
+        input::restore_window(cptr->window);
+      }
     }
-  });
-  app.set_function("set_fullscreen", [cptr, settings_ptr](bool enable) {
-    apply_fullscreen(*cptr, *settings_ptr, enable);
-  });
-  app.set_function("is_fullscreen", [cptr]() -> bool {
-    return cptr->is_fullscreen;
-  });
+    auto set_fullscreen(bool enable) const {
+      apply_fullscreen(*cptr, *settings_ptr, enable);
+    }
+    bool is_fullscreen() const {
+      return cptr->is_fullscreen;
+    }
+    auto set_master_volume(double v) const {
+      if (!sound_enabled || cptr->br == nullptr) {
+        return;
+      }
+      const float gain = float(std::clamp(v, 0.0, 1.0));
+      if constexpr (requires { settings_ptr->sound.master; }) {
+        settings_ptr->sound.master = gain;
+      }
+      cptr->policy.focused_master_gain = gain;
+      cptr->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
+    }
+    auto set_resolution(int w, int h) const {
+      if (cptr->window == nullptr || w <= 0 || h <= 0) {
+        return;
+      }
+      settings_ptr->window.width = uint32_t(w);
+      settings_ptr->window.height = uint32_t(h);
+      input::set_window_size(cptr->window, uint32_t(w), uint32_t(h));
+    }
+    static bool action_pressed(const std::string& name) {
+      return input::events::check_event(std::string_view(name), input::event_state::press_mask);
+    }
+    static bool action_clicked(const std::string& name) {
+      return input::events::check_event(std::string_view(name), input::event_state::click_mask);
+    }
+  };
+  const lua_impl impl{cptr, settings_ptr, sound_enabled};
+  app.set_function("maximize", &lua_impl::maximize, impl);
+  app.set_function("restore", &lua_impl::restore, impl);
+  app.set_function("set_fullscreen", &lua_impl::set_fullscreen, impl);
+  app.set_function("is_fullscreen", &lua_impl::is_fullscreen, impl);
 
-  app.set_function("set_master_volume", [cptr, settings_ptr, sound_enabled](double v) {
-    if (!sound_enabled || cptr->br == nullptr) {
-      return;
-    }
-    const float gain = float(std::clamp(v, 0.0, 1.0));
-    if constexpr (requires { settings_ptr->sound.master; }) {
-      settings_ptr->sound.master = gain;
-    }
-    cptr->policy.focused_master_gain = gain;
-    cptr->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
-  });
+  app.set_function("set_master_volume", &lua_impl::set_master_volume, impl);
 
-  app.set_function("set_resolution", [cptr, settings_ptr](int w, int h) {
-    if (cptr->window == nullptr || w <= 0 || h <= 0) {
-      return;
-    }
-    settings_ptr->window.width = uint32_t(w);
-    settings_ptr->window.height = uint32_t(h);
-    input::set_window_size(cptr->window, uint32_t(w), uint32_t(h));
-  });
+  app.set_function("set_resolution", &lua_impl::set_resolution, impl);
 
-  app.set_function("action_pressed", [](const std::string& name) -> bool {
-    return input::events::check_event(std::string_view(name), input::event_state::press_mask);
-  });
-  app.set_function("action_clicked", [](const std::string& name) -> bool {
-    return input::events::check_event(std::string_view(name), input::event_state::click_mask);
-  });
+  app.set_function("action_pressed", &lua_impl::action_pressed);
+  app.set_function("action_clicked", &lua_impl::action_clicked);
 }
 
 template <typename State>

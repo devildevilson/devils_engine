@@ -51,9 +51,13 @@ bool resolve_include_text(const demiurg::resource_system* sys,
 
   if (!include_root.empty()) {
     const auto full_path = include_root + std::string(file_name);
-    if (file_io::exists(full_path)) {
-      out = file_io::read(full_path);
+    auto text = file_io::read_text(full_path);
+    if (text) {
+      out = std::move(*text);
       return true;
+    }
+    if (text.error() != file_io::read_error::not_found) {
+      utils::error{}("shader include '{}' cannot be read: {}", full_path, file_io::describe(text.error()));
     }
   }
 
@@ -265,8 +269,9 @@ std::vector<uint32_t> shader_crafter::compile(shader_compiler& compiler,
   //    вовсе. Экономия на самой компиляции (1–2.3 мс на шейдер) здесь вторична.
   if (!own.cache_dir.empty()) {
     const auto path = cache_entry_path(own.cache_dir, key);
-    if (file_io::exists(path)) {
-      const auto bytes = file_io::read<uint8_t>(path);
+    // Нечитаемая запись кэша — промах, как и отсутствующая.
+    if (const auto cached = file_io::read<uint8_t>(path)) {
+      const auto& bytes = *cached;
       cache_entry entry;
       if (parse_cache_entry(bytes, key, entry)) {
         // ЗАПИСЬ ПРОВЕРЯЕТСЯ ПО СОДЕРЖИМОМУ ВКЛЮЧЁННЫХ ФАЙЛОВ, а не по времени правки: правка

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <devils_engine/demiurg/resource_base.h>
+#include <devils_engine/simul/camera.h>
 
 namespace frontier_online {
 namespace core {
@@ -20,13 +21,10 @@ struct world_scene_config {
   uint32_t chunks_x = 0;
   uint32_t chunks_y = 0;
   uint32_t actor_count = 0;
-  float camera_half_width = 0.0f;
-  std::string actor_script;
-  // Префиксы НАБОРОВ мозгов: каждый ресурс под префиксом = именованный GOAP/FSM (per-entity refs
-  // через префабы: goap = prey). Прежние поля actor_fsm/actor_goap (один мозг на слайс) удалены.
-  std::string fsm_prefix;
-  std::string goap_prefix;
-  std::string prefab_prefix;
+  // Тип камеры сцены: проекция, контроллер, пределы, тело (simul/camera.h).
+  devils_engine::simul::camera_config camera;
+  // Мозги и префабы — не здесь: они берутся по каталогам типов (fsm/, goap/, prefab/), см.
+  // brain_config_loader.h.
   // Микс актёрных префабов при стартовом спавне: i-й актор = cycle[i % size]. Пусто ⇒ все «actor».
   std::vector<std::string> actor_prefab_cycle;
   // Земля. terrain_generator — demiurg-id точки входа генератора originator; world_seed — зерно

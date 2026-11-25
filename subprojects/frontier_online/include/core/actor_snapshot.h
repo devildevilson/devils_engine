@@ -3,13 +3,13 @@
 
 // Включение снапшотов для боевых компонентов frontier_online:
 //  - регистрация всех ECS-компонентов в реестр сериализации.
-// rgba8_color/entityid_t сериализуются сами (плоский агрегат / uint32).
+// color32/entityid_t сериализуются сами (плоский агрегат / uint32).
 
 #include <devils_engine/aesthetics/serialization.h>
 #include <devils_engine/aesthetics/sink.h>
 
 #include "core/actor_simulation.h" // определения компонентов
-#include "core/glm_serial.h"
+#include <devils_engine/utils/serial_glm.h>
 
 // --- регистрация компонентов (позиционно, без имён на проводе; схему стережёт fingerprint) ---
 using namespace frontier_online::core;

@@ -41,19 +41,61 @@ bool actor_checkpoint_access::validate(const state& value) noexcept {
          value.spawn_min.x <= value.spawn_max.x &&
          value.spawn_min.y <= value.spawn_max.y &&
          value.texture_count != 0 && value.commit_game_ticks != 0 &&
-         value.think_budget != 0;
+         value.think_budget != 0 &&
+         // Норма еды поддерживается респавном каждый тик: без границы чужое число раздуло бы мир.
+         value.food_target <= max_food_target;
 }
 
 bool actor_checkpoint_access::prepare_world(staged_actor& output,
                                             aesthetics::world&& world) {
-  aesthetics::entityid_t player = aesthetics::invalid_entityid;
+  // Игроки — по одному на peer; порядок обхода view зависит от хранилища, поэтому кэш сортируется.
+  std::vector<actor_world_slice::player_slot> players;
   for (auto [id, controller] : world.view<player_controller>()) {
-    static_cast<void>(controller);
-    if (player != aesthetics::invalid_entityid) return false;
-    player = id;
+    players.push_back({controller->peer, id});
   }
-  if (player == aesthetics::invalid_entityid) return false;
-  world.create<player_intent_queue>(player);
+  std::sort(players.begin(), players.end(),
+            [](const auto& a, const auto& b) { return a.peer < b.peer; });
+  for (size_t i = 1; i < players.size(); ++i) {
+    if (players[i - 1].peer == players[i].peer) return false;
+  }
+  if (players.empty() || players.front().peer != 0) return false;
+
+  // Содержимое мира — тоже чужие данные. NaN в позиции ломает порядок kD-дерева (nth_element с
+  // несогласованным сравнением — UB), неизвестный мозг дал бы utils::error в потоке cognition: и то
+  // и другое должно быть отказом загрузки, а не падением.
+  const auto finite2 = [](const glm::vec2 v) { return std::isfinite(v.x) && std::isfinite(v.y); };
+  for (auto [id, value] : world.view<actor_position>()) {
+    static_cast<void>(id);
+    if (!finite2(value->value)) return false;
+  }
+  for (auto [id, value] : world.view<actor_velocity>()) {
+    static_cast<void>(id);
+    if (!finite2(value->value)) return false;
+  }
+  for (auto [id, value] : world.view<actor_visual>()) {
+    static_cast<void>(id);
+    if (!std::isfinite(value->size) || value->size <= 0.0f) return false;
+  }
+  for (auto [id, value] : world.view<obstacle>()) {
+    static_cast<void>(id);
+    if (!std::isfinite(value->radius) || value->radius < 0.0f) return false;
+  }
+  for (auto [id, value] : world.view<stats>()) {
+    static_cast<void>(id);
+    if (!std::isfinite(value->hunger) || !std::isfinite(value->boredom)) return false;
+  }
+  if (output.runtime != nullptr) {
+    for (auto [id, ref] : world.view<goap_ref>()) {
+      static_cast<void>(id);
+      if (output.runtime->goaps.get(ref->value) == nullptr) return false;
+    }
+    for (auto [id, ref] : world.view<fsm_ref>()) {
+      static_cast<void>(id);
+      if (output.runtime->fsms.get(ref->value) == nullptr) return false;
+    }
+  }
+  for (const auto& slot : players) world.create<player_intent_queue>(slot.entity);
+  const aesthetics::entityid_t player = players.front().entity;
 
   std::vector<actor_world_slice::obstacle_disc> obstacles;
   obstacles.reserve(world.count<obstacle>());
@@ -63,6 +105,7 @@ bool actor_checkpoint_access::prepare_world(staged_actor& output,
   }
 
   output.player = player;
+  output.players = std::move(players);
   output.obstacles = std::move(obstacles);
   return true;
 }
@@ -147,9 +190,14 @@ using checkpoint_schema = serial::state_schema<
   checkpoint_host, serial::state_writer, serial::state_reader,
   timeline_section, world_section, actor_section>;
 
+// Всё, что может отвергнуть документ, проверяется ЗДЕСЬ: документ — чужие данные, и отказ —
+// статус загрузки. Публикация после этого не имеет права не удаться (`state_schema` требует от
+// неё noexcept), поэтому часы проверяются восстановлением в пробный экземпляр.
 struct validate_checkpoint {
   bool operator()(const checkpoint_staging& staging) const noexcept {
-    return staging.timeline.simulation.value != std::numeric_limits<std::uint64_t>::max() &&
+    utils::timelines probe(utils::simulation_rate(1));
+    return staging.world.has_value() && probe.restore_causal_state(staging.timeline) &&
+           staging.timeline.simulation.value != std::numeric_limits<std::uint64_t>::max() &&
            staging.actor.causal.think_budget <=
              std::uint64_t(std::numeric_limits<std::size_t>::max());
   }
@@ -160,8 +208,10 @@ struct publish_checkpoint {
   utils::timelines& timeline;
 
   void operator()(checkpoint_host&, checkpoint_staging&& staging) const noexcept {
-    const bool restored = timeline.restore_causal_state(staging.timeline);
-    if (!restored || !staging.world.has_value()) std::terminate();
+    // validate_checkpoint уже доказал оба условия: здесь их нарушение — дефект кода, а не данных.
+    if (!staging.world.has_value() || !timeline.restore_causal_state(staging.timeline))
+      utils::error{}("frontier_online checkpoint: validated document failed to publish at tick {}",
+                     staging.timeline.simulation.value);
     actor_checkpoint_access::publish(actors, std::move(*staging.world),
                                      std::move(staging.actor), staging.timeline);
   }
@@ -175,8 +225,7 @@ bool write_actor_checkpoint(const actor_world_slice& actors,
   if (actors.simulation_now() > timelines.simulation_now() ||
       actors.game_now() != timelines.game_now() ||
       !actor_checkpoint_access::validate(actor_checkpoint_access::capture(actors))) return false;
-  const auto* pending = actors.ecs().get<player_intent_queue>(actors.player_entity());
-  if (pending == nullptr || !pending->pending.empty()) return false;
+  if (actors.player_inputs_pending()) return false;
   checkpoint_host host{&actors, &timelines};
   return checkpoint_schema::write(host, buffers.document, buffers.section_scratch);
 }

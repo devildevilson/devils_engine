@@ -145,8 +145,8 @@ int main() {
   const auto advance_slices = [&]() {
     const auto next = clocks.simulation_now() + utils::simulation_duration{1};
     const auto game_delta = clocks.advance_simulation(next);
-    const auto metrics = one_worker.update(next, game_delta, batch_one, pool_one);
-    four_workers.update(next, game_delta, batch_four, pool_four);
+    const auto metrics = one_worker.update(next, game_delta, &batch_one, pool_one);
+    four_workers.update(next, game_delta, &batch_four, pool_four);
     return metrics;
   };
 

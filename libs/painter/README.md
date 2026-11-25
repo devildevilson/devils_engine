@@ -99,6 +99,25 @@ Descriptor pool сейчас считается по фактическому с
 
 `render_graph_instance` разбивает passes на execution groups. Для каждой группы создаются command buffers на число кадров в полете, а локальные и глобальные семафоры связывают зависимости между группами.
 
+## Снимки Экрана
+
+Кадр снимается ШАГОМ ГРАФА, а не отдельной отправкой с ожиданием: условный пасс на счётчике съёма
+(`counter = frame_capture`) копирует цель кадра командой `copy albedo_res frame_readback` в буфер
+`role = readback`, `size = viewport`, `swap = frame_capture`, `type = doublebuffer`. Слой цели и
+барьеры ведёт граф. `painter::frame_readback` (`frame_readback.h`) на стороне хоста двигает счётчик
+(`before_frame`, до `prepare_frame`), отмечает отправку кадра (`after_submit`) и забирает байты через
+`frames_in_flight` подготовок, когда `prepare_frame` дождался fence кадра-писателя (`collect`). Один
+съём за раз; смена размера окна или графа между отправкой и забором — `status::lost`.
+
+Буфер `readback` живёт в памяти, кэшируемой процессором (`GpuToCpu`, `host_access_read`), после
+fence зовётся `invalidate_buffer_resource_frame`. Буфер с размером по окну получает собственный
+контейнер, и при пересоздании свопчейна раскладка его копий пересчитывается.
+
+`image_file.h` кодирует байты в AVIF (системная libavif, опция `DEVILS_ENGINE_PAINTER_AVIF`, по
+умолчанию ON), PNG (libpng из FetchContent) или PPM (отладка: несжатый RGB для сверки пикселей) по
+расширению и пишет файл; альфа отбрасывается.
+Кодирование — не на потоке рендера: в simul его делает поток ассетов.
+
 ## graphics_base
 
 `graphics_base` владеет runtime-частью одного независимого графического контекста:

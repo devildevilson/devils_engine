@@ -14,6 +14,9 @@ Gameplay function boundary, `devils_engine::act`. Начинать с `function.
 - Функции/registry не владеют ECS. World bridge и конкретные effects принадлежат consumer;
   решение производит intent, apply phase меняет мир в установленном порядке.
 - `building_blocks.h` — декларативная регистрация native blocks; сохранять типы и policy purity.
+- Инлайн-скрипт из потока tavl-парсера разбирать через `script_parse.h` (`act::parse_script`): ds на
+  этом входе сообщает отказ значением, а для конфига он критичен. Поля строки конфига после ds-выражения
+  отделять запятой или переводом строки — пробел их не разделяет, ds съест их как продолжение.
 - Describe/read-only queries не должны вызывать mutating backend. Не возвращать удалённый effect_sink.
 - Registry function pointers и передаваемые string/view значения требуют живого владельца.
 

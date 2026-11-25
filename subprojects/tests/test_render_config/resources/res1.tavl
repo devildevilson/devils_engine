@@ -13,7 +13,7 @@
   size = viewport
   swap = swapchain
 }
-// Общий uniform-буфер (один на все шейдеры), host-visible, double-buffer (per_update).
+// Общий uniform-буфер (один на все шейдеры), host-visible, копия на кадр в полёте (per_frame).
 // std140-раскладка (см. global_ubo.h / global_ubo в шейдерах), 2*mat4 + 4*v4 = 192 байта:
 //   mat4 view_proj (мир->clip, камера) + mat4 ui_proj (пиксели окна->clip, UI) +
 //   vec4 misc (x=screen_w, y=screen_h, z=sdf_px_range, w=reserved).
@@ -25,11 +25,15 @@
   format = mat4mat4v4v4v4v4
   role = upload
   size = single_element
-  type = doublebuffer
-  swap = per_update
+  type = frames_in_flight
+  swap = per_frame
 }
-// Буферы интерфейса (visage). Host-visible (role=upload), doublebuffer/per_update — пишем в
-// неиспользуемую копию, не дожидаясь fence. format c1 => размер копии = <bytes value>.
+// Буферы интерфейса (visage). Host-visible (role=upload), КОПИЯ НА КАДР В ПОЛЁТЕ (frames_in_flight /
+// per_frame): хост рендера кладёт последние байты в копию текущего кадра после ожидания его fence
+// (simul::standard_render_flush_buffer_writes). Прежде было doublebuffer/per_update, но per_update
+// никто не двигал: обе «копии» писались разом до ожидания fence, и предыдущий кадр в полёте
+// читал вершины, перезаписанные под команды следующего, — интерфейс изредка пропадал на кадр.
+// format c1 => размер копии = <bytes value>.
 // vertices/indices биндятся в draw_ui (через barriers получают vertex/index usage); commands
 // читается на CPU (.mapped) и интерпретируется как [uint32 count][gui_draw_command_t...].
 {
@@ -37,24 +41,24 @@
   format = c1
   role = upload
   size = ui_vertices_bytes
-  type = doublebuffer
-  swap = per_update
+  type = frames_in_flight
+  swap = per_frame
 }
 {
   name = ui_indices
   format = c1
   role = upload
   size = ui_indices_bytes
-  type = doublebuffer
-  swap = per_update
+  type = frames_in_flight
+  swap = per_frame
 }
 {
   name = ui_commands
   format = c1
   role = upload
   size = ui_commands_bytes
-  type = doublebuffer
-  swap = per_update
+  type = frames_in_flight
+  swap = per_frame
 }
 {
   name = region_gpu_data
@@ -71,4 +75,15 @@
   size = region_commands_bytes
   type = doublebuffer
   swap = per_update
+}
+// Буфер снимка: пасс `capture` копирует в него albedo_res, хост забирает байты после fence кадра
+// (painter::frame_readback). role = readback — память, кэшируемая процессором; копия на поколение
+// счётчика frame_capture (две: съём за раз один, вторая — запас на кадры в полёте).
+{
+  name = frame_readback
+  format = c4
+  role = readback
+  size = viewport
+  swap = frame_capture
+  type = doublebuffer
 }

@@ -11,6 +11,9 @@ add_library(devils_simul
   src/simul/runtime.cpp
   src/simul/lua_script_resource.cpp
   src/simul/startup_resources.cpp
+  src/simul/camera.cpp
+  include/devils_engine/simul/camera.h
+  include/devils_engine/simul/camera_input.h
   include/devils_engine/simul/interface.h
   include/devils_engine/simul/configuration_layers.h
   include/devils_engine/simul/boot_config.h
@@ -28,6 +31,7 @@ add_library(devils_simul
   include/devils_engine/simul/draw_intent.h
   include/devils_engine/simul/interpolation.h
   include/devils_engine/simul/main_runtime.h
+  include/devils_engine/simul/launch_arguments.h
   include/devils_engine/simul/messages.h
   include/devils_engine/simul/render_config.h
   include/devils_engine/simul/render_runtime.h
@@ -52,6 +56,9 @@ target_link_libraries(devils_simul
   # devils_script транзитивно: осознанно, simul становится слоем, где живёт геймплейный пайплайн.
   PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue devils_engine::demiurg
          devils_engine::act devils_engine::aesthetics tavl
+  # render_config.h names Vulkan formats (header only, no loader). On Linux the system headers
+  # hid the missing dependency; on Windows there are none.
+  PUBLIC Vulkan::Headers
 )
 
 add_library(devils_engine::simul ALIAS devils_simul)

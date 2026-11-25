@@ -32,15 +32,38 @@ struct send_slot {
 };
 
 struct send_pool {
-  explicit send_pool(const gns_lane_config& config)
+  send_pool(const gns_lane_config& config, const size_t peers)
     : slots(std::make_unique<send_slot[]>(config.send_slots)),
-      bytes(config.send_slots * config.max_payload_bytes), config(config) {}
+      bytes(config.send_slots * config.max_payload_bytes), config(config), per_peer(peers) {}
+  // Unreleased messages of the connection currently in a peer slot; a reused
+  // slot is told apart by generation (the old connection's releases no longer count).
+  struct peer_count {
+    uint64_t generation = 0;
+    size_t retained = 0;
+  };
   std::unique_ptr<send_slot[]> slots;
   std::vector<std::byte> bytes;
   gns_lane_config config;
   // Only the transport's owner accesses these counters.
   size_t retained_count = 0;
   size_t retained_bytes = 0;
+  std::vector<peer_count> per_peer;
+
+  size_t peer_retained(const gns_peer peer) const noexcept {
+    if (peer.slot >= per_peer.size()) return 0;
+    const auto& value = per_peer[peer.slot];
+    return value.generation == peer.generation ? value.retained : 0;
+  }
+  void peer_acquire(const gns_peer peer) noexcept {
+    auto& value = per_peer[peer.slot];
+    if (value.generation != peer.generation) value = {peer.generation, 0};
+    ++value.retained;
+  }
+  void peer_release(const gns_peer peer) noexcept {
+    if (peer.slot >= per_peer.size()) return;
+    auto& value = per_peer[peer.slot];
+    if (value.generation == peer.generation && value.retained != 0) --value.retained;
+  }
 };
 
 void release_send_payload(SteamNetworkingMessage_t* message) noexcept {
@@ -61,6 +84,7 @@ uint64_t new_generation() {
 void reclaim(send_pool& pool, send_slot& slot) {
   --pool.retained_count;
   pool.retained_bytes -= slot.completion.bytes;
+  pool.peer_release(slot.completion.peer);
   slot.state.store(slot_state::free, std::memory_order_relaxed);
 }
 
@@ -180,6 +204,7 @@ struct gns_transport::impl {
           lane.max_payload_bytes > size_t(k_cbMaxSteamNetworkingSocketsMessageSizeSend) ||
           lane.send_slots > std::numeric_limits<size_t>::max() / lane.max_payload_bytes ||
           lane.send_byte_budget == 0 || lane.send_byte_budget > lane.send_slots * lane.max_payload_bytes ||
+          lane.peer_send_slots > lane.send_slots ||
           lane.send_byte_budget > size_t(INT32_MAX) - total_bytes)
         devils_engine::utils::error{}("network GNS invalid send lane budget");
       total_bytes += lane.send_byte_budget;
@@ -194,7 +219,7 @@ struct gns_transport::impl {
     priorities.reserve(lanes.size());
     weights.reserve(lanes.size());
     for (const auto& lane : lanes) {
-      pools.push_back(std::make_shared<send_pool>(lane));
+      pools.push_back(std::make_shared<send_pool>(lane, config.peers));
       priorities.push_back(lane.priority);
       weights.push_back(lane.weight);
     }
@@ -432,6 +457,8 @@ gns_send_result gns_transport::try_send(const gns_peer peer, const uint16_t lane
   if (lane >= state.pools.size()) return {gns_status::invalid_lane};
   auto& pool = *state.pools[lane];
   if (payload.size() > pool.config.max_payload_bytes) return {gns_status::payload_too_large};
+  if (pool.config.peer_send_slots != 0 && pool.peer_retained(peer) >= pool.config.peer_send_slots)
+    return {gns_status::peer_budget_exceeded};
   if (pool.retained_count == pool.config.send_slots) return {gns_status::count_budget_exceeded};
   if (payload.size() > pool.config.send_byte_budget - pool.retained_bytes) return {gns_status::byte_budget_exceeded};
   size_t index = 0;
@@ -449,6 +476,7 @@ gns_send_result gns_transport::try_send(const gns_peer peer, const uint16_t lane
   slot.state.store(slot_state::in_flight, std::memory_order_relaxed);
   ++pool.retained_count;
   pool.retained_bytes += payload.size();
+  pool.peer_acquire(peer);
   message->m_pData = bytes;
   message->m_cbSize = int(payload.size());
   message->m_pfnFreeData = &release_send_payload;
@@ -513,7 +541,10 @@ gns_receive_result gns_transport::receive(const std::span<gns_received_message> 
         size_t(message->m_cbSize) > state.config.max_receive_bytes ||
         reliable != (state.pools[lane]->config.delivery == gns_delivery::reliable_ordered)) {
       message->Release();
-      if (connection != state.peers.end()) (void)close({uint32_t(index), connection->generation});
+      if (connection != state.peers.end()) {
+        result.closed = gns_peer{uint32_t(index), connection->generation};
+        (void)close(result.closed);
+      }
       result.status = gns_status::invalid_message;
       break;
     }
@@ -561,6 +592,9 @@ size_t gns_transport::retained_send_count(const uint16_t lane) const noexcept {
 }
 size_t gns_transport::retained_send_bytes(const uint16_t lane) const noexcept {
   return lane < impl_->pools.size() ? impl_->pools[lane]->retained_bytes : 0;
+}
+size_t gns_transport::retained_send_count(const gns_peer peer, const uint16_t lane) const noexcept {
+  return lane < impl_->pools.size() ? impl_->pools[lane]->peer_retained(peer) : 0;
 }
 size_t gns_transport::leased_receive_count() const noexcept {
   return impl_->receive_budget->count.load(std::memory_order_acquire);

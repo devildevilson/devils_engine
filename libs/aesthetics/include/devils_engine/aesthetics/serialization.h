@@ -62,7 +62,7 @@ void dump_one(const world* value, writer& output) {
 template <typename T>
 void load_one(world* value, reader& input) {
   const std::uint32_t count = input.u32();
-  auto* storage = value->get_or_create_allocator<T>(sizeof(T) * 250);
+  auto* storage = value->get_or_create_allocator<T>();
   std::size_t previous_index = 0;
   for (std::uint32_t i = 0; i < count && input.ok; ++i) {
     entityid_t id = invalid_entityid;

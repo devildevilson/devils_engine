@@ -27,10 +27,6 @@ struct texture_set {
     return textures;
   }
 
-  // Собрать все texture_resource, чей id содержит prefix как подстроку (напр. "textures/"),
-  // через resource_system::filter ("по части пути"). Возвращает число найденных. Перезаписывает.
-  uint32_t gather(demiurg::resource_system& reg, const std::string_view& prefix);
-
   // Manifest path: сохранить явно перечисленную palette, отбрасывая не-текстуры.
   uint32_t assign(std::span<const demiurg::resource_handle> handles);
 

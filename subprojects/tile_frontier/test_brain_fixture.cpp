@@ -2,6 +2,7 @@
 
 #include <devils_engine/acumen/goap_resource.h>
 #include <devils_engine/act/script_resource.h>
+#include <devils_engine/demiurg/synchronous_loader.h>
 #include <devils_engine/mood/fsm_resource.h>
 #include <devils_engine/prefab/resource.h>
 
@@ -18,6 +19,12 @@ test_brain_fixture::test_brain_fixture(std::string resource_root)
   resources_.register_type<acumen::goap_resource>("goap", "tavl", &scripts_);
   resources_.register_type<prefab::prefab_resource>("prefab", "tavl");
   resources_.parse_resources(&modules_);
+  // Потока ассетов у теста нет: владелец реестра загружает каталоги сам, загрузчик мозгов только
+  // проверяет готовность.
+  demiurg::synchronous_loader loader;
+  for (const auto directory : {"scripts/", "fsm/", "goap/", "prefab/"}) {
+    loader.load_directory(resources_, directory);
+  }
   // Префиксы наборов: подхватываются ВСЕ fsm/* и goap/* мозги (как в живом scene config).
   config_ = tile_frontier::core::load_required_brain_config(
     resources_, "scripts/actor_is_hungry", "fsm", "goap", "prefab/");

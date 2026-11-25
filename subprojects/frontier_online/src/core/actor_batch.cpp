@@ -2,7 +2,7 @@
 
 #include <devils_engine/utils/core.h>
 
-#include "actor_batch.h"
+#include "core/actor_batch.h"
 
 // Презентационный читатель хвоста тика. Здесь лежит ровно то, что раньше делало причинный
 // заголовок зависимым от libs/painter: GPU-раскладка инстанса и ВЫВОДИМАЯ анимация масштаба.
@@ -17,7 +17,8 @@ namespace {
 
 // Анимация масштаба = синусоида, частота/амплитуда зависят от состояния FSM. ВЫВОДИМАЯ
 // величина (из state + tick + пер-акторной фазы) — НЕ хранится, не пишется в save. Частота в
-// циклах/тик (на main_fps≈20: 0.03 ц/т ≈ 0.6Гц медленно … 0.28 ц/т ≈ 5.6Гц паника).
+// циклах на тик симуляции: герцы зависят от её частоты (при 20 Гц 0.03 ц/т ≈ 0.6 Гц медленно …
+// 0.28 ц/т ≈ 5.6 Гц паника; при 60 Гц втрое быстрее).
 // «Думаю — медленная синусоида, гонюсь/ем — быстрая» (как просил автор).
 static float animation_scale(const uint64_t state, const uint64_t tick, const uint32_t phase) noexcept {
   static const uint64_t h_think = utils::string_hash("think");
@@ -79,7 +80,7 @@ void actor_batch::read(const aesthetics::world& world, const uint64_t tick) {
     }
     ids_.push_back(uint32_t(id));
     instances_.push_back(actor_instance{
-      pos->value, visual->texture, instance_layout::rgba8_color{visual->color.value}, scale});
+      pos->value, visual->texture, devils_engine::simul::instance_layout::rgba8_color{visual->color.value}, scale});
   }
 }
 

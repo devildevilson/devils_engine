@@ -93,7 +93,9 @@ public:
     using const_iterator = container_t::const_iterator;
 
     size_t size() const noexcept;
+    size_t capacity() const noexcept;
     bool empty() const noexcept;
+    void reserve(const size_t count);
     T& operator[](const size_t index) noexcept;
     const T& operator[](const size_t index) const noexcept;
     T& back() noexcept;
@@ -132,6 +134,9 @@ public:
     T* get_mutable_comp(const entityid_t id) const;
     const T* get_comp(const entityid_t id) const;
     entityid_t entity_at_dense_index(const size_t container_index) const noexcept;
+    // Память под count компонентов и под индексы сущностей до count: следующие count вставок не
+    // перераспределяют хранилище. Ёмкость только растёт.
+    void reserve(const size_t count);
   };
 
   // вернет итераторы, будет ходить по каждому энтити у которого есть этот набор компонентов
@@ -516,15 +521,29 @@ public:
   bool raw_remove(const entityid_t id, const size_t type_id);
   void clear(const entityid_t id);
 
-  /*template <typename T>
-  void create_allocator(const size_t block_size);*/
   template <typename T>
   bool is_allocators_exist() const;
   template <typename T, typename T2, typename... Comp_T>
   bool is_allocators_exist() const;
 
+  // Хранилище компонента: `std::vector<T>` плюс разреженный индекс по сущностям, растёт по правилам
+  // стандартной библиотеки. Указатель `T*` из create/get НЕ стабилен: следующая вставка того же
+  // типа может перенести все компоненты. Держать `entityid_t`, доступ по нему O(1).
+  //
+  // ensure_storage<T...>() создаёт хранилища заранее, на владеющем потоке. Нужно по двум причинам:
+  // view()/lazy_view() const не создают хранилище и падают без него, а component_type_id<T>
+  // присваивается при первом обращении — закрепить его до параллельного доступа.
+  template <typename... T>
+  void ensure_storage();
+  // reserve<T>(count) — ensure_storage<T>() и память под count компонентов. count — проектная
+  // константа ожидаемого числа (не предел: дальше хранилище растёт как обычно).
   template <typename T>
-  sparce_dence_set<T>* get_or_create_allocator(const size_t block_size);
+  void reserve(const size_t count);
+  template <typename T>
+  size_t capacity() const; // 0, если хранилища нет
+
+  template <typename T>
+  sparce_dence_set<T>* get_or_create_allocator();
   template <typename T>
   sparce_dence_set<T>* get_allocator();
   template <typename T>
@@ -616,12 +635,6 @@ private:
   std::vector<std::unique_ptr<component_storage>> containers;
   std::vector<std::vector<accurate_remover*>> subscribers;
   std::vector<std::unique_ptr<basic_container>> arbitrary_container;
-
-  //template<typename T>
-  /*template<typename T>
-  sparce_dence_set<T>* get_or_create_allocator(const size_t block_size);
-  template<typename T>
-  sparce_dence_set<T>* get_allocator() const;*/
 };
 
 // Template implementation
@@ -638,6 +651,16 @@ size_t world::component_array<T>::size() const noexcept {
 template <typename T>
 bool world::component_array<T>::empty() const noexcept {
   return data.empty();
+}
+
+template <typename T>
+size_t world::component_array<T>::capacity() const noexcept {
+  return data.capacity();
+}
+
+template <typename T>
+void world::component_array<T>::reserve(const size_t count) {
+  data.reserve(count);
 }
 
 template <typename T>
@@ -1258,10 +1281,21 @@ bool world::entity::has_any() const {
   return m_world->has_any<T, T2, Comp_T...>(m_id);
 }
 
-//template <typename T>
-//void world::create_allocator(const size_t block_size) {
-//  get_or_create_allocator<T>(block_size);
-//}
+template <typename... T>
+void world::ensure_storage() {
+  (static_cast<void>(get_or_create_allocator<T>()), ...);
+}
+
+template <typename T>
+void world::reserve(const size_t count) {
+  get_or_create_allocator<T>()->reserve(count);
+}
+
+template <typename T>
+size_t world::capacity() const {
+  const auto stor = get_allocator<T>();
+  return stor == nullptr ? 0 : stor->components.capacity();
+}
 
 template <typename T>
 bool world::is_allocators_exist() const {
@@ -1275,7 +1309,7 @@ bool world::is_allocators_exist() const {
 
 template <typename T>
 T* world::create(const entityid_t id) {
-  auto stor = get_or_create_allocator<T>(sizeof(T) * 250);
+  auto stor = get_or_create_allocator<T>();
   auto ptr = stor->create_comp(id);
   if (ptr == nullptr) {
     return nullptr;
@@ -1286,7 +1320,7 @@ T* world::create(const entityid_t id) {
 
 template <typename T, typename... Args>
 T* world::create(const entityid_t id, Args&&... args) {
-  auto stor = get_or_create_allocator<T>(sizeof(T) * 250);
+  auto stor = get_or_create_allocator<T>();
   auto ptr = stor->create_comp(id, std::forward<Args>(args)...);
   if (ptr == nullptr) {
     return nullptr;
@@ -1528,10 +1562,10 @@ world::view_t<Comp_T...> world::view() const {
   // желательно создать все аллокаторы для компонентов
   // по идее это все должно быть конст
   // вылетать? единственный вменяемый сценарий честно говоря
-  // view() КОНСТ (auto-create тут невозможен): аллокаторы каждого компонента должны быть созданы
-  // заранее — вызови world::get_or_create_allocator<T>() для КАЖДОГО T до горячего пути с view.
+  // view() КОНСТ (auto-create тут невозможен): хранилища каждого компонента должны быть созданы
+  // заранее — world::ensure_storage<T...>() до горячего пути с view.
   if (!is_allocators_exist<Comp_T...>()) {
-    utils::error{}("Could not create view '{}': not all component allocators exist; call get_or_create_allocator<T>() for every T first (view() const cannot create them)", utils::type_name<view_t<Comp_T...>>());
+    utils::error{}("Could not create view '{}': not all component allocators exist; call world::ensure_storage<T...>() first (view() const cannot create them)", utils::type_name<view_t<Comp_T...>>());
   }
   return view_t<Comp_T...>(this);
 }
@@ -1539,7 +1573,7 @@ world::view_t<Comp_T...> world::view() const {
 template <typename... Comp_T>
 world::lazy_view_t<Comp_T...> world::lazy_view() const {
   if (!is_allocators_exist<Comp_T...>()) {
-    utils::error{}("Could not create view '{}': not all component allocators exist; call get_or_create_allocator<T>() for every T first (view() const cannot create them)", utils::type_name<lazy_view_t<Comp_T...>>());
+    utils::error{}("Could not create view '{}': not all component allocators exist; call world::ensure_storage<T...>() first (view() const cannot create them)", utils::type_name<lazy_view_t<Comp_T...>>());
   }
   return lazy_view_t<Comp_T...>(this);
 }
@@ -1615,7 +1649,7 @@ void world::copy_underlying(std::vector<uint32_t>& sparce, std::vector<T>& tight
 }
 
 template <typename T>
-world::sparce_dence_set<T>* world::get_or_create_allocator(const size_t) {
+world::sparce_dence_set<T>* world::get_or_create_allocator() {
   //const size_t index = global_index::get<T>();
   const size_t index = aesthetics::component_type_id<T>();
 
@@ -2019,6 +2053,12 @@ entityid_t world::sparce_dence_set<T>::entity_at_dense_index(const size_t contai
   }
 
   return invalid_entityid;
+}
+
+template <typename T>
+void world::sparce_dence_set<T>::reserve(const size_t count) {
+  components.reserve(count);
+  sparce_set.reserve(count);
 }
 
 } // namespace aesthetics

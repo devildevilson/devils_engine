@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common.h"
+#include "devils_engine/utils/error.h"
 #include "devils_engine/thread/atomic_pool.h"
 #include "system_runner.h"
 
@@ -37,14 +38,32 @@ namespace devils_engine {
 namespace aesthetics {
 
 // Оставить budget самых приоритетных кандидатов (less(a,b)==true ⇒ a приоритетнее/раньше b), остальных
-// отбросить. nth_element ⇒ частичная сортировка O(n). Детерминизм — забота less (тай-брейк). Мутирует due.
+// отбросить; оставшиеся упорядочены по less. Мутирует due.
+//
+// Контракт: less — ПОЛНЫЙ строгий порядок на кандидатах (тай-брейк по уникальному ключу). Выход тогда —
+// функция МНОЖЕСТВА входа: не зависит ни от порядка due, ни от реализации STL. nth_element сам по
+// себе этого не даёт: порядок внутри оставленной части не специфицирован, и libstdc++ и MSVC STL
+// оставляют его разным (так разошлась раскладка utils::kd_tree, 2026-11-21). Поэтому оставленная
+// часть досортировывается (O(budget log budget) поверх O(n)). Ничья — нарушение контракта: внутри
+// оставленных порядок решал бы алгоритм сортировки, на границе бюджета — сам НАБОР; критическая ошибка.
 template <typename Request, typename Less>
 void budget_clamp(std::vector<Request>& due, const size_t budget, Less&& less) {
-  if (due.size() <= budget) {
-    return;
+  const bool clamped = due.size() > budget;
+  const size_t kept = clamped ? budget : due.size();
+  if (clamped) {
+    std::nth_element(due.begin(), due.begin() + kept, due.end(), less);
   }
-  std::nth_element(due.begin(), due.begin() + budget, due.end(), less);
-  due.resize(budget);
+  std::sort(due.begin(), due.begin() + kept, less);
+  // После nth_element due[kept] — наименьший из отброшенных, поэтому соседние пары до kept включительно
+  // покрывают и ничьи внутри оставленных, и ничью на границе.
+  const size_t checked = clamped ? kept + 1 : kept;
+  for (size_t i = 1; i < checked; ++i) {
+    if (!less(due[i - 1], due[i])) {
+      utils::error{}("budget_clamp: candidates at positions {} and {} of {} tie under the priority order "
+                     "(budget {}); the order must break ties by a unique key", i - 1, i, due.size(), budget);
+    }
+  }
+  due.resize(kept);
 }
 
 template <typename Scratch>

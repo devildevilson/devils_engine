@@ -113,7 +113,11 @@ module_profile read_module_profile(const std::filesystem::path& path) {
     if (file_io::exists(legacy.generic_string())) utils::error{}("Module profile '{}' is still JSON; convert it with scripts/convert_module_profile.py", legacy.generic_string());
     utils::error{}("Module profile '{}' does not exist", path.generic_string());
   }
-  const auto text = file_io::read(path.generic_string());
+  const auto content = file_io::read_text(path.generic_string());
+  if (!content) {
+    utils::error{}("Module profile '{}' cannot be read: {}", path.generic_string(), file_io::describe(content.error()));
+  }
+  const auto& text = *content;
   validate_text(text, path);
   tavl::parser parser;
   parser.add_default_operator();

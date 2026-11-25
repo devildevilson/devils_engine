@@ -63,9 +63,15 @@ TEST_CASE("shipped three configuration resources compose with the same project d
 TEST_CASE("legacy user debug preferences migrate once and remain independent from player settings") {
   temporary_folder folder;
   test_bootstrap boot;
-  boot.engine.settings_file = (folder.path / "settings.tavl").string();
-  boot.engine.debug_settings_file = (folder.path / "debug.tavl").string();
-  boot.engine.key_bindings_file = (folder.path / "keys.tavl").string();
+  // The temporary folder is the project root; the files are named relative to it, as in a real
+  // project. An absolute path in these keys is refused (utils::root).
+  boot.engine.project_root = folder.path.string();
+  boot.engine.settings_file = "settings.tavl";
+  boot.engine.debug_settings_file = "debug.tavl";
+  boot.engine.key_bindings_file = "keys.tavl";
+  const auto settings_file = s::settings_path(boot);
+  const auto debug_settings_file = s::debug_settings_path(boot);
+  CHECK(settings_file == utils::root::open(folder.path.string())->path() + "settings.tavl");
   boot.default_settings = boot.settings;
   s::export_persisted_settings(boot);
   boot.default_persisted_settings = boot.persisted_settings;
@@ -75,25 +81,57 @@ TEST_CASE("legacy user debug preferences migrate once and remain independent fro
   legacy.metrics.log_interval_ms = 777;
   legacy.window.width = 1800;
   legacy.time.game_seconds = 999; // player file must not override project policy.
-  REQUIRE(s::write_tavl_file(legacy, boot.engine.settings_file, "legacy test"));
-  REQUIRE(s::deserialize_settings_file(boot, boot.engine.settings_file) == s::config_file_status::loaded);
+  REQUIRE(s::write_tavl_file(legacy, settings_file, "legacy test"));
+  REQUIRE(s::deserialize_settings_file(boot, settings_file) == s::config_file_status::loaded);
   CHECK(boot.settings.window.width == 1800);
   CHECK(boot.settings.logging.main == "flow");
   CHECK(boot.settings.metrics.log_interval_ms == 777);
   CHECK(boot.settings.time.game_seconds == 1);
-  const auto migrated = file_io::read(boot.engine.settings_file);
+  const auto migrated = file_io::read_text(settings_file).value();
   CHECK(migrated.find("logging") == std::string::npos);
   CHECK(migrated.find("metrics") == std::string::npos);
   CHECK(migrated.find("time =") == std::string::npos);
-  REQUIRE(file_io::exists(boot.engine.debug_settings_file));
+  REQUIRE(file_io::exists(debug_settings_file));
   legacy.logging.main = "trace";
-  REQUIRE(s::write_tavl_file(legacy, boot.engine.settings_file, "legacy test"));
-  REQUIRE(s::deserialize_settings_file(boot, boot.engine.settings_file) == s::config_file_status::loaded);
+  REQUIRE(s::write_tavl_file(legacy, settings_file, "legacy test"));
+  REQUIRE(s::deserialize_settings_file(boot, settings_file) == s::config_file_status::loaded);
   CHECK(boot.settings.logging.main == "flow"); // existing debug document wins.
   boot.settings.logging.main = "trace";
   REQUIRE(s::save_settings(boot));
-  const auto user = file_io::read(boot.engine.settings_file);
-  const auto debug = file_io::read(boot.engine.debug_settings_file);
+  const auto user = file_io::read_text(settings_file).value();
+  const auto debug = file_io::read_text(debug_settings_file).value();
   CHECK(user.find("logging") == std::string::npos);
   CHECK(debug.find("trace") != std::string::npos);
+}
+
+TEST_CASE("debug settings file appears only once it differs from the bundled defaults") {
+  temporary_folder folder;
+  test_bootstrap boot;
+  boot.engine.project_root = folder.path.string();
+  boot.engine.settings_file = "settings.tavl";
+  boot.engine.debug_settings_file = "debug.tavl";
+  boot.engine.key_bindings_file = "keys.tavl";
+  boot.default_settings = boot.settings;
+  s::export_persisted_settings(boot);
+  boot.default_persisted_settings = boot.persisted_settings;
+  boot.default_persisted_debug = boot.persisted_debug;
+  const auto settings_file = s::settings_path(boot);
+  const auto debug_settings_file = s::debug_settings_path(boot);
+
+  // Первый запуск: файлов нет, игрок ничего не менял — debug.tavl не создаётся.
+  CHECK(s::deserialize_settings_file(boot, settings_file) == s::config_file_status::missing);
+  REQUIRE(s::save_settings(boot));
+  CHECK(file_io::exists(settings_file));
+  CHECK_FALSE(file_io::exists(debug_settings_file));
+  CHECK(s::deserialize_settings_file(boot, settings_file) == s::config_file_status::loaded);
+  CHECK_FALSE(file_io::exists(debug_settings_file));
+
+  // Изменённая диагностика сохраняется, и дальше файл живёт, даже вернувшись к значениям по умолчанию.
+  boot.settings.logging.main = "trace";
+  REQUIRE(s::save_settings(boot));
+  REQUIRE(file_io::exists(debug_settings_file));
+  CHECK(file_io::read_text(debug_settings_file).value().find("trace") != std::string::npos);
+  boot.settings.logging = boot.default_settings.logging;
+  REQUIRE(s::save_settings(boot));
+  CHECK(file_io::exists(debug_settings_file));
 }

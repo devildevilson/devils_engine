@@ -70,108 +70,122 @@ void install_sound_lua_bindings(
 
   // Первый аргумент — sol::object (resource_handle ИЛИ таблица-опции с полем resource/res), второй —
   // необязательная таблица-опции. sol::object у НЕпоследнего параметра безопаснее sol::optional.
-  app.set_function("play_sound",
-                   [cptr, sound_enabled](sol::object a, sol::optional<sol::table> b) -> sound_handle {
-                     auto& c = *cptr;
-                     if (!sound_enabled) {
-                       return sound_handle{};
-                     }
+  // Реализация биндингов — именованные методы, регистрация ниже. Не лямбды: одинаковые сигнатуры
+  // лямбд одной функции делят метатаблицу __gc в sol2.
+  using cptr_type = std::remove_cvref_t<decltype(cptr)>;
+  using sound_enabled_type = std::remove_cvref_t<decltype(sound_enabled)>;
+  using settings_ptr_type = std::remove_cvref_t<decltype(settings_ptr)>;
+  struct lua_impl {
+    cptr_type cptr;
+    sound_enabled_type sound_enabled;
+    settings_ptr_type settings_ptr;
+    sound_handle play_sound(sol::object a, sol::optional<sol::table> b) const {
+      auto& c = *cptr;
+      if (!sound_enabled) {
+        return sound_handle{};
+      }
 
-                     demiurg::resource_handle sound_res;
-                     sol::optional<sol::table> opts;
-                     if (a.is<sol::table>()) {
-                       opts = a.as<sol::table>();
-                       const sol::optional<demiurg::resource_handle> resource = (*opts)["resource"];
-                       const sol::optional<demiurg::resource_handle> res = (*opts)["res"];
-                       if (resource) {
-                         sound_res = *resource;
-                       } else if (res) {
-                         sound_res = *res;
-                       }
-                     } else if (a.is<demiurg::resource_handle>()) {
-                       sound_res = a.as<demiurg::resource_handle>();
-                       opts = b;
-                     }
-                     auto* sound_resource = sound_res.get<sound::sound_resource>();
-                     if (sound_resource == nullptr) {
-                       return sound_handle{};
-                     }
+      demiurg::resource_handle sound_res;
+      sol::optional<sol::table> opts;
+      if (a.is<sol::table>()) {
+        opts = a.as<sol::table>();
+        const sol::optional<demiurg::resource_handle> resource = (*opts)["resource"];
+        const sol::optional<demiurg::resource_handle> res = (*opts)["res"];
+        if (resource) {
+          sound_res = *resource;
+        } else if (res) {
+          sound_res = *res;
+        }
+      } else if (a.is<demiurg::resource_handle>()) {
+        sound_res = a.as<demiurg::resource_handle>();
+        opts = b;
+      }
+      auto* sound_resource = sound_res.get<sound::sound_resource>();
+      if (sound_resource == nullptr) {
+        return sound_handle{};
+      }
 
-                     command_sound_play play{};
-                     play.taskid = generate_task_id();
-                     play.after = SIZE_MAX;
-                     play.type = static_cast<uint32_t>(sound::type::ui_effect);
-                     play.start = 0.0;
-                     if (opts) {
-                       play.start = std::clamp(opts->get_or("start", 0.0), 0.0, 1.0);
-                       const sol::optional<sound_handle> after = (*opts)["after"];
-                       if (after && after->valid()) {
-                         play.after = after->value; // хэндл → секвенсинг
-                       }
-                     }
-                     play.res = resource_ref::from_handle(sound_res);
-                     play.resource_pin = sound_resource->pin();
-                     if (!play.resource_pin) {
-                       return sound_handle{};
-                     }
-                     c.br->sound_play.try_push(play);
-                     // оптимистичная запись: пока play не доедет в публикацию (latency 1-2 кадра),
-                     // app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
-                     constexpr size_t startup_grace_frames = 30;
-                     c.sound_state.push_back({play.taskid, 0.0, c.sound_frame + startup_grace_frames});
-                     return sound_handle{play.taskid};
-                   });
-
-  app.set_function("stop_sound", [cptr, sound_enabled](const sound_handle& h) {
-    auto& c = *cptr;
-    if (!sound_enabled || !h.valid()) {
-      return;
+      command_sound_play play{};
+      play.taskid = generate_task_id();
+      play.after = SIZE_MAX;
+      play.type = static_cast<uint32_t>(sound::type::ui_effect);
+      play.start = 0.0;
+      if (opts) {
+        play.start = std::clamp(opts->get_or("start", 0.0), 0.0, 1.0);
+        const sol::optional<sound_handle> after = (*opts)["after"];
+        if (after && after->valid()) {
+          play.after = after->value; // хэндл → секвенсинг
+        }
+      }
+      play.res = resource_ref::from_handle(sound_res);
+      play.resource_pin = sound_resource->pin();
+      if (!play.resource_pin) {
+        return sound_handle{};
+      }
+      c.br->sound_play.try_push(play);
+      // оптимистичная запись: пока play не доедет в публикацию (latency 1-2 кадра),
+      // app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
+      constexpr size_t startup_grace_frames = 30;
+      c.sound_state.push_back({play.taskid, 0.0, c.sound_frame + startup_grace_frames});
+      return sound_handle{play.taskid};
     }
-    command_sound_stop stop{};
-    stop.taskid = h.value;
-    c.br->sound_stop.try_push(stop);
-  });
+    auto stop_sound(const sound_handle& h) const {
+      auto& c = *cptr;
+      if (!sound_enabled || !h.valid()) {
+        return;
+      }
+      command_sound_stop stop{};
+      stop.taskid = h.value;
+      c.br->sound_stop.try_push(stop);
+    }
+    sol::object sound_state(const sound_handle& h) const {
+      auto& c = *cptr;
+      auto& lua = c.ui->script_state();
+      if (!h.valid()) {
+        return sol::nil;
+      }
+      for (const auto& s : c.sound_state) {
+        if (s.taskid != h.value) {
+          continue;
+        }
+        if (s.deadline != 0 && c.sound_frame > s.deadline) {
+          return sol::nil; // окно вышло
+        }
+        return sol::make_object(lua, s.progress);
+      }
+      return sol::nil;
+    }
+    auto set_sound_device(const std::string& name) const {
+      auto& c = *cptr;
+      if (!sound_enabled || c.br == nullptr) {
+        return;
+      }
+      std::string selected = name;
+      if (!selected.empty() && c.sound_devices_ready.load(std::memory_order_acquire) &&
+          std::find(c.sound_devices.begin(), c.sound_devices.end(), selected) == c.sound_devices.end()) {
+        utils::warn("sound: requested output device '{}' is unavailable; using system default", selected);
+        selected.clear();
+      }
+      if constexpr (requires { settings_ptr->sound.device; }) {
+        settings_ptr->sound.device = selected;
+      }
+      c.sound_device_preference = selected;
+      c.sound_device_preference_applied = true;
+      c.br->recreate_sound.try_push(command_recreate_sound_system{selected});
+    }
+  };
+  const lua_impl impl{cptr, sound_enabled, settings_ptr};
+  app.set_function("play_sound", &lua_impl::play_sound, impl);
+
+  app.set_function("stop_sound", &lua_impl::stop_sound, impl);
 
   // ищет id в единой таблице sound_state. Возвращает прогресс [0,1] или nil. Раз вернули число — звук в
   // обработке (играет/в очереди/только что запрошен); nil — задачи уже нет. Оптимистичная запись с
   // истёкшим окном старта (так и не доехала) трактуется как nil.
-  app.set_function("sound_state", [cptr](const sound_handle& h) -> sol::object {
-    auto& c = *cptr;
-    auto& lua = c.ui->script_state();
-    if (!h.valid()) {
-      return sol::nil;
-    }
-    for (const auto& s : c.sound_state) {
-      if (s.taskid != h.value) {
-        continue;
-      }
-      if (s.deadline != 0 && c.sound_frame > s.deadline) {
-        return sol::nil; // окно вышло
-      }
-      return sol::make_object(lua, s.progress);
-    }
-    return sol::nil;
-  });
+  app.set_function("sound_state", &lua_impl::sound_state, impl);
 
   // Смена звукового устройства: пере-создаём system через канал recreate.
-  app.set_function("set_sound_device", [cptr, settings_ptr, sound_enabled](const std::string& name) {
-    auto& c = *cptr;
-    if (!sound_enabled || c.br == nullptr) {
-      return;
-    }
-    std::string selected = name;
-    if (!selected.empty() && c.sound_devices_ready.load(std::memory_order_acquire) &&
-        std::find(c.sound_devices.begin(), c.sound_devices.end(), selected) == c.sound_devices.end()) {
-      utils::warn("sound: requested output device '{}' is unavailable; using system default", selected);
-      selected.clear();
-    }
-    if constexpr (requires { settings_ptr->sound.device; }) {
-      settings_ptr->sound.device = selected;
-    }
-    c.sound_device_preference = selected;
-    c.sound_device_preference_applied = true;
-    c.br->recreate_sound.try_push(command_recreate_sound_system{selected});
-  });
+  app.set_function("set_sound_device", &lua_impl::set_sound_device, impl);
 }
 
 // Слияние оптимистичного sound_state с публикацией звукового треда (latest-wins мейлбокс). Зовётся раз
@@ -216,34 +230,42 @@ void advance_sound_state(State& c) {
 template <typename State>
 void install_image_lua_binding(sol::table app, State& c) {
   auto* cptr = &c;
-  app.set_function("image", [cptr](sol::object resource, sol::optional<sol::table> opts) -> sol::object {
-    auto& c = *cptr;
-    auto& lua = c.ui->script_state();
-    if (!resource.is<demiurg::resource_handle>()) {
-      return sol::nil;
-    }
-    const auto handle = resource.as<demiurg::resource_handle>();
-    if (!c.ui_resource_scope->contains(handle)) {
-      return sol::nil;
-    }
-    auto* tex = handle.template get<painter::gpu_texture_resource>();
-    if (tex == nullptr || !tex->usable()) {
-      return sol::nil; // ещё не на GPU
-    }
-    visage::image img{};
-    img.texture_id = tex->gpu_index;
-    img.w = uint16_t(tex->width);
-    img.h = uint16_t(tex->height);
-    if (opts) {
-      const sol::optional<sol::table> region = (*opts)["region"];
-      if (region) {
-        for (int i = 0; i < 4; ++i) {
-          img.region[i] = uint16_t(region->get_or(i + 1, 0));
+  // Реализация биндингов — именованные методы, регистрация ниже. Не лямбды: одинаковые сигнатуры
+  // лямбд одной функции делят метатаблицу __gc в sol2.
+  using cptr_type = std::remove_cvref_t<decltype(cptr)>;
+  struct lua_impl {
+    cptr_type cptr;
+    sol::object image(sol::object resource, sol::optional<sol::table> opts) const {
+      auto& c = *cptr;
+      auto& lua = c.ui->script_state();
+      if (!resource.is<demiurg::resource_handle>()) {
+        return sol::nil;
+      }
+      const auto handle = resource.as<demiurg::resource_handle>();
+      if (!c.ui_resource_scope->contains(handle)) {
+        return sol::nil;
+      }
+      auto* tex = handle.template get<painter::gpu_texture_resource>();
+      if (tex == nullptr || !tex->usable()) {
+        return sol::nil; // ещё не на GPU
+      }
+      visage::image img{};
+      img.texture_id = tex->gpu_index;
+      img.w = uint16_t(tex->width);
+      img.h = uint16_t(tex->height);
+      if (opts) {
+        const sol::optional<sol::table> region = (*opts)["region"];
+        if (region) {
+          for (int i = 0; i < 4; ++i) {
+            img.region[i] = uint16_t(region->get_or(i + 1, 0));
+          }
         }
       }
+      return sol::make_object(lua, img);
     }
-    return sol::make_object(lua, img);
-  });
+  };
+  const lua_impl impl{cptr};
+  app.set_function("image", &lua_impl::image, impl);
 }
 
 // Lifecycle/pause/logging движка для UI: app.state()/runtime_state()/request_state(id)/set_paused(b)/
@@ -252,59 +274,77 @@ void install_image_lua_binding(sol::table app, State& c) {
 template <typename Host>
 void install_app_lifecycle_bindings(sol::table app, Host& host) {
   auto* hptr = &host;
-  app.set_function("state", [hptr]() -> std::string {
-    return std::string(to_string(hptr->state().lifecycle.phase()));
-  });
-  app.set_function("runtime_state", [hptr]() -> std::string {
-    auto* state = hptr->state().current_runtime_state.get();
-    return state != nullptr ? std::string(state->id) : std::string{};
-  });
-  app.set_function("request_state", [hptr](const std::string& id) -> bool {
-    return hptr->request_runtime_state(id);
-  });
-  app.set_function("loading_progress", [hptr]() -> double {
-    return hptr->loading_progress();
-  });
-  app.set_function("set_paused", [hptr](const bool value) {
-    hptr->state().pause.set_world(value);
-  });
-  app.set_function("paused", [hptr]() {
-    return hptr->state().pause.paused(pause_domain::gameplay);
-  });
+  // Реализация биндингов — именованные методы, регистрация ниже. Не лямбды: одинаковые сигнатуры
+  // лямбд одной функции делят метатаблицу __gc в sol2.
+  using hptr_type = std::remove_cvref_t<decltype(hptr)>;
+  struct lua_impl {
+    hptr_type hptr;
+    std::string state() const {
+      return std::string(to_string(hptr->state().lifecycle.phase()));
+    }
+    std::string runtime_state() const {
+      auto* state = hptr->state().current_runtime_state.get();
+      return state != nullptr ? std::string(state->id) : std::string{};
+    }
+    bool request_state(const std::string& id) const {
+      return hptr->request_runtime_state(id);
+    }
+    double loading_progress() const {
+      return hptr->loading_progress();
+    }
+    auto set_paused(const bool value) const {
+      hptr->state().pause.set_world(value);
+    }
+    auto paused() const {
+      return hptr->state().pause.paused(pause_domain::gameplay);
+    }
+    bool set_game_speed(const double multiplier) const {
+      return hptr->set_game_speed(multiplier);
+    }
+    double game_speed() const {
+      return hptr->game_speed();
+    }
+    bool save_settings() const {
+      return hptr->host_save_settings();
+    }
+    bool reload_settings() const {
+      return hptr->host_reload_settings();
+    }
+    static bool set_log_level(const std::string& domain, const std::string& depth) {
+      catalogue::log_depth d = catalogue::log_depth::off;
+      if (!catalogue::parse_log_depth(depth, d)) {
+        utils::warn("set_log_level: bad depth '{}'", depth);
+        return false;
+      }
+      if (!catalogue::logs().set_level(domain, d)) {
+        utils::warn("set_log_level: unknown domain '{}'", domain);
+        return false;
+      }
+      utils::info("log domain '{}' -> {}", domain, depth);
+      return true;
+    }
+  };
+  const lua_impl impl{hptr};
+  app.set_function("state", &lua_impl::state, impl);
+  app.set_function("runtime_state", &lua_impl::runtime_state, impl);
+  app.set_function("request_state", &lua_impl::request_state, impl);
+  app.set_function("loading_progress", &lua_impl::loading_progress, impl);
+  app.set_function("set_paused", &lua_impl::set_paused, impl);
+  app.set_function("paused", &lua_impl::paused, impl);
   // Живая скорость геймплея: app.set_game_speed(1.2) / (0.8) / (2). Double живёт только на этой
   // границе — host конвертирует его в рационал с милли-точностью, тайм-математика целочисленная.
   // Ноль/NaN/переполнение → false (остановка времени = app.set_paused, не скорость).
-  app.set_function("set_game_speed", [hptr](const double multiplier) -> bool {
-    return hptr->set_game_speed(multiplier);
-  });
-  app.set_function("game_speed", [hptr]() -> double {
-    return hptr->game_speed();
-  });
+  app.set_function("set_game_speed", &lua_impl::set_game_speed, impl);
+  app.set_function("game_speed", &lua_impl::game_speed, impl);
   // Живые настройки из UI: save выгружает текущее состояние (включая эффективный key-mapping,
   // если settings-схема проекта объявила input) в settings.tavl; reload перечитывает файл и
   // применяет runtime-реакцию (логгирование/частота/скорость/биндинги).
-  app.set_function("save_settings", [hptr]() -> bool {
-    return hptr->host_save_settings();
-  });
-  app.set_function("reload_settings", [hptr]() -> bool {
-    return hptr->host_reload_settings();
-  });
+  app.set_function("save_settings", &lua_impl::save_settings, impl);
+  app.set_function("reload_settings", &lua_impl::reload_settings, impl);
   // рантайм-переключение глубины логгирования домена (работает и в release):
   // app.set_log_level("sound","trace"). Домены main/assets/sound/render/ui/gameplay/resource/demiurg;
   // глубина off/info/flow/trace.
-  app.set_function("set_log_level", [](const std::string& domain, const std::string& depth) -> bool {
-    catalogue::log_depth d = catalogue::log_depth::off;
-    if (!catalogue::parse_log_depth(depth, d)) {
-      utils::warn("set_log_level: bad depth '{}'", depth);
-      return false;
-    }
-    if (!catalogue::logs().set_level(domain, d)) {
-      utils::warn("set_log_level: unknown domain '{}'", domain);
-      return false;
-    }
-    utils::info("log domain '{}' -> {}", domain, depth);
-    return true;
-  });
+  app.set_function("set_log_level", &lua_impl::set_log_level);
 }
 
 } // namespace simul

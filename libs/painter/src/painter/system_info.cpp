@@ -461,13 +461,14 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
     return false;
   }
   const auto file_path = directory_path + "main_device.tavl";
-  if (!file_io::exists(file_path)) {
-    return false;
-  }
-
   cached_system_data cur_data;
   {
-    const auto content = file_io::read(file_path);
+    // Кэш устройства: нет файла или не читается — просто промах.
+    const auto cached = file_io::read_text(file_path);
+    if (!cached) {
+      return false;
+    }
+    const auto& content = *cached;
 
     tavl::parser parser;
     parser.add_default_operator();

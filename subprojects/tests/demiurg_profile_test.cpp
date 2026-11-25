@@ -1,21 +1,23 @@
 #include <doctest/doctest.h>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <string_view>
 #include <devils_engine/demiurg/module_profile.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/modules_listing.h>
 #include <devils_engine/demiurg/zip_module.h>
 #include <devils_engine/utils/core.h>
-#include <mz.h>
-#include <mz_strm.h>
-#include <mz_zip.h>
-#include <mz_zip_rw.h>
+#include <miniz.h>
 
 using namespace devils_engine;
 namespace {
+// CTest runs each doctest case as its own process, in parallel under -j. A directory shared by all
+// cases let one case remove_all the tree another was writing into, so each case owns its own.
 struct temporary_root {
-  std::filesystem::path path = std::filesystem::temp_directory_path() / "devils_engine_profile_test";
-  temporary_root() {
+  std::filesystem::path path;
+  explicit temporary_root(const std::string_view name)
+    : path(std::filesystem::temp_directory_path() / ("devils_engine_profile_test_" + std::string(name))) {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
   }
@@ -27,24 +29,20 @@ void write(const std::filesystem::path& path, const std::string& text) {
   std::ofstream file(path, std::ios::binary);
   file << text;
 }
-void make_zip(const std::filesystem::path& path) {
-  void* writer = mz_zip_writer_create();
-  REQUIRE(mz_zip_writer_open_file(writer, path.c_str(), 0, 0) == MZ_OK);
-  for (const auto& [name, text] : std::vector<std::pair<std::string, std::string>>{{"data.txt", "hello"}, {"empty.txt", ""}}) {
-    mz_zip_file info{};
-    info.filename = name.c_str();
-    info.compression_method = MZ_COMPRESS_METHOD_STORE;
-    info.uncompressed_size = text.size();
-    REQUIRE(mz_zip_writer_entry_open(writer, &info) == MZ_OK);
-    if (!text.empty()) REQUIRE(mz_zip_writer_entry_write(writer, text.data(), int32_t(text.size())) == int32_t(text.size()));
-    REQUIRE(mz_zip_writer_entry_close(writer) == MZ_OK);
+// level: MZ_NO_COMPRESSION — store (так пакуются модули для раздачи), иначе deflate.
+void make_zip(const std::filesystem::path& path, const mz_uint level = MZ_NO_COMPRESSION,
+              const std::vector<std::pair<std::string, std::string>>& files = {{"data.txt", "hello"}, {"empty.txt", ""}}) {
+  mz_zip_archive zip{};
+  REQUIRE(mz_zip_writer_init_file(&zip, path.string().c_str(), 0));
+  for (const auto& [name, text] : files) {
+    REQUIRE(mz_zip_writer_add_mem(&zip, name.c_str(), text.data(), text.size(), level));
   }
-  REQUIRE(mz_zip_writer_close(writer) == MZ_OK);
-  mz_zip_writer_delete(&writer);
+  REQUIRE(mz_zip_writer_finalize_archive(&zip));
+  REQUIRE(mz_zip_writer_end(&zip));
 }
 } // namespace
 TEST_CASE("TAVL module profiles are shared by listing and module system") {
-  temporary_root root;
+  temporary_root root("listing");
   std::filesystem::create_directories(root.path / "core");
   std::filesystem::create_directories(root.path / "other");
   demiurg::modules_listing listing(root.path.generic_string());
@@ -72,7 +70,7 @@ TEST_CASE("TAVL module profiles are shared by listing and module system") {
   CHECK_THROWS_AS(listing.load_list("missing"), utils::critical_error);
 }
 TEST_CASE("profile codec validates version paths types duplicates and preserves escaped strings") {
-  temporary_root root;
+  temporary_root root("codec");
   const auto path = root.path / "profile.tavl";
   demiurg::module_profile input{1, {{"core/", "", "quote\" slash\\ newline\n"}}};
   demiurg::write_module_profile(path, input);
@@ -90,7 +88,7 @@ TEST_CASE("profile codec validates version paths types duplicates and preserves 
   CHECK(demiurg::read_module_profile(path).modules.empty());
 }
 TEST_CASE("ZIP entry reads accept byte counts including empty and reject CRC errors") {
-  temporary_root root;
+  temporary_root root("zip");
   const auto path = root.path / "data.zip";
   make_zip(path);
   {
@@ -127,4 +125,43 @@ TEST_CASE("ZIP entry reads accept byte counts including empty and reject CRC err
   std::string text;
   CHECK_THROWS_AS(zip.load_text("data.txt", text), utils::critical_error);
   CHECK_NOTHROW(zip.load_text("empty.txt", text));
+}
+
+TEST_CASE("ZIP modules read deflate entries and name an unsupported compression method") {
+  temporary_root root("zip_methods");
+  const std::string repeated(4096, 'a');
+  const auto deflated = root.path / "deflated.zip";
+  make_zip(deflated, MZ_DEFAULT_LEVEL, {{"data.txt", repeated}});
+  CHECK(std::filesystem::file_size(deflated) < repeated.size()); // действительно сжато
+  {
+    demiurg::zip_module zip(deflated.generic_string(), "test");
+    zip.open();
+    std::string text;
+    zip.load_text("data.txt", text);
+    CHECK(text == repeated);
+    CHECK_THROWS_AS(zip.load_text("DATA.TXT", text), utils::critical_error); // имена чувствительны к регистру
+  }
+
+  // Метод 93 (zstd) в заголовках записи: архив открывается, запись отказывает с номером метода.
+  const auto zstd = root.path / "zstd.zip";
+  make_zip(zstd);
+  std::ifstream stream(zstd, std::ios::binary);
+  std::string bytes((std::istreambuf_iterator<char>(stream)), {});
+  stream.close();
+  const auto local = bytes.find(std::string("PK\x03\x04", 4));
+  const auto central = bytes.find(std::string("PK\x01\x02", 4));
+  REQUIRE(local != std::string::npos);
+  REQUIRE(central != std::string::npos);
+  bytes[local + 8] = char(93);
+  bytes[central + 10] = char(93);
+  write(zstd, bytes);
+  demiurg::zip_module zip(zstd.generic_string(), "test");
+  zip.open();
+  std::string text;
+  try {
+    zip.load_text("data.txt", text);
+    FAIL("an entry with ZIP method 93 was read");
+  } catch (const utils::critical_error& e) {
+    CHECK(std::string(e.what()).find("method 93") != std::string::npos);
+  }
 }

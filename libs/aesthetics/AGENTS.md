@@ -11,6 +11,10 @@ ECS и его state projection. `world.h`/`src/aesthetics/world.cpp` — storage
 
 - Entity identity включает version; relation fields хранят полный id и проверяются через exists.
   Не вводить скрытый automatic relation cleanup.
+- `T*` из `create`/`get` не стабилен при следующей вставке того же типа: хранить `entityid_t`,
+  не указатель. Не вводить хендлы поверх `T*`. Хранилища для `view` и закрепление
+  `component_type_id` — `ensure_storage<T...>()` на владеющем потоке; ожидаемое число —
+  `reserve<T>(n)` с константой проекта.
 - Queries, созданные до snapshot load, должны увидеть restored world: сохранять уведомление при load.
 - Snapshot включает authoritative components, derived indices строятся заново. Общий байтовый codec
   уже в utils: не возвращать второй serializer сюда и не сериализовать raw padded structs.

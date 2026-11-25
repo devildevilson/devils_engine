@@ -215,8 +215,9 @@ void graphics_base::create_descriptor_pool() {
 
 void graphics_base::get_or_create_pipeline_cache(const std::string& path) {
   std::vector<uint8_t> initial_mem;
-  if (file_io::exists(path)) {
-    initial_mem = file_io::read<uint8_t>(path);
+  // Кэш пайплайнов: нет файла или не читается — начать с пустого.
+  if (auto cached = file_io::read<uint8_t>(path)) {
+    initial_mem = std::move(*cached);
   }
 
   vk::PipelineCacheCreateInfo pcci{};
@@ -630,6 +631,27 @@ buffer_frame graphics_base::get_current_buffer_resource_frame(const uint32_t res
   return bf;
 }
 
+void graphics_base::invalidate_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset) const {
+  if (res_index >= resources.size()) {
+    return;
+  }
+  const auto& res = resources[res_index];
+  if (role::is_image(res.role)) {
+    return;
+  }
+  const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
+  const uint32_t buffering = res.compute_buffering(this);
+  const auto& frame = res.handles[history_copy_index(counter.get_value(), counter_offset, buffering)];
+  const auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, frame.index);
+  if (cont.mem_ptr == nullptr) {
+    return;
+  }
+  const auto result = vmaInvalidateAllocation(allocator, cont.alloc, frame.subbuffer.offset, frame.subbuffer.size);
+  if (result != VK_SUCCESS) {
+    utils::error{}("painter: invalidating host range of resource '{}' failed ({})", res.name, int(result));
+  }
+}
+
 image_frame graphics_base::get_current_image_resource_frame(const uint32_t res_index, const uint32_t counter_offset) const {
   if (res_index >= resources.size()) {
     return image_frame();
@@ -864,7 +886,11 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
         // желательно слои прикрутить к контейнерам буферов
         // определять что картинка или нет по другим метрикам (например по мип уровням)
         auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, res.handles[i].index);
-        cont.size = size * buffering;
+        // Буфер по окну один в своём контейнере (см. create_resources): копии подряд с шагом,
+        // выровненным под подвыделение.
+        const size_t stride =
+          is_image ? size : utils::align_to(size, buffer_suballocation_alignment(physical_device, res.usage_mask));
+        cont.size = stride * buffering;
         cont.extent = exts;
         if (is_image) {
           cont.mips = res.compute_mip_levels(exts);
@@ -875,7 +901,7 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
 
   for (uint32_t i = 0; i < indices.size(); ++i) {
     auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, indices[i]);
-    const bool host_res = cont.host_visible();
+    const uint32_t host_res = cont.host_access;
 
     if (cont.is_image()) {
       alc.destroyImage(std::bit_cast<VkImage>(cont.handle), cont.alloc);
@@ -901,8 +927,17 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
     const bool is_image = role::is_image(res.role);
 
     const uint32_t buffering = res.compute_buffering(this);
+    const auto [frame_size, frame_extent] = res.compute_frame_size(this);
+    (void)frame_extent;
     for (uint32_t i = 0; i < buffering; ++i) {
       const auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, res.handles[i].index);
+
+      if (!is_image) {
+        const size_t stride = utils::align_to(frame_size, buffer_suballocation_alignment(physical_device, res.usage_mask));
+        res.handles[i].subbuffer.offset = stride * i;
+        res.handles[i].subbuffer.size = frame_size;
+        continue;
+      }
 
       if (is_image) {
         const auto img_handle = std::bit_cast<VkImage>(cont.handle);
@@ -1386,15 +1421,21 @@ uint32_t graphics_base::register_pair(const uint32_t draw_group, const uint32_t 
     const uint32_t last_pair_index = group.pairs.back();
     const auto& last_pair = DS_ASSERT_ARRAY_GET(pairs, last_pair_index);
     cur_pair->instance_offset = last_pair.instance_offset + last_pair.max_size * group.stride;
-    cur_pair->indirect_offset = last_pair.indirect_offset + last_pair.max_size * indirect_buffer_size;
+    // У пары ОДНА indirect-команда (шаги рисуют drawIndirect(..., 1, 32)). Прежде смещение росло на
+    // max_size команд предыдущей пары: вторая пара группы уезжала за `draw_capacity` команд буфера.
+    cur_pair->indirect_offset = last_pair.indirect_offset + uint32_t(indirect_buffer_size);
   }
 
   const auto& budget_cv = DS_ASSERT_ARRAY_GET(constant_values, group.budget_constant);
   const size_t val = budget_cv.reduce_value();
-  // что означает val? максимальное количество инстансов
-  // то есть вот это по идее:
+  // val — максимальное число инстансов группы.
   if (val * group.stride < cur_pair->instance_offset + cur_pair->max_size * group.stride) {
     utils::error{}("Could not allocate {} instances for draw group '{}' and mesh {}, maximum budget < offset + max pair size ({} < {})", cur_pair->max_size, group.name, mesh, (val * group.stride), (cur_pair->instance_offset + cur_pair->max_size * group.stride));
+  }
+  const auto& capacity_cv = DS_ASSERT_ARRAY_GET(constant_values, group.types_constant);
+  const size_t draw_capacity = capacity_cv.reduce_value();
+  if (group.pairs.size() + 1 > draw_capacity) {
+    utils::error{}("Could not register pair {} for draw group '{}' and mesh {}: draw_capacity {} is the number of pairs the group holds", group.pairs.size() + 1, group.name, mesh, draw_capacity);
   }
 
   group.pairs.push_back(index);
@@ -1949,7 +1990,8 @@ void graphics_base::create_resources() {
     uint32_t mips;
     uint32_t samples;
     bool is_buffer;
-    bool is_host_resource;
+    bool screensize; // буфер по размеру окна живёт в своём контейнере (пересоздание по окну)
+    uint32_t host_access; // host_access_*
 
     uint32_t layers;
     uint32_t layer_offset;
@@ -2000,7 +2042,10 @@ void graphics_base::create_resources() {
     //const auto& size_value = DS_ASSERT_ARRAY_GET(constant_values, res.size);
 
     uint32_t res_mips = 1;
-    const bool is_host_resource = role::is_host_visible(res.role);
+    // Буфер чтения хостом (readback) — в кэшируемой памяти, остальные видимые хосту — для записи.
+    const uint32_t host_access = !role::is_host_visible(res.role) ? host_access_none
+                               : (is_buffer && role::is_readback(res.role)) ? host_access_read
+                                                                            : host_access_write;
 
     // тут бы мы хотели еще как то сгруппировать ресурсы
     // наверное придется ввести маленькую предварительную структуру
@@ -2010,6 +2055,8 @@ void graphics_base::create_resources() {
 
     auto [buffer_size, image_extent] = res.compute_frame_size(this);
     const uint32_t buffering = res.compute_buffering(this);
+    const bool screensize_buffer =
+      is_buffer && DS_ASSERT_ARRAY_GET(constant_values, res.size).type == value_type::screensize;
     if (role::is_image(res.role)) {
       // Число уровней считается от размера уровня 0, поэтому 'auto' при resize честно пересчитывается
       res_mips = res.compute_mip_levels(image_extent);
@@ -2087,7 +2134,7 @@ void graphics_base::create_resources() {
         entry.mips = res_mips;
         entry.samples = res.samples;
         entry.is_buffer = false;
-        entry.is_host_resource = is_host_resource;
+        entry.host_access = host_access;
         entry.layers = 1;
         entry.layer_offset = 0;
         entry.offset = 0;
@@ -2105,11 +2152,16 @@ void graphics_base::create_resources() {
       if (is_buffer != data.is_buffer) {
         return false;
       }
-      if (is_host_resource != data.is_host_resource) {
+      if (host_access != data.host_access) {
         return false;
       }
 
       if (is_buffer && data.is_buffer) {
+        // Буфер по размеру окна пересоздаётся вместе с окном и раскладку копий пересчитывает только
+        // для себя: делить контейнер с соседями он не может.
+        if (screensize_buffer || data.screensize) {
+          return false;
+        }
         return res.usage_mask == data.usage_mask;
       }
 
@@ -2130,7 +2182,8 @@ void graphics_base::create_resources() {
       matching.back().mips = res_mips;
       matching.back().samples = res.samples;
       matching.back().is_buffer = is_buffer;
-      matching.back().is_host_resource = is_host_resource;
+      matching.back().screensize = screensize_buffer;
+      matching.back().host_access = host_access;
       matching.back().layers = 0;
       matching.back().layer_offset = 0;
       matching.back().offset = 0;
@@ -2168,7 +2221,7 @@ void graphics_base::create_resources() {
     cont.size = data.size;
     cont.mem_ptr = nullptr;
 
-    cont.create_container(allocator, data.is_host_resource);
+    cont.create_container(allocator, data.host_access);
   }
 
   // вот мы создали контейнеры, теперь заполним сами ресурсы

@@ -60,6 +60,14 @@ public:
     return *this;
   }
 
+  // Эффект, который коммитится сам через sink СВОЕГО корневого скоупа (например, спавн-скрипт:
+  // скоуп несёт приёмник спавна). Регистрация та же, что у pure — только ds, — но имя не обещает
+  // чистоты: вызов меняет мир. Эффекты акторов идут через effect<Traits>() и catalogue.
+  template <auto Fn>
+  building_blocks& scope_effect(std::string name) {
+    return pure<Fn>(std::move(name));
+  }
+
   // ИСКЛЮЧЕНИЕ: act-only эффект в обход ds (deferred-обёртка с не-ds типами аргументов).
   // Уходит из списка, как только блок получает ds-контракт (target scope/RNG).
   template <typename Traits>

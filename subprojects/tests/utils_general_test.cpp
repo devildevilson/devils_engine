@@ -675,6 +675,51 @@ TEST_CASE("kd_tree nearest/radius with predicate [utils::kd_tree]") {
   }
 }
 
+TEST_CASE("kd_tree layout does not depend on the selection algorithm [utils::kd_tree][deterministic]") {
+  // Раскладка дерева решает ничьи nearest (побеждает первый найденный). Она обязана быть функцией
+  // входа, а не реализации nth_element: frontier_online разошёлся между Linux и Windows, когда два
+  // актора стояли в одной точке. Эталон строится полной сортировкой тем же компаратором — при
+  // ПОЛНОМ порядке результат обязан совпасть побайтно с nth_element; при неполном (только
+  // координата) совпадение было бы случайным. Вход нарочно полон повторов и совпавших точек.
+  struct pl {
+    uint32_t id;
+  };
+  using tree_t = utils::kd_tree<pl>;
+  tree_t serial;
+  tree_t parallel;
+  for (uint32_t i = 0; i < 4096; ++i) {
+    const float x = float((i * 7u) % 13u);
+    const float y = float((i * 11u) % 5u);
+    serial.insert({x, y}, pl{i});
+    parallel.insert({x, y}, pl{i});
+  }
+  std::vector<tree_t::node> expected(serial.nodes().begin(), serial.nodes().end());
+  const auto reference = [&](const auto& self, const size_t lo, const size_t hi, const int axis) -> void {
+    if (hi - lo <= 1) return;
+    std::sort(expected.begin() + lo, expected.begin() + hi,
+              [axis](const tree_t::node& a, const tree_t::node& b) { return tree_t::split_less(a, b, axis); });
+    const size_t mid = lo + (hi - lo) / 2;
+    self(self, lo, mid, (axis + 1) % 2);
+    self(self, mid + 1, hi, (axis + 1) % 2);
+  };
+  reference(reference, 0, expected.size(), 0);
+
+  serial.build();
+  thread::atomic_pool pool(4);
+  parallel.build_parallel(pool, 1);
+  REQUIRE(serial.nodes().size() == expected.size());
+  for (size_t i = 0; i < expected.size(); ++i) {
+    REQUIRE(serial.nodes()[i].payload.id == expected[i].payload.id);
+    REQUIRE(parallel.nodes()[i].payload.id == expected[i].payload.id);
+  }
+
+  // Две точки в одном месте: какая из них «ближайшая», определяет раскладка, а значит — вход.
+  const auto* hit = serial.nearest({3.0f, 2.0f}, 0.5f, [](const pl&) { return true; });
+  REQUIRE(hit != nullptr);
+  CHECK(hit->pos[0] == 3.0f);
+  CHECK(hit->pos[1] == 2.0f);
+}
+
 TEST_CASE("geometry primitive predicates [utils::geom]") {
   using namespace utils::geom;
   using v2 = std::array<float, 2>;

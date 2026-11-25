@@ -55,6 +55,12 @@ bootstrap/broker/main типы и собирают `worker_systems<Broker>`; с�
 Стандартный topology callback также пересчитывает размер общего task pool по фактическому числу
 workers, включая project-specific системы, а не только по render/sound/assets флагам.
 
+Аргументы запуска идут каналом, а не глобальными синглтонами: main разбирает argv в
+`launch_arguments` (`--name=value`/`--name`; смысла движок не знает), проверяет их своими правилами
+и передаёт в `app_runtime::run(arguments)`. Runtime кладёт их в `bootstrap.arguments` до
+`init_bootstrap`; проект переводит их в типизированные опции в bootstrap и раздаёт системам при
+создании (например, в `make_workers`).
+
 `lifecycle_controller` задает асинхронные фазы main-loop: начальный
 `boot -> loading -> game` и последующие переходы `game -> loading -> game`. Хост реализует:
 
@@ -67,10 +73,17 @@ workers, включая project-specific системы, а не только п
 `enter(next)`. Переход из game запрашивается через `request_loading()`: контроллер применяет его на
 следующем lifecycle tick, а loading снова завершается обычным `lifecycle_phase_complete()`.
 
+Ресурсы грузит только поток ассетов, включая мета-ресурсы загрузки (`startup/entry`, runtime-state,
+scene manifest, project descriptor). Главный поток не зовёт `load()` сам: первый кадр отправляет
+мета-ресурс в `load_resource`, следующие ждут `usable()` (`standard_meta_ready`). Поэтому подготовка
+состояния растянута на кадры: boot — `standard_boot_resolve_initial_state` и
+`standard_advance_runtime_state`, loading — `standard_enter_loading` при входе и
+`standard_advance_loading` на каждом тике.
+
 В текущем переходном варианте `tile_frontier` boot читает дисковую startup entry и готовит resource
-set начального runtime-state до первой external/GPU-ступени. При входе в loading создается окно,
-набор состояния доводится до `final_state()`, запрашиваются проектные текстуры/звуки/чанки и
-создается actor world. Первый UI script запускается только после готовности всего UI-набора. Переход
+set начального runtime-state до первой external/GPU-ступени. В loading, когда запросы до
+`final_state()` отправлены, создается окно; когда готовы ресурсы сцены с `prepare = true`, host
+зовёт `begin_project_loading()` — проект запрашивает текстуры/звуки/чанки и создает actor world. Первый UI script запускается только после готовности всего UI-набора. Переход
 в game происходит после готовности остальных стартовых ресурсов и чанков; gameplay update до этого
 не идет. Последующие runtime-переходы оставляют старый UI как loading screen до готовности нового.
 
@@ -79,8 +92,12 @@ set начального runtime-state до первой external/GPU-ступе
 - активный `startup/entry` задает logical id начального `state`;
 - `states/*` задает entry `script`, `default_font`, единый UI-список `resources` и optional `scene`;
 - `scenes/*` задаёт optional CPU-only `project` descriptor и resource transitions
-  `{id,target,group,alias,startup}`. `target` — `cold/warm/hot/final` либо номер generic level;
-  `group/alias` движок сохраняет для проекта, но сам не интерпретирует.
+  `{id,target,group,alias,startup,prepare}`. `target` — `cold/warm/hot/final` либо номер generic
+  level; `group/alias` движок сохраняет для проекта, но сам не интерпретирует. Пропущенное поле
+  берёт умолчание (`target = final`, остальное пусто/false). `id`, оканчивающийся на `/`, —
+  каталог: все ресурсы с этим префиксом id (наборы мозгов, префабов); у каталога нет alias, пустой
+  каталог — ошибка манифеста. `prepare = true` — ресурс нужен проекту уже в
+  `begin_project_loading()`; он обязан быть CPU-only до target.
 
 Первый модуль в module list имеет наивысший приоритет, поэтому мод может заменить
 `startup/entry` или выбранный runtime-state, если стоит перед `core`. Все ресурсы из
@@ -102,6 +119,17 @@ gate/progress. Без render external target обрезается до перв�
 Дисковый boot является переходным вариантом. Целевой boot bundle (splash, подготовленный font и
 минимальный UI) будет задаваться compile-time Traits и встраиваться в бинарник; модульные registry,
 `startup/entry` и project UI остаются частью loading.
+
+## Камера И Интерполяция Рендера
+
+Тип камеры — данные (`camera.h`, `camera_config`): `projection` (`orthographic`), `half_width`,
+`controller` (`pan` — named actions `camera_*`, `fixed`), `pan_speed` (полуширин в секунду),
+`limits` (`world`, `none`), `body` (пока только `none`; тело появится вместе с физикой главного
+потока). Неизвестное слово — `utils::error` в `validate_camera_config`. Состояние (`camera2d`)
+считает главный поток (`step_camera`, ввод — `camera_input.h`) и публикует снапшотами; рендер
+смешивает два последних общим `value_interpolator<T>` (interpolation.h) с `blend_traits<T>` у
+потребителя. Время для всех потоков снапшотов рендера даёт один `render_frame_clock` на кадр:
+на паузе часы стоят, первый кадр после паузы тоже даёт 0, на кадре снапшота поток не продвигается.
 
 ## Сообщения Между Симуляциями
 

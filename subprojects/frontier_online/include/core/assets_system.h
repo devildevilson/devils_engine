@@ -4,12 +4,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <devils_engine/simul/standard_assets_system.h>
 
-#include "script_environment.h" // project devils_script system + entity_scope compiler adapter
-#include "terrain.h"            // источник земли: чанк = функция (зерно, ключ)
+#include "core/messages.h"           // command_chunk_loaded: готовый чанк, ждущий места в очереди
+#include "core/script_environment.h" // project devils_script system + entity_scope compiler adapter
+#include "core/terrain.h"            // источник земли: чанк = функция (зерно, ключ)
 
 namespace devils_engine {
 namespace demiurg {
@@ -21,7 +23,6 @@ namespace frontier_online {
 namespace core {
 
 struct broker;
-struct command_load_chunk;
 
 // Тонкая обёртка над actor-паттерном: вся логика менеджмента загрузки — в
 // demiurg::resource_loader (внутри container). assets владеет реестром ресурсов
@@ -30,10 +31,6 @@ struct command_load_chunk;
 class assets_simulation : public devils_engine::simul::standard_assets_system<broker> {
 public:
   assets_simulation(const size_t frame_time) noexcept;
-
-  // Отпечаток мира последнего открытого генератора: зерно + размер чанка + тексты всех его
-  // документов. Это и есть то, что поедет на рукопожатии вместо самой земли.
-  uint64_t world_fingerprint() const noexcept;
 
 protected:
   void update_project(const size_t time, ::frontier_online::core::broker& br) override;
@@ -48,6 +45,9 @@ private:
   script_environment script_env_; // owns ds::system and the parse-time root-scope adapter
   std::unique_ptr<terrain_source> terrain_;
   std::string terrain_id_;
+  // Готовый чанк, которому не хватило места в очереди в main: ждёт следующего круга, новые
+  // запросы до тех пор не берутся. Очередь надёжная, и терять в ней нечего.
+  std::optional<command_chunk_loaded> unsent_;
 };
 
 } // namespace core

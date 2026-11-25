@@ -18,12 +18,14 @@
 #include "devils_engine/utils/atomic_file.h"
 #include "devils_engine/utils/deterministic_math.h"
 #include "devils_engine/utils/deterministic_sort.h"
+#include "devils_engine/utils/platform.h"
 #include "devils_engine/utils/event_dispatcher.h"
 #include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/hash.h"
 #include "devils_engine/utils/memory_pool.h"
 #include "devils_engine/utils/stack_allocator.h"
 #include "devils_engine/utils/string_id.h"
+#include "devils_engine/utils/type_traits.h"
 
 using namespace devils_engine;
 
@@ -137,6 +139,34 @@ TEST_CASE("murmur3 hashes canonical binary bytes [utils::hash]") {
   CHECK(
     utils::murmur_hash3_32(std::span<const std::byte>{bytes}) ==
     utils::murmur_hash3_32(std::string_view{chars.data(), chars.size()}));
+}
+
+TEST_CASE("numbers and strings have one type name on every compiler [utils::type_traits]") {
+  // Из этих имён строятся идентичности (id компонентов, хеши схем), поэтому они обязаны совпадать
+  // у GCC ("long unsigned int") и MSVC ("unsigned __int64").
+  static_assert(utils::type_name<uint64_t>() == "uint64_t");
+  static_assert(utils::type_name<int64_t>() == "int64_t");
+  static_assert(utils::type_name<int32_t>() == "int32_t");
+  static_assert(utils::type_name<uint8_t>() == "uint8_t");
+  static_assert(utils::type_name<int8_t>() == "int8_t");
+  static_assert(utils::type_name<char>() == "char");
+  static_assert(utils::type_name<bool>() == "bool");
+  static_assert(utils::type_name<float>() == "float");
+  static_assert(utils::type_name<double>() == "double");
+  static_assert(utils::type_name<std::string>() == "std::string");
+  static_assert(utils::type_name<std::string_view>() == "std::string_view");
+  static_assert(utils::type_id<uint64_t>() == utils::murmur_hash64A("uint64_t"));
+  static_assert(utils::type_id<std::string>() == utils::murmur_hash64A("std::string"));
+  // Модификаторы не меняют идентичность типа; указатель — другой тип.
+  static_assert(utils::type_id<const std::string&>() == utils::type_id<std::string>());
+  static_assert(utils::type_id<const std::string>() == utils::type_id<std::string>());
+  static_assert(utils::type_id<std::string&&>() == utils::type_id<std::string>());
+  static_assert(utils::type_id<volatile int32_t&>() == utils::type_id<int32_t>());
+  static_assert(utils::type_id<int32_t*>() != utils::type_id<int32_t>());
+  // long и long long — разные типы одного размера: каноническое имя получает только тот, что
+  // является псевдонимом фиксированной ширины, иначе у двух типов был бы один type_id.
+  static_assert(utils::type_id<long>() != utils::type_id<long long>());
+  static_assert(utils::type_id<int>() != utils::type_id<long>());
 }
 
 TEST_CASE("string_pool keeps stable dense ids and supports lookup [utils::string_id]") {
@@ -323,6 +353,43 @@ TEST_CASE("fixed_pool_mt create rejects objects that do not fit the block contra
   CHECK(alignment_pool.allocate() != nullptr);
 }
 
+TEST_CASE("file_io::read names why a file was not read [utils::fileio]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_fileio_read_test";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto file = (root / "data.bin").generic_string();
+  const auto empty = (root / "empty.bin").generic_string();
+  const std::string bytes("ab\0c", 4);
+  REQUIRE(file_io::write(bytes, file, file_io::type::binary));
+  REQUIRE(file_io::write(std::string(), empty, file_io::type::binary));
+
+  const auto as_bytes = file_io::read(file);
+  REQUIRE(as_bytes.has_value());
+  REQUIRE(as_bytes->size() == 4);
+  CHECK((*as_bytes)[2] == std::byte{0});
+  CHECK((*as_bytes)[3] == std::byte{'c'});
+  const auto as_chars = file_io::read<char>(file);
+  REQUIRE(as_chars.has_value());
+  CHECK(std::string(as_chars->begin(), as_chars->end()) == bytes);
+  CHECK(file_io::read<uint8_t>(empty).value().empty()); // пустой файл — годные 0 байт, не ошибка
+  CHECK(file_io::read_text(empty) == std::string());
+
+  const auto missing = file_io::read((root / "missing.bin").generic_string());
+  REQUIRE_FALSE(missing.has_value());
+  CHECK(missing.error() == file_io::read_error::not_found);
+  CHECK(file_io::read_text((root / "missing.txt").generic_string()).error() == file_io::read_error::not_found);
+
+  const auto directory = file_io::read(root.generic_string());
+  REQUIRE_FALSE(directory.has_value());
+  CHECK(directory.error() == file_io::read_error::not_regular);
+  CHECK(file_io::read_text(root.generic_string()).error() == file_io::read_error::not_regular);
+  CHECK(file_io::describe(file_io::read_error::not_found) == "not found");
+
+  fs::remove_all(root);
+}
+
 TEST_CASE("atomic file transaction replaces only at commit [utils::atomic_file]") {
   namespace fs = std::filesystem;
 
@@ -338,13 +405,13 @@ TEST_CASE("atomic file transaction replaces only at commit [utils::atomic_file]"
   CHECK_FALSE(transaction->committed());
   REQUIRE(transaction->write("new ").has_value());
   REQUIRE(transaction->write("content").has_value());
-  CHECK(file_io::read(target.generic_string()) == "old");
+  CHECK(file_io::read_text(target.generic_string()) == "old");
   CHECK(fs::exists(target.generic_string() + ".tmp"));
 
   REQUIRE(transaction->commit().has_value());
   CHECK_FALSE(transaction->active());
   CHECK(transaction->committed());
-  CHECK(file_io::read(target.generic_string()) == "new content");
+  CHECK(file_io::read_text(target.generic_string()) == "new content");
   CHECK_FALSE(fs::exists(target.generic_string() + ".tmp"));
 
   const auto second_commit = transaction->commit();
@@ -368,10 +435,10 @@ TEST_CASE("aborted atomic file transaction preserves destination [utils::atomic_
     auto transaction = file_io::atomic_file_transaction::begin(target.generic_string());
     REQUIRE(transaction.has_value());
     REQUIRE(transaction->write("partial replacement").has_value());
-    CHECK(file_io::read(target.generic_string()) == "committed");
+    CHECK(file_io::read_text(target.generic_string()) == "committed");
   }
 
-  CHECK(file_io::read(target.generic_string()) == "committed");
+  CHECK(file_io::read_text(target.generic_string()) == "committed");
   CHECK_FALSE(fs::exists(target.generic_string() + ".tmp"));
   fs::remove_all(root);
 }
@@ -391,19 +458,19 @@ TEST_CASE("atomic file recovery removes stale temporary before retry [utils::ato
   REQUIRE_FALSE(blocked.has_value());
   CHECK(blocked.error().stage == file_io::atomic_file_stage::create_temporary);
   CHECK(blocked.error().code == std::errc::file_exists);
-  CHECK(file_io::read(target.generic_string()) == "stable");
+  CHECK(file_io::read_text(target.generic_string()) == "stable");
 
   const auto recovered = file_io::recover_atomic_file(target.generic_string());
   REQUIRE(recovered.has_value());
   CHECK(*recovered);
   CHECK_FALSE(fs::exists(temporary));
-  CHECK(file_io::read(target.generic_string()) == "stable");
+  CHECK(file_io::read_text(target.generic_string()) == "stable");
 
   const auto nothing_to_recover = file_io::recover_atomic_file(target.generic_string());
   REQUIRE(nothing_to_recover.has_value());
   CHECK_FALSE(*nothing_to_recover);
   REQUIRE(file_io::atomic_replace(target.generic_string(), "next").has_value());
-  CHECK(file_io::read(target.generic_string()) == "next");
+  CHECK(file_io::read_text(target.generic_string()) == "next");
 
   fs::remove_all(root);
 }
@@ -461,7 +528,7 @@ TEST_CASE("atomic file reports replace failure before commit [utils::atomic_file
   CHECK_FALSE(fs::exists(target.generic_string() + ".tmp"));
   fs::remove_all(target);
   fs::rename(backup, target);
-  CHECK(file_io::read(target.generic_string()) == "old");
+  CHECK(file_io::read_text(target.generic_string()) == "old");
 
   fs::remove_all(root);
 }
@@ -473,4 +540,25 @@ TEST_CASE("variadic minimum considers every argument") {
   const int a = 9, b = 1, c = 7, tied = 1;
   CHECK(&devils_engine::utils::min(a, b, c) == &b);
   CHECK(&devils_engine::utils::min(b, tied, c) == &b);
+}
+
+// Отчёт о процессоре: если исполняемый файл вообще запустился, проверка набора инструкций прошла,
+// значит всё, под что собран код, у процессора есть.
+TEST_CASE("query_cpu reports the processor and covers the build's instruction set") {
+  const auto cpu = devils_engine::utils::query_cpu();
+  REQUIRE_FALSE(cpu.name.empty());
+  CHECK(cpu.cores > 0);
+  CHECK(cpu.logical_processors >= cpu.cores);
+  std::string word;
+  for (const char c : cpu.required_isa + " ") {
+    if (c != ' ') {
+      word += c;
+      continue;
+    }
+    if (!word.empty()) {
+      CHECK_MESSAGE((" " + cpu.isa + " ").find(" " + word + " ") != std::string::npos, word);
+    }
+    word.clear();
+  }
+  CHECK_FALSE(devils_engine::utils::describe(cpu).empty());
 }

@@ -170,6 +170,14 @@
 привязанным именем — замыканием в lua (`install_shortcuts`). Новое имя в `originator` не должно
 совпасть с `reserved_api_names`.
 
+### Математика в шагах (ds, lua, инструменты)
+
+Трансцендентные функции — только `utils::deterministic`, не `std::`: libm меняет последние биты между
+версиями glibc и у MSVC своя, а мир обязан совпасть на любых системах. ds-системы создаются
+`act::init_deterministic_math`, не `init_math`. В lua-окружении `math.sin/cos/tan/asin/acos/atan/exp/log`
+и `math.pow` уже подменены; оператор `^` — НЕТ (он внутри системной lua), поэтому в скриптах мира
+`math.pow(x, y)`, а не `x ^ y`. Проверка: `luac5.4 -l -p файл | grep POW` должен быть пуст.
+
 ### Добавить набор инструментов
 
 Новый `.cpp` в `src/originator`, метод `tool_registry::add_*_tools()`, файл-блок с объяснением, ПОЧЕМУ
@@ -304,7 +312,7 @@ Lua hosts принадлежат context, не OS thread. Внешний context
 ## Аудит инструментария GN
 
 [Карта algorithms/adapters и gaps](../../docs/review/GN_ORIGINATOR_TOOLS.md),
-`python3 scripts/inventory_originator_tools.py --check` — lexical inventory, не runtime trace.
+`python3 docs/review/originator_tools/inventory_originator_tools.py --check` — lexical inventory, не runtime trace.
 Перед новым тематическим tool проверить выразимость через component/lookup/neighbourhood
 и существующие kernels. Разные имена могут делить одно ядро: collapse уже так устроен;
 общие CPU neighbourhood kernels ещё не означают общую device eligibility. Source-находки

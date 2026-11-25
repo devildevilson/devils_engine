@@ -1,4 +1,5 @@
 #include "cardgame/combat_script.h"
+#include "devils_engine/act/script_math.h"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +10,7 @@
 
 #include <tavl/parser.h>
 
+#include <devils_engine/act/script_parse.h>
 #include <devils_engine/act/script_resource.h>
 #include <devils_engine/demiurg/resource_system.h>
 
@@ -916,7 +918,7 @@ void emit_retaliation_attack(const retaliation_rule_scope scope,
 
 combat_effect_script_compiler::combat_effect_script_compiler() {
   sys_.init_basic_functions();
-  sys_.init_math();
+  devils_engine::act::init_deterministic_math(sys_); // не init_math: libm у платформ расходится
   register_combat_effect_script(sys_);
 }
 
@@ -986,10 +988,7 @@ devils_script::container combat_effect_script_compiler::compile_predicate(
 devils_script::container combat_effect_script_compiler::compile_effect(
   const std::string_view name,
   tavl::parser& parser) const {
-  devils_script::container program;
-  devils_script::system::parse_context ctx;
-  sys_.parse<void, combat_effect_scope>(name, parser, ctx, program);
-  return program;
+  return devils_engine::act::parse_script<void, combat_effect_scope>(sys_, name, parser);
 }
 
 void register_combat_effect_script(devils_script::system& sys) {

@@ -16,6 +16,7 @@ set(SRC_LIST
   src/demiurg/module_system.cpp
   src/demiurg/module_profile.cpp
   src/demiurg/resource_loader.cpp
+  src/demiurg/synchronous_loader.cpp
 )
 
 set(HDR_LIST
@@ -29,10 +30,11 @@ set(HDR_LIST
   include/devils_engine/demiurg/zip_module.h
   include/devils_engine/demiurg/module_system.h
   include/devils_engine/demiurg/module_profile.h
-  "include/devils_engine/demiurg/resource_loader.h")
+  include/devils_engine/demiurg/resource_loader.h
+  include/devils_engine/demiurg/synchronous_loader.h)
 
 add_library(devils_demiurg ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_demiurg PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue PRIVATE minizip tavl)
+target_link_libraries(devils_demiurg PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue PRIVATE miniz tavl)
 target_include_directories(devils_demiurg PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_demiurg PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/demiurg>")
 

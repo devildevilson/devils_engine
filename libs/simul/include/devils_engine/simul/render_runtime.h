@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <iterator>
 #include <memory>
 #include <span>
@@ -19,6 +20,7 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/input/core.h>
 #include <devils_engine/painter/assets_base.h>
+#include <devils_engine/painter/frame_readback.h>
 #include <devils_engine/painter/auxiliary.h>
 #include <devils_engine/painter/glsl_source_file.h>
 #include <devils_engine/painter/gpu_load_context.h>
@@ -46,8 +48,30 @@ template <typename Broker>
 struct standard_render_state {
   Broker* br = nullptr;
   gtl::flat_hash_map<uint64_t, uint32_t> wb_name_to_res;
+  // Отложенная запись буферов с копией на кадр в полёте (swap = per_frame). Последние байты ресурса
+  // ждут здесь и кладутся в копию ТЕКУЩЕГО кадра после prepare_frame, когда fence этого кадра
+  // пройден и прошлый читатель копии закончил. pending — маска копий, ещё не получивших эти байты.
+  struct staged_buffer_write {
+    std::vector<std::byte> bytes;
+    uint32_t pending = 0;
+  };
+  gtl::flat_hash_map<uint32_t, staged_buffer_write> wb_staged;
+  // То же для пар групп отрисовки (инстансы + одна indirect-команда), ключ — индекс пары painter.
+  struct staged_pair_write {
+    std::vector<std::byte> instances;
+    VkDrawIndirectCommand command{};
+    uint32_t pending = 0;
+  };
+  gtl::flat_hash_map<uint32_t, staged_pair_write> pair_staged;
 
   render_system_config config;
+
+  // Снимки: съём шагом графа (условный пасс), очередь запросов и счёт рисованных кадров для
+  // `not_before_frame`. Один съём за раз — остальные ждут в очереди.
+  painter::frame_readback capture;
+  std::deque<command_capture_frame> capture_queue;
+  std::string capture_path;
+  uint64_t frames_drawn = 0;
 
   VkInstance instance = VK_NULL_HANDLE;
   VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
@@ -469,6 +493,7 @@ void standard_render_try_create_graph(State& c, OnGraphReady&& on_graph_ready) {
   c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
 
   c.graph_ready = true;
+  c.capture.bind(*c.base);
   standard_render_build_wb_name_map(c);
   standard_render_bind_textures(c);
   on_graph_ready();
@@ -524,11 +549,17 @@ void standard_render_resize_swapchain(State& c, const uint32_t w, const uint32_t
 template <typename State>
 void standard_render_build_wb_name_map(State& c) {
   c.wb_name_to_res.clear();
+  c.wb_staged.clear(); // индексы ресурсов нового графа другие; проект пришлёт свежие байты
+  c.pair_staged.clear(); // пары регистрируются заново на новом графе
   for (uint32_t i = 0; i < c.base->resources.size(); ++i) {
     c.wb_name_to_res.emplace(utils::string_hash(c.base->resources[i].name), i);
   }
 }
 
+// Запись host-visible буфера по имени. Буфер с копией на кадр в полёте (swap = per_frame) только
+// запоминает байты: класть их в копию можно лишь после ожидания fence её кадра, то есть в
+// standard_render_flush_buffer_writes. Прочие (per_update и т.п.) пишутся сразу во все копии —
+// прежнее поведение; оно гонится с кадрами в полёте, если GPU читает такой буфер.
 template <typename State>
 void standard_render_write_buffer_bytes(State& c, const uint64_t name_hash, const std::span<const std::byte> payload) {
   const auto it = c.wb_name_to_res.find(name_hash);
@@ -543,6 +574,16 @@ void standard_render_write_buffer_bytes(State& c, const uint64_t name_hash, cons
   const uint32_t buffering = res.compute_buffering(c.base.get());
   const size_t n = std::min(payload.size(), size_t(frame_size));
 
+  if (res.swap == c.base->per_frame_counter_index) {
+    if (buffering == 0 || buffering > 32) {
+      utils::error{}("write_buffer: resource '{}' has {} per-frame copies, supported 1..32", res.name, buffering);
+    }
+    auto& staged = c.wb_staged[ri];
+    staged.bytes.assign(payload.begin(), payload.begin() + n);
+    staged.pending = buffering == 32 ? UINT32_MAX : (uint32_t(1) << buffering) - 1u;
+    return;
+  }
+
   for (uint32_t off = 0; off < buffering; ++off) {
     const auto bf = c.base->get_current_buffer_resource_frame(ri, off);
     if (bf.mapped == nullptr) {
@@ -550,6 +591,82 @@ void standard_render_write_buffer_bytes(State& c, const uint64_t name_hash, cons
       return;
     }
     std::memcpy(static_cast<uint8_t*>(bf.mapped) + bf.sub.offset, payload.data(), n);
+  }
+}
+
+// Инстансы и indirect-команда пары группы отрисовки host_visible. У группы копия на каждый кадр в
+// полёте, поэтому байты только запоминаются и кладутся в копию текущего кадра в
+// standard_render_flush_buffer_writes; каждая копия получает последние байты один раз. Байтов больше,
+// чем зарезервировала пара, — ошибка вызывающего: обрезку с предупреждением делает он, зная, что
+// именно не будет нарисовано.
+template <typename State>
+void standard_render_write_draw_pair(State& c, const uint32_t pair_index, const std::span<const std::byte> instances,
+                                     const VkDrawIndirectCommand& command) {
+  if (pair_index >= c.base->pairs.size() || c.base->pairs[pair_index].draw_group == painter::invalid_resource_slot) {
+    utils::error{}("write_draw_pair: pair {} is not registered ({} pairs)", pair_index, c.base->pairs.size());
+  }
+  const auto& pair = c.base->pairs[pair_index];
+  const auto& group = c.base->draw_groups[pair.draw_group];
+  const size_t capacity = size_t(pair.max_size) * size_t(group.stride);
+  if (instances.size() > capacity) {
+    utils::error{}("write_draw_pair: {} instance bytes for pair {} of draw group '{}', the pair holds {} ({} x {} bytes)",
+                   instances.size(), pair_index, group.name, capacity, pair.max_size, group.stride);
+  }
+  if (command.instanceCount > pair.max_size) {
+    utils::error{}("write_draw_pair: {} instances drawn for pair {} of draw group '{}', the pair holds {}",
+                   command.instanceCount, pair_index, group.name, pair.max_size);
+  }
+  const auto& res = c.base->resources[group.instances_buffer];
+  const uint32_t buffering = res.compute_buffering(c.base.get());
+  if (res.swap != c.base->per_frame_counter_index || buffering == 0 || buffering > 32) {
+    utils::error{}("write_draw_pair: draw group '{}' instances must rotate per frame with 1..32 copies (swap {}, copies {})",
+                   group.name, res.swap, buffering);
+  }
+  auto& staged = c.pair_staged[pair_index];
+  staged.instances.assign(instances.begin(), instances.end());
+  staged.command = command;
+  staged.pending = buffering == 32 ? UINT32_MAX : (uint32_t(1) << buffering) - 1u;
+}
+
+// Вызывать ПОСЛЕ prepare_frame и ДО записи команд кадра: копия текущего кадра уже свободна.
+// Каждая копия получает последние байты один раз; кадры без новых данных ничего не копируют.
+template <typename State>
+void standard_render_flush_buffer_writes(State& c) {
+  for (auto& [pair_index, staged] : c.pair_staged) {
+    if (staged.pending == 0) continue;
+    const auto& pair = c.base->pairs[pair_index];
+    const auto& res = c.base->resources[c.base->draw_groups[pair.draw_group].instances_buffer];
+    const uint32_t buffering = res.compute_buffering(c.base.get());
+    const uint32_t clock = c.base->counters[res.swap].get_value();
+    const uint32_t bit = uint32_t(1) << painter::history_copy_index(clock, 0, buffering);
+    if ((staged.pending & bit) == 0) continue;
+    const auto inst = c.base->get_current_instance_resource_frame(pair_index, 0);
+    const auto indi = c.base->get_current_indirect_resource_frame(pair_index, 0);
+    if (inst.mapped == nullptr || indi.mapped == nullptr) {
+      utils::error{}("write_draw_pair: draw group '{}' is not host-visible", pair.draw_group_name);
+    }
+    if (!staged.instances.empty()) {
+      std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, staged.instances.data(), staged.instances.size());
+    }
+    std::memcpy(static_cast<uint8_t*>(indi.mapped) + indi.sub.offset, &staged.command, sizeof(staged.command));
+    staged.pending &= ~bit;
+  }
+  for (auto& [ri, staged] : c.wb_staged) {
+    if (staged.pending == 0) continue;
+    const auto& res = c.base->resources[ri];
+    const uint32_t buffering = res.compute_buffering(c.base.get());
+    const uint32_t clock = c.base->counters[res.swap].get_value();
+    const uint32_t copy = painter::history_copy_index(clock, 0, buffering);
+    const uint32_t bit = uint32_t(1) << copy;
+    if ((staged.pending & bit) == 0) continue;
+    const auto bf = c.base->get_current_buffer_resource_frame(ri, 0);
+    if (bf.mapped == nullptr) {
+      utils::error{}("write_buffer: per-frame resource '{}' is not host-visible", res.name);
+    }
+    if (!staged.bytes.empty()) {
+      std::memcpy(static_cast<uint8_t*>(bf.mapped) + bf.sub.offset, staged.bytes.data(), staged.bytes.size());
+    }
+    staged.pending &= ~bit;
   }
 }
 
@@ -575,9 +692,94 @@ void standard_render_drain_graph_switch(State& c, Broker& br) {
       utils::warn("render: set_active_graph: graph '{}' was not found", cmd->name);
     } else if (idx != c.base->current_render_graph_index) {
       c.base->change_render_graph(idx);
+      c.capture.bind(*c.base); // съём живёт в пассе графа: у нового графа его может не быть
       DE_LOG(catalogue::log_domain::render, flow, "active graph switched to '{}'", cmd->name);
     }
   }
+}
+
+// ── Снимки ──────────────────────────────────────────────────────────────────────────────────────
+// Порядок в кадре: drain → capture_before_frame → prepare_frame → capture_collect → (запись, draw) →
+// submit_frame → capture_after_submit. Копию делает пасс графа; байты забираются после fence
+// кадра-писателя и уходят потоку ассетов, который кодирует и пишет файл.
+
+template <typename State, typename Broker>
+void standard_render_drain_capture(State& c, Broker& br) {
+  command_capture_frame cmd;
+  while (br.capture_frame.try_pop(cmd)) {
+    c.capture_queue.push_back(std::move(cmd));
+  }
+}
+
+template <typename State, typename Broker>
+void standard_render_capture_refuse(State& c, Broker& br, std::string path, std::string reason) {
+  (void)c;
+  utils::warn("render: frame capture '{}' refused: {}", path, reason);
+  if (!br.render_captured.try_push(command_frame_captured{std::move(path), false, std::move(reason)})) {
+    utils::warn("render: frame capture result dropped: the result queue is full");
+  }
+}
+
+// До prepare_frame. Принимает следующий запрос, когда прошлый съём закончен и кадр подошёл.
+template <typename State, typename Broker>
+void standard_render_capture_before_frame(State& c, Broker& br) {
+  if (!c.graph_ready || !c.base) {
+    return;
+  }
+  if (!c.capture.busy() && !c.capture_queue.empty()) {
+    auto& next = c.capture_queue.front();
+    if (!c.capture.bound()) {
+      standard_render_capture_refuse(c, br, std::move(next.path),
+                                     "the active render graph declares no frame capture pass");
+      c.capture_queue.pop_front();
+    } else if (next.not_before_frame <= c.frames_drawn + 1) {
+      c.capture_path = std::move(next.path);
+      c.capture_queue.pop_front();
+      c.capture.request();
+    }
+  }
+  c.capture.before_frame(*c.base);
+}
+
+// После prepare_frame: байты кадра-писателя, когда его fence пройден.
+template <typename State, typename Broker>
+void standard_render_capture_collect(State& c, Broker& br) {
+  if (!c.base) {
+    return;
+  }
+  painter::captured_frame frame;
+  const auto status = c.capture.collect(*c.base, frame);
+  if (status == painter::frame_readback::status::lost) {
+    standard_render_capture_refuse(c, br, std::move(c.capture_path),
+                                   "the frame was lost (window resized or render graph switched)");
+    c.capture_path.clear();
+    return;
+  }
+  if (status != painter::frame_readback::status::ready) {
+    return;
+  }
+  command_encode_frame cmd;
+  cmd.path = std::move(c.capture_path);
+  cmd.width = frame.width;
+  cmd.height = frame.height;
+  cmd.bgra = frame.bgra;
+  cmd.pixels = std::move(frame.pixels);
+  c.capture_path.clear();
+  std::string path = cmd.path;
+  if (!br.encode_frame.try_push(std::move(cmd))) {
+    // Очередь кодирования полна (поток ассетов ещё пишет прошлые снимки): кадр не копим.
+    standard_render_capture_refuse(c, br, std::move(path), "the encoder queue is full");
+  }
+}
+
+// После submit_frame.
+template <typename State>
+void standard_render_capture_after_submit(State& c) {
+  if (!c.base) {
+    return;
+  }
+  c.frames_drawn += 1;
+  c.capture.after_submit(*c.base);
 }
 
 template <typename State, typename Broker>
@@ -676,6 +878,22 @@ void standard_render_drain_commands(
   standard_render_drain_update_constants(c, br);
   standard_render_drain_gpu_transitions(c, br);
   standard_render_drain_write_buffer(c, br);
+  standard_render_drain_capture(c, br);
+}
+
+// Один кадр графа: подготовка (fence кадра), буферы с копией на кадр, запись, отправка и съём кадра
+// вокруг них. Вызывающий проверяет graph_ready/draw_active/can_draw.
+template <typename State, typename Broker>
+void standard_render_draw_frame(State& c, Broker& br) {
+  standard_render_capture_before_frame(c, br);
+  c.base->prepare_frame();
+  standard_render_capture_collect(c, br);
+  // Буферы с копией на кадр (камера, интерфейс): fence этого кадра пройден, копию можно писать.
+  standard_render_flush_buffer_writes(c);
+  c.ctx.prepare();
+  c.ctx.draw();
+  c.base->submit_frame();
+  standard_render_capture_after_submit(c);
 }
 
 } // namespace simul

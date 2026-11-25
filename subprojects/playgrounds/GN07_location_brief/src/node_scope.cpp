@@ -1,4 +1,5 @@
 #include "node_scope.h"
+#include "devils_engine/act/script_math.h"
 
 #include <algorithm>
 #include <format>
@@ -113,7 +114,7 @@ ds::system::options make_options() {
 
 script_env::script_env() : sys_(make_options()) {
   sys_.init_basic_functions();
-  sys_.init_math();
+  devils_engine::act::init_deterministic_math(sys_); // не init_math: libm у платформ расходится
   sys_.register_function<&node_depth>("depth");
   sys_.register_function<&node_depth_share>("depth_share");
   sys_.register_function<&node_secret_depth>("secret_depth");

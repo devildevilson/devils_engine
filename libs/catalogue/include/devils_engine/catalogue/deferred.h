@@ -544,6 +544,10 @@ struct domain {
   using strategy_type = Strategy;
   using executor_type = executor<Strategy>;
 
+  // ОДИН executor на домен на ПРОЦЕСС (inline static): домен — тип, а не объект. Два мира в одном
+  // процессе (авторитет и ведомый в тесте) делят его и работают только поочерёдно: перед record
+  // своего тика мир ставит свой executor, и чужой record/commit в это время не идёт. Параллельные
+  // тики двух миров на одном домене — гонка за этот указатель.
   inline static executor<Strategy>* executor_i = nullptr;
 
   static void set_executor(executor<Strategy>* ptr) noexcept {

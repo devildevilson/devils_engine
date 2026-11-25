@@ -25,12 +25,20 @@ struct runtime_state_config {
 // Одна декларативная resource transition внутри scene manifest. target принимает имена
 // cold/warm/hot/final либо неотрицательный номер ступени. group/alias движок не интерпретирует:
 // это стабильные метаданные для project scene (например tile_textures и sounds/eating).
+//
+// id, оканчивающийся на '/', — каталог: все ресурсы, чей id начинается с него (наборы мозгов,
+// префабов). У каталога нет alias; пустой каталог — ошибка манифеста.
+//
+// prepare = true: ресурс нужен проекту уже в begin_project_loading (мозги, префабы). Движок доводит
+// его до target и только потом зовёт begin_project_loading. Такой ресурс обязан быть CPU-only до
+// target: внешней (GPU) ступени, которая без рендера не наступит, у него быть не может.
 struct scene_resource_request {
   std::string id;
   std::string target = "final";
   std::string group;
   std::string alias;
   bool startup = false;
+  bool prepare = false;
 };
 
 struct scene_manifest_config {

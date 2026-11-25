@@ -3,7 +3,7 @@
 
 #include <devils_engine/demiurg/resource_base.h>
 
-#include "config.h"
+#include "core/config.h"
 
 namespace frontier_online {
 namespace core {

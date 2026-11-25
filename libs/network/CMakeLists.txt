@@ -18,10 +18,15 @@ add_library(devils_engine::network ALIAS devils_network)
 # into this concrete backend independently.
 option(DEVILS_ENGINE_BUILD_NETWORK_GNS "Build the optional GNS message adapter" ON)
 if (DEVILS_ENGINE_BUILD_NETWORK_GNS)
-  add_library(devils_network_gns src/network/gns_transport.cpp)
+  add_library(devils_network_gns src/network/gns_transport.cpp src/network/gns_runtime.cpp
+    src/network/secure_random.cpp)
   target_include_directories(devils_network_gns PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
+  # secure_random — CSPRNG OpenSSL. GNS уже собран с ним, но зависимость объявляется явно:
+  # транзитивная линковка через чужую цель — не контракт.
+  find_package(OpenSSL REQUIRED COMPONENTS Crypto)
   target_link_libraries(devils_network_gns PUBLIC
-    devils_engine::options devils_engine::utils GameNetworkingSockets::static)
+    devils_engine::options devils_engine::utils GameNetworkingSockets::static
+    PRIVATE OpenSSL::Crypto)
   add_library(devils_engine::network_gns ALIAS devils_network_gns)
 endif()

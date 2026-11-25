@@ -20,6 +20,11 @@
 // tick has a bundle, so the receiver always knows the previous tick: the field
 // is a check, not information, and 16 bits keep that check exact while saving
 // six bytes on every tick of every peer. Tick 0 is not a step and is refused.
+//
+// Records are strictly ascending by (origin_peer, input_sequence): the order is
+// part of the format (one tick has one byte form), the sealed tick_journal
+// already produces it, and both encoder and decoder refuse anything else
+// rather than normalize it.
 namespace devils_engine::network {
 
 inline constexpr size_t canonical_tick_max_bytes = 1024;
@@ -28,6 +33,47 @@ inline constexpr size_t canonical_tick_max_payload_bytes = 256;
 inline constexpr size_t canonical_tick_header_bytes = 1 + 2 + 1 + 1;
 inline constexpr size_t canonical_tick_root_bytes = 8;
 inline constexpr size_t canonical_tick_record_header_bytes = 8 + 8 + 2;
+
+// Encoded size of a tick without records, and what one record adds: the same
+// arithmetic the encoder applies, for producers that plan a tick before encoding it.
+[[nodiscard]] constexpr size_t canonical_tick_base_bytes(const bool with_root) noexcept {
+  return canonical_tick_header_bytes + (with_root ? canonical_tick_root_bytes : 0);
+}
+[[nodiscard]] constexpr size_t canonical_tick_record_bytes(const size_t payload_bytes) noexcept {
+  return canonical_tick_record_header_bytes + payload_bytes;
+}
+// How many records of one payload size a tick holds under both budgets.
+[[nodiscard]] constexpr size_t canonical_tick_record_capacity(const bool with_root,
+                                                              const size_t payload_bytes) noexcept {
+  const size_t by_bytes =
+    (canonical_tick_max_bytes - canonical_tick_base_bytes(with_root)) / canonical_tick_record_bytes(payload_bytes);
+  return by_bytes < canonical_tick_max_records ? by_bytes : canonical_tick_max_records;
+}
+
+// Running account of a tick under construction: `take` admits a record only if
+// the encoded tick stays within canonical_tick_max_records and canonical_tick_max_bytes.
+class canonical_tick_budget {
+public:
+  explicit constexpr canonical_tick_budget(const bool with_root) noexcept
+    : bytes_(canonical_tick_base_bytes(with_root)) {}
+  [[nodiscard]] constexpr bool fits(const size_t payload_bytes) const noexcept {
+    return records_ < canonical_tick_max_records && payload_bytes <= canonical_tick_max_payload_bytes &&
+           canonical_tick_record_bytes(payload_bytes) <= canonical_tick_max_bytes - bytes_;
+  }
+  // Refusal leaves the account unchanged.
+  [[nodiscard]] constexpr bool take(const size_t payload_bytes) noexcept {
+    if (!fits(payload_bytes)) return false;
+    ++records_;
+    bytes_ += canonical_tick_record_bytes(payload_bytes);
+    return true;
+  }
+  [[nodiscard]] constexpr size_t records() const noexcept { return records_; }
+  [[nodiscard]] constexpr size_t bytes() const noexcept { return bytes_; }
+
+private:
+  size_t records_ = 0;
+  size_t bytes_ = 0;
+};
 
 struct canonical_tick_record_view {
   uint64_t origin_peer = 0; // logical peer within the session, not a socket handle
@@ -53,6 +99,7 @@ enum class canonical_tick_wire_status : uint8_t {
   duplicate_input,
   capacity_exceeded,
   trailing_bytes,
+  unsorted_input,
 };
 
 namespace detail {
@@ -62,13 +109,18 @@ namespace detail {
          value.payload.size() <= canonical_tick_max_payload_bytes;
 }
 
-[[nodiscard]] inline bool canonical_input_duplicate(
+// Record `index` against its predecessor: equal pair = duplicate, descending = unsorted.
+[[nodiscard]] inline canonical_tick_wire_status canonical_input_order(
   const std::span<const canonical_tick_record_view> records, const size_t index) noexcept {
-  for (size_t i = 0; i < index; ++i) {
-    if (records[i].origin_peer == records[index].origin_peer &&
-        records[i].input_sequence == records[index].input_sequence) return true;
-  }
-  return false;
+  if (index == 0) return canonical_tick_wire_status::ok;
+  const auto& prev = records[index - 1];
+  const auto& cur = records[index];
+  if (prev.origin_peer == cur.origin_peer && prev.input_sequence == cur.input_sequence)
+    return canonical_tick_wire_status::duplicate_input;
+  if (prev.origin_peer > cur.origin_peer ||
+      (prev.origin_peer == cur.origin_peer && prev.input_sequence > cur.input_sequence))
+    return canonical_tick_wire_status::unsorted_input;
+  return canonical_tick_wire_status::ok;
 }
 
 } // namespace detail
@@ -80,12 +132,12 @@ namespace detail {
   out.clear();
   if (tick == 0) return canonical_tick_wire_status::invalid_header;
   if (records.size() > canonical_tick_max_records) return canonical_tick_wire_status::too_many_records;
-  size_t required = canonical_tick_header_bytes +
-                    (state_root ? canonical_tick_root_bytes : 0);
+  size_t required = canonical_tick_base_bytes(state_root.has_value());
   for (size_t i = 0; i < records.size(); ++i) {
     if (!detail::canonical_record_valid(records[i])) return canonical_tick_wire_status::invalid_record;
-    if (detail::canonical_input_duplicate(records, i)) return canonical_tick_wire_status::duplicate_input;
-    required += canonical_tick_record_header_bytes + records[i].payload.size();
+    if (const auto order = detail::canonical_input_order(records, i); order != canonical_tick_wire_status::ok)
+      return order;
+    required += canonical_tick_record_bytes(records[i].payload.size());
   }
   if (required > canonical_tick_max_bytes) return canonical_tick_wire_status::too_large;
   if (out.capacity() < required) return canonical_tick_wire_status::buffer_too_small;
@@ -144,8 +196,9 @@ namespace detail {
       return canonical_tick_wire_status::invalid_record;
     staged[i].payload = reader.take(length);
     if (!reader.good()) return canonical_tick_wire_status::truncated;
-    if (detail::canonical_input_duplicate(std::span(staged).first(i + 1), i))
-      return canonical_tick_wire_status::duplicate_input;
+    if (const auto order = detail::canonical_input_order(std::span(staged).first(i + 1), i);
+        order != canonical_tick_wire_status::ok)
+      return order;
   }
   if (reader.position() != reader.size()) return canonical_tick_wire_status::trailing_bytes;
   for (size_t i = 0; i < count; ++i) storage[i] = staged[i];

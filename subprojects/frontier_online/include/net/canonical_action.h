@@ -22,9 +22,58 @@
 
 namespace frontier_online::net {
 
-inline constexpr uint8_t canonical_action_revision = 1;
+inline constexpr uint8_t canonical_action_revision = 3;
 inline constexpr uint8_t canonical_action_spawn_food = 1;
+inline constexpr uint8_t canonical_action_peer_joined = 2;
+inline constexpr uint8_t canonical_action_peer_left = 3;
 inline constexpr size_t canonical_food_action_bytes = 1 + 8 + 8 + 8;
+inline constexpr size_t canonical_join_action_bytes = 1;
+inline constexpr size_t canonical_leave_action_bytes = 1;
+
+// Присоединение — решение авторитета, а не предложение участника, но едет тем же конвертом:
+// origin_peer = присоединившийся, input_sequence = этот зарезервированный номер. Участник до него
+// не доберётся (полный номер расширяется из 16 бит от единицы), поэтому (peer, sequence) остаётся
+// уникальной парой, и canonical_tick_wire не нужно знать о записях авторитета. В тике присоединения
+// других записей этого peer нет: авторитет принимает его предложения только на тики после него.
+inline constexpr uint64_t canonical_join_sequence = UINT64_MAX;
+// Уход — тоже решение авторитета: участник, чей игрок есть в мире, больше не обслуживается
+// (закрыл соединение, отключён за нарушения или за отставание). Его игрок исчезает у всех на одной
+// границе тика. В тике ухода других записей этого peer нет: авторитет снимает его ещё не
+// записанные предложения. Номер свой, не номер присоединения: пара (peer, sequence) уникальна, а
+// в порядке записей тика (по peer, затем по номеру) уход идёт после действий этого peer.
+inline constexpr uint64_t canonical_leave_sequence = UINT64_MAX - 1;
+
+// Номера, которых у предложений участника не бывает.
+[[nodiscard]] constexpr bool reserved_sequence(const uint64_t input_sequence) noexcept {
+  return input_sequence == canonical_join_sequence || input_sequence == canonical_leave_sequence;
+}
+
+enum class canonical_action_kind : uint8_t { invalid, spawn_food, peer_joined, peer_left };
+
+// Род записи по первому байту и (для решений авторитета) по зарезервированному номеру:
+// присоединение или уход с чужим номером, пища с зарезервированным номером — invalid.
+[[nodiscard]] inline canonical_action_kind classify(const std::span<const std::byte> bytes,
+                                                    const uint64_t input_sequence) noexcept {
+  if (bytes.empty()) return canonical_action_kind::invalid;
+  const uint8_t kind = uint8_t(bytes.front());
+  if (kind == canonical_action_peer_joined && bytes.size() == canonical_join_action_bytes &&
+      input_sequence == canonical_join_sequence)
+    return canonical_action_kind::peer_joined;
+  if (kind == canonical_action_peer_left && bytes.size() == canonical_leave_action_bytes &&
+      input_sequence == canonical_leave_sequence)
+    return canonical_action_kind::peer_left;
+  if (kind == canonical_action_spawn_food && !reserved_sequence(input_sequence))
+    return canonical_action_kind::spawn_food;
+  return canonical_action_kind::invalid;
+}
+
+[[nodiscard]] inline std::vector<std::byte> encode_join() {
+  return {std::byte{canonical_action_peer_joined}};
+}
+
+[[nodiscard]] inline std::vector<std::byte> encode_leave() {
+  return {std::byte{canonical_action_peer_left}};
+}
 
 struct canonical_food_action {
   double x = 0;

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -653,4 +654,38 @@ TEST_CASE("originator both noise paths agree with each other bit for bit") {
   // сойдутся бит в бит, а не «примерно». Проверка точная, потому что измерение это позволяет.
   CHECK(differing == 0);
   CHECK(worst == 0.0);
+}
+
+// ЭТАЛОН С ДРУГОЙ МАШИНЫ. Мир, который клиент и сервер считают каждый сам (земля frontier_online),
+// совпадает только если одно дерево с одним зерном даёт одни числа на любой платформе. STRICT_FP
+// обещает это между наборами SIMD одной сборки; между компиляторами не обещает никто, поэтому
+// сверка идёт с числами, снятыми GCC/Linux (x86-64, наборы SSE2..AVX2 побитово одинаковы).
+// Параметры — как у шага elevation frontier_online: черта 14 тайлов, мировое смещение чанка.
+TEST_CASE("originator noise_grid matches the reference numbers of another platform") {
+  const auto registry = make_registry();
+  const auto* noise = registry.find("noise_grid");
+  REQUIRE(noise != nullptr);
+
+  originator::parameters params;
+  params.set_string("tree", std::string(node_tree));
+  params.set_number("width", double(grid_width));
+  params.set_number("frequency", 1.0 / 14.0);
+  params.set_number("x_offset", 16.0);
+  params.set_number("y_offset", 48.0);
+
+  auto cells = make_cells(originator::storage_kind::soa);
+  const std::vector<originator::field_ref> out{writable(cells, "height")};
+  originator::dispatch(*noise, {}, out, params, 20260912, 0, grid_count, "terrain", nullptr);
+  const auto height = cells.field(cells.find_field("height"));
+
+  double sum = 0.0;
+  for (size_t i = 0; i < grid_count; ++i) {
+    sum += height.get(i);
+  }
+  INFO(std::format("sum={:.17g} [0]={:.9g} [12345]={:.9g} [last]={:.9g}", sum, height.get(0), height.get(12345),
+                   height.get(grid_count - 1)));
+  CHECK(sum == doctest::Approx(33836.103930696845).epsilon(1e-7));
+  CHECK(height.get(0) == doctest::Approx(0.224997014).epsilon(1e-6));
+  CHECK(height.get(12345) == doctest::Approx(0.199767858).epsilon(1e-6));
+  CHECK(height.get(grid_count - 1) == doctest::Approx(1.0240252).epsilon(1e-6));
 }

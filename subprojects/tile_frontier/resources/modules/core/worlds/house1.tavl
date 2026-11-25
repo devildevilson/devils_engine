@@ -5,7 +5,14 @@ chunk_size = 16
 chunks_x = 4
 chunks_y = 4
 actor_count = 4096
-camera_half_width = 8.0
+camera = {
+  projection = "orthographic"
+  half_width = 8.0
+  controller = "pan"
+  pan_speed = 1.5
+  limits = "world"
+  body = "none"
+}
 actor_script = "scripts/actor_is_hungry"
 fsm_prefix = "fsm"
 goap_prefix = "goap"

@@ -45,7 +45,10 @@ struct font_raii {
 
 void font_atlas_packer::setup_font(std::string path) {
   auto data = file_io::read<uint8_t>(path);
-  fonts_data.push_back(std::make_pair(std::move(data), std::move(path)));
+  if (!data) {
+    utils::error{}("visage: font '{}' cannot be read: {}", path, file_io::describe(data.error()));
+  }
+  fonts_data.push_back(std::make_pair(std::move(*data), std::move(path)));
 }
 
 void font_atlas_packer::setup_font(std::vector<uint8_t> data, std::string hint) {

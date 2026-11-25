@@ -5,7 +5,7 @@
 #include <devils_engine/thread/mailbox.h>
 #include <devils_engine/thread/spsc_queue.h>
 
-#include "messages.h"
+#include "core/messages.h"
 
 namespace frontier_online {
 namespace core {

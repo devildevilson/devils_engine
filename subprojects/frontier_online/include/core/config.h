@@ -1,11 +1,11 @@
 #ifndef FRONTIER_ONLINE_CORE_CONFIG_H
 #define FRONTIER_ONLINE_CORE_CONFIG_H
 
-#include "devils_engine/utils/log.h"
-
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include "core/world_rules.h" // time_config: правила времени мира (причинное ядро)
 
 namespace devils_engine {
 namespace utils {
@@ -60,38 +60,6 @@ struct render_config {
 struct metrics_config {
   bool enabled = true;
   uint32_t log_interval_ms = 1000;
-};
-
-struct calendar_config {
-  // game_time: дата следует за масштабированной непрерывной шкалой; turn: меняется только с ходом.
-  // Это проектная/topological настройка, а не runtime option.
-  std::string source = "game_time";
-  uint32_t hours_per_day = 24;
-  std::vector<uint32_t> days_in_month;
-
-  // Если days_in_month пуст, используется start_absolute_day; иначе calendar epoch ниже.
-  uint64_t start_absolute_day = 0;
-  uint64_t start_year = 0;
-  uint32_t start_month = 1;
-  uint32_t start_day = 1;
-  uint32_t start_hour = 0;
-  uint32_t start_minute = 0;
-  uint32_t start_second = 0;
-
-  // Вклад одного хода в дату при source=turn. Можно выразить, например, сутки или месяц.
-  uint64_t seconds_per_turn = 0;
-  uint64_t days_per_turn = 1;
-  uint64_t months_per_turn = 0;
-  uint64_t years_per_turn = 0;
-};
-
-// Масштаб gameplay timeline: game_seconds игровых секунд проходят за real_seconds
-// номинальных реальных секунд. Неквалифицированные длительности в конфигах считаются
-// реальными; игровые/календарные/turn-длительности должны быть названы явно.
-struct time_config {
-  uint32_t game_seconds = 1;
-  uint32_t real_seconds = 1;
-  calendar_config calendar;
 };
 
 // Единственная project-config → engine-calendar граница. Вызывается при старте; calendar source
@@ -164,7 +132,9 @@ struct app_config {
 };
 
 // Player-facing settings.tavl; logging/metrics сохраняются отдельно в debug.tavl.
-// Project/engine topology (simulation/render/time/create_on_start) остаётся в bundled engine/project documents.
+// Топологию движка (simulation/render) и правила времени мира проект задаёт в коде
+// (runtime_bootstrap, world_rules.h): документы config/engine и config/project — предварительные
+// числа движка для тестов и площадок, в проект они не копируются.
 struct user_window_config {
   uint32_t width = 1280;
   uint32_t height = 720;
@@ -181,7 +151,7 @@ struct user_settings {
 // Конфиг грузится как demiurg-ресурс (app_config_resource) из движкового реестра —
 // см. simulation::init. Прежний load_app_config(file_io) удалён (demiurg 1a, Q3).
 
-// Резолв путей относительно project_folder(): абсолютные ('/...') оставляем как есть.
+// Резолв путей ВНУТРИ project_folder() (utils::root): абсолютный путь или `..` за корень — ошибка.
 std::string make_project_path(std::string path);
 // То же, но гарантирует завершающий '/' (нужно парсеру render-конфига).
 std::string make_project_folder_path(std::string path);

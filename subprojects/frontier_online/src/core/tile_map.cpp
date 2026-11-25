@@ -3,7 +3,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-#include "tile_map.h"
+#include "core/tile_map.h"
 
 // Реализация презентационной стороны карты. Модель земли (resize/apply_chunk/генерация) живёт в
 // terrain.cpp и сюда не заглядывает.
@@ -11,22 +11,17 @@
 namespace frontier_online {
 namespace core {
 
-glm::mat4 camera2d::view_proj() const {
-  // Ортопроекция мирового прямоугольника во view rect камеры. Z игнорируем (плоская карта),
-  // берём широкий диапазон [-1,1]. Соглашение clip-пространства (Y вниз / depth 0..1) под
-  // конкретный бэкенд painter ещё предстоит сверить на render-стороне — это заготовка.
-  const glm::vec2 mn = view_min();
-  const glm::vec2 mx = view_max();
-  return glm::ortho(mn.x, mx.x, mn.y, mx.y, -1.0f, 1.0f);
+tile_span visible_tiles(const camera2d& cam, const tile_grid& grid, const float margin_tiles) {
+  return visible_tiles(devils_engine::simul::view_bounds{cam.view_min(), cam.view_max()}, grid, margin_tiles);
 }
 
-tile_span visible_tiles(const camera2d& cam, const tile_grid& grid, const float margin_tiles) {
+tile_span visible_tiles(const devils_engine::simul::view_bounds& view, const tile_grid& grid, const float margin_tiles) {
   if (grid.width == 0 || grid.height == 0 || grid.tile_size <= 0.0f) {
     return {};
   }
 
-  const glm::vec2 mn = cam.view_min();
-  const glm::vec2 mx = cam.view_max();
+  const glm::vec2 mn = view.min;
+  const glm::vec2 mx = view.max;
   const float inv = 1.0f / grid.tile_size;
 
   // мировой AABB камеры -> индексы тайлов; floor для нижней границы, ceil для верхней,
@@ -45,6 +40,14 @@ tile_span visible_tiles(const camera2d& cam, const tile_grid& grid, const float 
   const uint32_t y1 = uint32_t(std::clamp(fy1, 0.0f, h));
 
   return tile_span{x0, y0, x1, y1};
+}
+
+glm::uvec2 chunks_covering(const glm::vec2 box_max, const uint32_t chunk_size, const float tile_size) {
+  const float chunk_extent = float(chunk_size) * tile_size;
+  const auto over = [chunk_extent](const float edge) {
+    return uint32_t(std::max(1.0f, std::ceil(edge / chunk_extent)));
+  };
+  return {over(box_max.x), over(box_max.y)};
 }
 
 } // namespace core

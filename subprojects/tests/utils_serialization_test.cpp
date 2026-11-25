@@ -1,9 +1,11 @@
 #include <array>
 #include <map>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 #include <doctest/doctest.h>
+#include <gtl/phmap.hpp>
 #include <devils_engine/utils/serialization.h>
 #include <devils_engine/utils/serialization_sink.h>
 #include <devils_engine/utils/state_schema.h>
@@ -200,4 +202,36 @@ TEST_CASE("generic envelope is transactional and bounded") {
   REQUIRE(serial::unseal(serial::seal(empty), decoded, &preview));
   CHECK(decoded.empty());
   CHECK(preview.empty());
+}
+
+TEST_CASE("hash sets serialize in value order whatever their capacity and history") {
+  // Порядок обхода хеш-множества — свойство таблицы: у std::unordered_set он свой в каждой
+  // стандартной библиотеке, у gtl зависит от ёмкости и истории вставок. Байты от него не зависят.
+  std::unordered_set<std::uint32_t> forward;
+  std::unordered_set<std::uint32_t> backward;
+  backward.reserve(4096);
+  for (std::uint32_t i = 0; i < 200; ++i) {
+    forward.insert(i * 2654435761u);
+    backward.insert((199 - i) * 2654435761u);
+  }
+  gtl::flat_hash_set<std::uint32_t> grown(forward.begin(), forward.end());
+  gtl::flat_hash_set<std::uint32_t> erased(backward.begin(), backward.end());
+  for (std::uint32_t i = 0; i < 1000; ++i) erased.insert(0x80000000u + i);
+  for (std::uint32_t i = 0; i < 1000; ++i) erased.erase(0x80000000u + i);
+
+  const auto bytes_of = [](const auto& set) {
+    std::vector<std::byte> bytes;
+    serial::writer output{bytes};
+    serial::serialize(output, set);
+    return bytes;
+  };
+  const auto reference = bytes_of(forward);
+  CHECK(bytes_of(backward) == reference);
+  CHECK(bytes_of(grown) == reference);
+  CHECK(bytes_of(erased) == reference);
+
+  std::unordered_set<std::uint32_t> restored;
+  serial::reader input{reference};
+  serial::deserialize(input, restored);
+  CHECK(restored == forward);
 }

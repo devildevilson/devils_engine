@@ -188,20 +188,35 @@ void check_checkpoint_transfer_contract() {
   CHECK(!fnet::decode(bytes, decoded));
   CHECK(decoded.total_bytes == fnet::max_checkpoint_bytes);
 
-  std::array<std::byte, 4> document{};
+  devils_engine::network::document_assembly document;
+  CHECK(!document.begin(0, fnet::max_checkpoint_bytes));
+  CHECK(!document.begin(fnet::max_checkpoint_bytes + 1, fnet::max_checkpoint_bytes)); // до выделения
+  CHECK(!document.started());
+  CHECK(document.begin(4, fnet::max_checkpoint_bytes));
   const std::array<std::byte, 2> first{std::byte{1}, std::byte{2}};
   const std::array<std::byte, 2> last{std::byte{3}, std::byte{4}};
-  uint32_t received = 0;
-  CHECK(fnet::append_checkpoint_chunk(document, received, {0, first}));
-  CHECK(received == 2);
-  CHECK(!fnet::append_checkpoint_chunk(document, received, {0, first})); // duplicate
-  CHECK(!fnet::append_checkpoint_chunk(document, received, {1, last})); // overlap
-  CHECK(!fnet::append_checkpoint_chunk(document, received, {3, last})); // hole
-  CHECK(received == 2);
-  CHECK(document[2] == std::byte{0});
-  CHECK(fnet::append_checkpoint_chunk(document, received, {2, last}));
-  CHECK(received == document.size());
-  CHECK(document[3] == std::byte{4});
+  CHECK(document.append_in_order({0, first}));
+  CHECK(document.received() == 2);
+  CHECK(!document.append_in_order({0, first})); // duplicate
+  CHECK(!document.append_in_order({1, last})); // overlap
+  CHECK(!document.append_in_order({3, last})); // hole
+  CHECK(document.received() == 2);
+  CHECK(document.bytes()[2] == std::byte{0});
+  CHECK(!document.complete());
+  CHECK(document.append_in_order({2, last}));
+  CHECK(document.complete());
+  CHECK(document.bytes()[3] == std::byte{4});
+
+  // Кусок на проводе: пустой и больше бюджета не кодируются, хвост после payload не декодируется.
+  std::vector<std::byte> wire;
+  CHECK(!fnet::encode_chunk(0, {}, wire));
+  CHECK(fnet::encode_chunk(7, first, wire));
+  fnet::chunk_view view;
+  CHECK(fnet::decode_chunk(wire, view));
+  CHECK(view.offset == 7);
+  CHECK(view.payload.size() == 2);
+  wire.push_back(std::byte{0});
+  CHECK(!fnet::decode_chunk(wire, view));
 }
 
 void check_join_confirmation_contract() {
@@ -276,6 +291,33 @@ void check_protocol_v4_contract() {
   forged.assign(fnet::canonical_food_action_bytes, std::byte{0});
   CHECK(!fnet::decode(forged, action)); // нулевой вид и чужой префаб
 
+  // Род записи: присоединение — один байт и ТОЛЬКО с зарезервированным номером; пища с этим
+  // номером, лишний байт и пустая запись — invalid.
+  const auto join = fnet::encode_join();
+  CHECK(join.size() == fnet::canonical_join_action_bytes);
+  CHECK(fnet::classify(join, fnet::canonical_join_sequence) == fnet::canonical_action_kind::peer_joined);
+  CHECK(fnet::classify(join, 3) == fnet::canonical_action_kind::invalid);
+  std::vector<std::byte> food_bytes;
+  CHECK(fnet::encode(fnet::canonical_food_action{1.0, 2.0}, food_bytes));
+  CHECK(fnet::classify(food_bytes, 3) == fnet::canonical_action_kind::spawn_food);
+  CHECK(fnet::classify(food_bytes, fnet::canonical_join_sequence) == fnet::canonical_action_kind::invalid);
+  auto long_join = join;
+  long_join.push_back(std::byte{0});
+  CHECK(fnet::classify(long_join, fnet::canonical_join_sequence) == fnet::canonical_action_kind::invalid);
+  CHECK(fnet::classify({}, fnet::canonical_join_sequence) == fnet::canonical_action_kind::invalid);
+  // Уход — так же: один байт и только со СВОИМ зарезервированным номером; номера присоединения и
+  // ухода не взаимозаменяемы, пища ни с одним из них не читается.
+  const auto leave = fnet::encode_leave();
+  CHECK(leave.size() == fnet::canonical_leave_action_bytes);
+  CHECK(fnet::classify(leave, fnet::canonical_leave_sequence) == fnet::canonical_action_kind::peer_left);
+  CHECK(fnet::classify(leave, fnet::canonical_join_sequence) == fnet::canonical_action_kind::invalid);
+  CHECK(fnet::classify(join, fnet::canonical_leave_sequence) == fnet::canonical_action_kind::invalid);
+  CHECK(fnet::classify(leave, 3) == fnet::canonical_action_kind::invalid);
+  CHECK(fnet::classify(food_bytes, fnet::canonical_leave_sequence) == fnet::canonical_action_kind::invalid);
+  auto long_leave = leave;
+  long_leave.push_back(std::byte{0});
+  CHECK(fnet::classify(long_leave, fnet::canonical_leave_sequence) == fnet::canonical_action_kind::invalid);
+
   fnet::join_report report;
   report.status = fnet::join_status::world_declaration_malformed;
   CHECK(fnet::encode(report, bytes));
@@ -304,11 +346,12 @@ void check_protocol_v4_contract() {
   CHECK(fnet::decode_player_intent(proposal, restored));
   CHECK(restored.payload.spawn.target.x == 100000.5);
   CHECK(restored.payload.spawn.target.y == -70000.25);
-  CHECK(fnet::protocol_version == 4);
+  CHECK(fnet::protocol_version == 5);
   // Замороженное значение: отпечаток объявления меняется только вместе с ревизией схемы.
   // murmur3_32 по {revision 2, kind 1, axes 2, absolute 1, shift 6, fraction 10,
-  // payload revision 1, payload kind 1, payload bytes 25}.
-  CHECK(fnet::player_intent_schema_fingerprint == 0x3fd8afa0u);
+  // payload revision 3, food kind 1, food bytes 25, join kind 2, join bytes 1, leave kind 3,
+  // leave bytes 1}.
+  CHECK(fnet::player_intent_schema_fingerprint == 0x1680f989u);
 }
 
 // Один прогон присоединения. Мир авторитета тикает всё это время: присоединяющийся получает
@@ -388,8 +431,8 @@ int main() {
 
   // ДВА НЕЗАВИСИМЫХ ЭКЗЕМПЛЯРА содержимого — как две установки. Общий объект скрыл бы ровно ту
   // беду, ради которой считается отпечаток.
-  fo::causal_content authority_content(FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT);
-  fo::causal_content follower_content(FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT);
+  fo::causal_content authority_content(frontier_online::core::project_modules_root());
+  fo::causal_content follower_content(frontier_online::core::project_modules_root());
   CHECK(authority_content.manifest().root == follower_content.manifest().root);
   CHECK(authority_content.manifest().files > 0);
   std::printf("causal content: %zu files, %zu bytes, root %s\n",

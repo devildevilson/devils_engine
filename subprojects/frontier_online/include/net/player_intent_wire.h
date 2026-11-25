@@ -40,7 +40,7 @@ inline constexpr uint8_t player_intent_revision = 2;
 // revision bump would let two builds agree in the handshake and then read one
 // bundle in two ways.
 inline constexpr uint32_t player_intent_schema_fingerprint = [] {
-  const std::array<std::byte, 9> bytes{
+  const std::array<std::byte, 13> bytes{
     std::byte{player_intent_revision},
     std::byte{spawn_food_kind},
     std::byte{spawn_food_layout.axes},
@@ -49,7 +49,11 @@ inline constexpr uint32_t player_intent_schema_fingerprint = [] {
     std::byte{player_intent_axis.fraction_bits},
     std::byte{canonical_action_revision},
     std::byte{canonical_action_spawn_food},
-    std::byte{uint8_t(canonical_food_action_bytes)}};
+    std::byte{uint8_t(canonical_food_action_bytes)},
+    std::byte{canonical_action_peer_joined},
+    std::byte{uint8_t(canonical_join_action_bytes)},
+    std::byte{canonical_action_peer_left},
+    std::byte{uint8_t(canonical_leave_action_bytes)}};
   return devils_engine::utils::murmur_hash3_32(std::span<const std::byte>(bytes));
 }();
 

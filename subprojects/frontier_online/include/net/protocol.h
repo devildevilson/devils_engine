@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <devils_engine/network/credential.h>
+#include <devils_engine/network/document_chunks.h>
 #include <devils_engine/network/session_wire.h>
 
 #include "core/causal_content.h"
@@ -26,7 +28,7 @@ namespace frontier_online::net {
 namespace network = devils_engine::network;
 
 // Версия протокола стенда. Растёт при ЛЮБОМ изменении байтов ниже.
-inline constexpr uint32_t protocol_version = 4;
+inline constexpr uint32_t protocol_version = 5;
 
 // Числовой профиль. Пока это «родной float, профиль не зафиксирован»: NUM-01..04 ещё не пройдены,
 // поэтому совпадение поля означает только, что обе стороны ЗАЯВИЛИ одно и то же, и не является
@@ -48,6 +50,9 @@ enum class message : uint8_t {
   join_confirmed = 5,    // авторитет -> клиент, live mode: отчёт принят
   live_caught_up = 6,    // авторитет -> клиент: все bundles до этого тика уже в control lane
   session_terminated = 7, // авторитет -> клиент, управляющая полоса: почему обслуживание прекращено
+  reconnect_grant = 8,    // авторитет -> клиент, live mode: ключ повторного входа
+  resume_plan = 9,        // авторитет -> клиент, после рукопожатия с продолжением: откуда догонять
+  leave = 10,             // клиент -> авторитет, live mode: уходит сам (слот освобождается сразу)
 };
 
 // Budget for the complete causal document, not for one GNS message. The
@@ -104,17 +109,10 @@ struct checkpoint_begin {
 [[nodiscard]] bool encode_chunk(uint32_t offset, std::span<const std::byte> payload,
                                 std::vector<std::byte>& out);
 
-struct chunk_view {
-  uint32_t offset = 0;
-  std::span<const std::byte> payload;
-};
+// Формат куска и сборка документа по порядку — network/document_chunks.h.
+using chunk_view = devils_engine::network::document_chunk_view;
 
 [[nodiscard]] bool decode_chunk(std::span<const std::byte> bytes, chunk_view& out);
-
-// Chunks travel on one reliable ordered lane and must cover the document once,
-// in order. A duplicate, overlap or hole refuses without modifying the output.
-[[nodiscard]] bool append_checkpoint_chunk(std::span<std::byte> document, uint32_t& received,
-                                           const chunk_view& chunk) noexcept;
 
 // ОТЧЁТ О ПРИСОЕДИНЕНИИ. Клиент говорит, чем кончилось: каким корнем обернулась загрузка и совпал
 // ли мир. Нужен затем, чтобы сравнение двух процессов делал АВТОРИТЕТ, а не человек, который
@@ -166,6 +164,66 @@ struct catchup_marker {
 
 [[nodiscard]] bool encode(const catchup_marker& value, std::vector<std::byte>& out);
 [[nodiscard]] bool decode(std::span<const std::byte> bytes, catchup_marker& out);
+
+// КЛЮЧ ПОВТОРНОГО ВХОДА. После подтверждения присоединения (и после каждого продолжения) авторитет
+// выдаёт участнику билет на ЕГО сессию (у каждого участника своя) и выведенный из неё секрет
+// (`network/credential.h`); соединение GNS шифровано, секрет едет один раз. Билет переиздаётся до
+// истечения: долгая сессия не держится на одном билете. `hold_ms` — сколько авторитет держит слот
+// после обрыва: столько клиент и пытается вернуться тем же игроком.
+struct reconnect_grant {
+  uint64_t session = 0;
+  uint64_t logical_peer = 0;
+  network::reconnect_credential credential;
+  network::credential_mac secret{};
+  uint32_t hold_ms = 0;
+};
+
+// Издатель билетов frontier и MAC-политика `network/credential.h`: HMAC-SHA256 (utils/hmac.h).
+// Ключ авторитета — случайный на процесс (перезапуск сервера делает все билеты чужими: это новый
+// вход). У клиента ключа нет: ему нужен только `keyed_mac` выведенного секрета.
+inline constexpr uint32_t credential_issuer = UINT32_C(0x31524f46); // "FOR1"
+
+struct credential_policy {
+  const network::credential_mac* authority_key = nullptr;
+  [[nodiscard]] bool authority_mac(uint32_t issuer, std::span<const std::byte> message,
+                                   network::credential_mac& out) const;
+  [[nodiscard]] bool keyed_mac(const network::credential_mac& key, std::span<const std::byte> message,
+                               network::credential_mac& out) const;
+};
+
+[[nodiscard]] bool encode(const reconnect_grant& value, std::vector<std::byte>& out);
+[[nodiscard]] bool decode(std::span<const std::byte> bytes, reconnect_grant& out);
+
+// ПЛАН ПРОДОЛЖЕНИЯ — первое проектное сообщение после рукопожатия с продолжением, вместо объявления
+// мира (мир у клиента уже есть). `journal`: клиент стоит на своём подтверждённом тике (`tick`/`root`
+// — его же якорь, авторитет нашёл этот корень в своей истории), дальше идут тики tick+1..N.
+// `checkpoint`: по объёмной полосе едет снимок тика `tick` из кольца авторитета, затем тики
+// tick+1..N. В обоих случаях клиент отвечает обычным `join_report` и ждёт `join_confirmed`.
+enum class resume_mode : uint8_t {
+  journal = 1,
+  checkpoint = 2,
+};
+
+struct resume_plan {
+  uint64_t session = 0;
+  uint64_t logical_peer = 0;
+  resume_mode mode = resume_mode::journal;
+  uint64_t tick = 0;
+  uint64_t root = 0;
+};
+
+[[nodiscard]] bool encode(const resume_plan& value, std::vector<std::byte>& out);
+[[nodiscard]] bool decode(std::span<const std::byte> bytes, resume_plan& out);
+
+// Корень frontier — u64 (murmur64 по разделам состояния), а поле якоря в рукопожатии — 32-байтный
+// digest. Корень едет в первых 8 байтах (little-endian), остальные — нули; декодер требует нули.
+[[nodiscard]] devils_engine::utils::digest anchor_digest(uint64_t root) noexcept;
+[[nodiscard]] bool anchor_root(const devils_engine::utils::digest& digest, uint64_t& root) noexcept;
+
+// УХОД. Добровольный уход отличается от обрыва только словом клиента: закрытое соединение без него —
+// обрыв, и слот держится окно удержания. Сообщение — один байт типа; авторитет отвечает закрытием.
+[[nodiscard]] bool encode_leave(std::vector<std::byte>& out);
+[[nodiscard]] bool is_leave(std::span<const std::byte> bytes) noexcept;
 
 // Payload канонической записи (`canonical_food_action`) — в "net/canonical_action.h".
 

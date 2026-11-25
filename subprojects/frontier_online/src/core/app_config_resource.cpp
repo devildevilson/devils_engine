@@ -1,10 +1,9 @@
-#include "devils_engine/utils/log.h"
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/simul/configuration_layers.h>
 
-#include "app_config_resource.h"
+#include "core/app_config_resource.h"
 
 namespace frontier_online {
 namespace core {

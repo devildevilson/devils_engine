@@ -66,3 +66,7 @@
   name = blit_to_swapchain
   command = "blit albedo_res swapchain_image"
 }
+{
+  name = copy_frame_to_readback
+  command = "copy albedo_res frame_readback"
+}

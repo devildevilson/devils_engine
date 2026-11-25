@@ -73,6 +73,38 @@ inline sin_cos_result sin_cos(const float angle) noexcept {
 inline float sin(const float angle) noexcept { return sin_cos(angle).sine; }
 inline float cos(const float angle) noexcept { return sin_cos(angle).cosine; }
 
+// DOUBLE: порт musl 1.2.5 (fdlibm/FreeBSD msun и ARM optimized-routines), deterministic_math.cpp.
+// Одни и те же биты на всех платформах, в отличие от std::sin и прочих: libm у glibc меняет
+// последние биты между версиями, у MSVC свои реализации. Точность — как у musl (< 1 ULP), полный
+// диапазон аргументов, включая большие углы. ±0, ±inf и переполнения — как у libm; любой NaN на
+// выходе — один canonical NaN. Float-перегрузки выше — другой алгоритм (Jolt, ограниченный угол):
+// float-аргумент выбирает их, double-аргумент — эти.
+inline constexpr std::uint64_t canonical_nan_bits = UINT64_C(0x7ff8000000000000);
+
+double sin(double x) noexcept;
+double cos(double x) noexcept;
+double tan(double x) noexcept;
+double asin(double x) noexcept;
+double acos(double x) noexcept;
+double atan(double x) noexcept;
+double atan2(double y, double x) noexcept;
+double exp(double x) noexcept;
+double pow(double x, double y) noexcept;
+double hypot(double x, double y) noexcept;
+double exp2(double x) noexcept;
+double expm1(double x) noexcept;
+double log(double x) noexcept;
+double log2(double x) noexcept;
+double log10(double x) noexcept;
+double log1p(double x) noexcept;
+double cbrt(double x) noexcept;
+double sinh(double x) noexcept;
+double cosh(double x) noexcept;
+double tanh(double x) noexcept;
+double asinh(double x) noexcept;
+double acosh(double x) noexcept;
+double atanh(double x) noexcept;
+
 } // namespace devils_engine::utils::deterministic
 
 #endif

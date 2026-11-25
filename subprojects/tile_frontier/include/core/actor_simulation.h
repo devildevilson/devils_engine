@@ -16,6 +16,7 @@
 #include <devils_engine/catalogue/phase.h>    // passive phase_descriptor read model for tooling
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/goap_resource.h>
+#include <devils_engine/acumen/goap_system.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
 #include <devils_engine/act/intent.h>
@@ -251,7 +252,19 @@ struct sound_emit {
   glm::vec2 pos{0.0f, 0.0f};
 };
 
-class actor_batch {
+// Слот хвоста тика: читатель мира, который исполняется ПАРАЛЛЕЛЬНО с построением следующего kD-дерева
+// (оба только читают позиции конца тика). Причинная часть знает только «позвать с миром и тиком» и
+// «сколько записей произведено»; что читатель делает с миром — его дело. Клиент кладёт сюда
+// actor_batch (кадр рендера), стенд без кадра — nullptr. Читатель обязан быть только читателем: он
+// работает параллельно с деревом и не имеет права менять мир.
+class tick_tail_reader {
+public:
+  virtual ~tick_tail_reader() = default;
+  virtual void read(const devils_engine::aesthetics::world& world, uint64_t tick) = 0;
+  virtual uint32_t produced() const noexcept = 0;
+};
+
+class actor_batch final : public tick_tail_reader {
 public:
   instance_layout::match_result bind(const std::string_view& layout = "v2ui1c4v1") {
     return intent_.bind(layout);
@@ -261,7 +274,11 @@ public:
   }
 
   // tick нужен для анимации (синусоида масштаба по текущему состоянию FSM, выводимая, не хранимая).
-  void build(const devils_engine::aesthetics::world& world, uint64_t tick);
+  void read(const devils_engine::aesthetics::world& world, uint64_t tick) override;
+
+  uint32_t produced() const noexcept override {
+    return count();
+  }
 
   std::span<const actor_instance> instances() const noexcept {
     return instances_;
@@ -320,7 +337,7 @@ struct actor_brain_runtime {
   devils_engine::act::registry functions;
   devils_engine::acumen::registry goaps;
   devils_engine::mood::registry fsms;
-  std::vector<std::pair<uint64_t, std::string>> goap_origins;
+  devils_engine::acumen::goap_function_names goap_names; // дедуп имён act-функций между мозгами
   devils_engine::prefab::prefab_registry<spawn_args> prefabs;
 };
 
@@ -360,9 +377,10 @@ public:
   // — целочисленная проекция этого fixed step в game-домен (пауза даёт 0, scale её меняет).
   // Tick обязан монотонно расти, но может иметь разрыв: paused/loading session ticks не исполняют
   // gameplay. Накопленный game_now восстанавливается из timeline-секции общего checkpoint.
+  // tail — необязательный читатель хвоста тика (кадр рендера); nullptr — тик без кадра.
   actor_metrics update(devils_engine::utils::simulation_tick tick,
                        devils_engine::utils::game_duration game_delta,
-                       actor_batch& batch,
+                       tick_tail_reader* tail,
                        devils_engine::thread::atomic_pool& pool);
 
   devils_engine::utils::simulation_tick simulation_now() const noexcept {

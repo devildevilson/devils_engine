@@ -2,6 +2,9 @@
 #include "devils_engine/utils/log.h"
 #include "core.h"
 #include "time-utils.hpp"
+#include <chrono>
+#include <cstdint>
+#include <system_error>
 
 namespace devils_engine {
 namespace utils {
@@ -36,12 +39,25 @@ unix_timestamp_t timestamp() noexcept {
 }
 
 unix_timestamp_t file_timestamp(const fs::directory_entry& e) noexcept {
-  if (!e.exists()) {
+  // noexcept: только перегрузки с error_code — бросающие exists()/last_write_time() здесь были бы terminate.
+  std::error_code ec;
+  if (!e.exists(ec) || ec) {
     return 0;
   }
-  const auto tp = e.last_write_time();
-  const auto tp2 = std::chrono::clock_cast<std::chrono::system_clock>(tp);
-  return std::chrono::duration_cast<std::chrono::seconds>(tp2.time_since_epoch()).count();
+  const auto tp = e.last_write_time(ec);
+  if (ec) {
+    return 0;
+  }
+#if defined(_MSC_VER)
+  // Не clock_cast: у MSVC он идёт file_clock -> utc_clock -> system_clock, а utc_clock грузит базу
+  // часовых поясов (get_tzdb) из системной icu.dll. Без неё (Wine, старые/урезанные Windows)
+  // исключение в noexcept-функции роняло процесс ещё до загрузки ресурсов. Эпоха file_clock у
+  // MSVC — 1601-01-01 (FILETIME), високосных секунд в ней нет, как и в unix-времени.
+  constexpr std::int64_t filetime_to_unix_seconds = 11644473600;
+  return std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count() - filetime_to_unix_seconds;
+#else
+  return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::file_clock::to_sys(tp).time_since_epoch()).count();
+#endif
 }
 
 size_t format_UTC(const char* format, char* buffer, const size_t max_size) noexcept {

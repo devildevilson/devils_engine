@@ -11,15 +11,26 @@ project(
 # tiny_ktx? https://github.com/DeanoC/tiny_ktx
 # ktx? https://github.com/KhronosGroup/KTX-Software
 
+# Vulkan headers come from FetchContent and the loader is resolved at run time, so only shaderc
+# is a link dependency. Windows: vcpkg. Its headers are part of painter's (and simul's) public
+# surface, so on Windows the target is propagated; on Linux they live in /usr/include.
 if (WIN32)
-  set(SHADERC_LIBRARY_NAME shaderc_shared)
-  set(VULKAN_LIBRARY_NAME vulkan-1)
+  find_package(unofficial-shaderc CONFIG REQUIRED GLOBAL)
+  set(SHADERC_LIBRARY_NAME unofficial::shaderc::shaderc)
 else()
   find_package(Vulkan REQUIRED)
   find_library(SHADERC_LIB NAMES shaderc_combined shaderc)
   find_package(glslang REQUIRED)
   set(SHADERC_LIBRARY_NAME ${SHADERC_LIB} glslang::glslang)
-  set(VULKAN_LIBRARY_NAME Vulkan::Vulkan)
+  # Debian/Ubuntu ship libshaderc_combined.a WITHOUT SPIRV-Tools (separate static archives there);
+  # Arch's combined archive is self-contained and its SPIRV-Tools are shared libraries only.
+  # Archives appended at the end resolve only what is still undefined, so where the combined
+  # archive already has the symbols the link does not change.
+  find_library(SPIRV_TOOLS_OPT_STATIC NAMES libSPIRV-Tools-opt.a)
+  find_library(SPIRV_TOOLS_STATIC NAMES libSPIRV-Tools.a)
+  if (SHADERC_LIB MATCHES "\\.a$" AND SPIRV_TOOLS_OPT_STATIC AND SPIRV_TOOLS_STATIC)
+    list(APPEND SHADERC_LIBRARY_NAME ${SPIRV_TOOLS_OPT_STATIC} ${SPIRV_TOOLS_STATIC})
+  endif()
 endif()
 
 set(SRC_LIST
@@ -47,6 +58,8 @@ set(SRC_LIST
   src/painter/texture_resource.cpp
   src/painter/mesh_resource.cpp
   src/painter/stb_image_impl.cpp
+  src/painter/frame_readback.cpp
+  src/painter/image_file.cpp
 )
 
 get_filename_component(DEVILS_ENGINE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
@@ -85,19 +98,31 @@ set(HDR_LIST
   include/devils_engine/painter/structures.h
   include/devils_engine/painter/graphics_base.h
   include/devils_engine/painter/assets_base.h
+  include/devils_engine/painter/frame_readback.h
+  include/devils_engine/painter/image_file.h
   "${DEVILS_SHARED_SHADER_INCLUDE_TEXT}"
  "include/devils_engine/painter/device_features.h")
 
 add_library(devils_painter ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils devils_engine::catalogue sul::dynamic_bitset tavl)
+target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils devils_engine::catalogue tavl)
 target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>")
 target_include_directories(devils_painter PRIVATE "${stb_SOURCE_DIR}") # stb_image.h для texture_resource
 
-if (MSVC)
-  target_link_directories(devils_painter PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan)
-  target_include_directories(devils_painter PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan/Include)
+if (WIN32)
+  target_link_libraries(devils_painter PUBLIC ${SHADERC_LIBRARY_NAME})
+endif()
+
+# Снимки (image_file.h): PNG — системная libpng, AVIF — системная libavif (apt libpng-dev libavif-dev,
+# vcpkg libpng libavif[aom]). painter — клиентская цель: headless-сервер её не тянет.
+find_package(PNG REQUIRED)
+target_link_libraries(devils_painter PRIVATE PNG::PNG)
+option(DEVILS_ENGINE_PAINTER_AVIF "Encode screenshots as AVIF (system libavif)" ON)
+if (DEVILS_ENGINE_PAINTER_AVIF)
+  find_package(libavif CONFIG REQUIRED)
+  target_link_libraries(devils_painter PRIVATE avif)
+  target_compile_definitions(devils_painter PRIVATE DEVILS_ENGINE_PAINTER_HAS_AVIF=1)
 endif()
 
 add_library(devils_engine::painter ALIAS devils_painter)

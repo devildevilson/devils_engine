@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <source_location>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -119,11 +120,27 @@ public:
   resource_interface* get(utils::id hash) const noexcept;
 
   static utils::id resource_hash(const std::string_view& id) noexcept;
+
+  // id лежит в каталоге dir (правило directory<T>).
+  static bool in_directory(const std::string_view& id, const std::string_view& dir) noexcept;
+  // Имя внутри каталога: `"actor"` из `"goap/actor"` и dir `"goap"` или `"goap/"`. id вне каталога
+  // возвращается как есть.
+  static std::string_view name_in_directory(std::string_view id, const std::string_view& dir) noexcept;
+  // Проверка require<T> для уже найденного ресурса (элементы directory<T>).
+  static void require_usable(const resource_interface& resource, const std::string_view& role,
+                             std::source_location location = std::source_location::current());
   resource_handle handle(const std::string_view& id) const noexcept;
   resource_handle handle(utils::id hash) const noexcept;
 
   template <typename T>
   T* get(const std::string_view& id) const;
+
+  // Ресурс, который владелец реестра (состояние загрузки или synchronous_loader) обязан был
+  // загрузить до этого места. Не найден, другого типа или не usable() — utils::error у места вызова
+  // с ролью (`"frontier_online FSM"`), id и уровнем загрузки. Сам ничего не грузит.
+  template <typename T>
+  T& require(const std::string_view& id, const std::string_view& role,
+             std::source_location location = std::source_location::current()) const;
 
   // не указывать расширение файла!
   // поиск по отсортированному массиву поди O(logN + N)
@@ -136,8 +153,23 @@ public:
   template <typename T>
   size_t filter(const std::string_view& filter_str, std::vector<T*>& arr) const;
 
+  // Каталог: ресурсы типа T внутри каталога dir (не подстрока, как у filter), в порядке id.
+  // `"fsm"` и `"fsm/"` — один каталог; `"fsm"` не захватывает `"fsmx/a"`. Пустой dir — весь реестр.
+  // T = resource_interface — все ресурсы каталога. Дописывает в arr, возвращает число найденных.
+  template <typename T>
+  size_t directory(const std::string_view& dir, std::vector<T*>& arr) const;
+
   template <typename T>
   size_t filter_typed(const std::string_view& filter_str, std::vector<T*>& arr) const;
+
+  // Реестр-подмножество: владелец читает из модуля только каталоги своих зарегистрированных типов
+  // (например, причинное содержимое сетевой игры — без текстур, звуков и интерфейса). Файл, чей
+  // путь не проходит ни через один зарегистрированный каталог типа, пропускается молча: это чужие
+  // ресурсы, а не опечатка. Файл ВНУТРИ своего каталога без подходящего расширения по-прежнему
+  // предупреждает. По умолчанию выключено: полный реестр предупреждает о каждом файле без типа.
+  void set_registered_segments_only(bool value) noexcept {
+    registered_segments_only_ = value;
+  }
 
   void parse_resources(module_system* sys);
 
@@ -153,6 +185,12 @@ public:
   size_t all_resources_count() const noexcept;
 
 private:
+  [[noreturn]] static void require_missing(const std::string_view& id, const std::string_view& role,
+                                           std::source_location location);
+  [[noreturn]] static void require_wrong_type(const resource_interface& resource,
+                                              const std::string_view& role,
+                                              std::source_location location);
+
   struct typed_candidate {
     const resource_candidate* candidate;
     type* resource_type;
@@ -169,6 +207,9 @@ private:
 
   utils::memory_pool<type, sizeof(type) * 16> types_pool;
   gtl::flat_hash_map<std::string_view, type*> types;
+  bool registered_segments_only_ = false;
+  // Проходит ли путь id через каталог какого-либо зарегистрированного типа (без учёта расширения).
+  bool has_registered_segment(std::string_view id) const;
   std::vector<resource_interface*> resources;
   std::vector<resource_interface*> all_resources;
   std::deque<std::string> alias_storage;
@@ -320,6 +361,39 @@ size_t resource_system::filter(const std::string_view& filter_str, std::vector<T
 
     ++counter;
     arr.push_back(static_cast<T*>(resource));
+  }
+  return counter;
+}
+
+template <typename T>
+T& resource_system::require(const std::string_view& id, const std::string_view& role,
+                           const std::source_location location) const {
+  auto* ptr = get(id);
+  if (ptr == nullptr) {
+    require_missing(id, role, location);
+  }
+  if constexpr (!std::is_same_v<T, resource_interface>) {
+    if (!ptr->is_type(utils::type_id<T>())) {
+      require_wrong_type(*ptr, role, location);
+    }
+  }
+  require_usable(*ptr, role, location);
+  return *static_cast<T*>(ptr);
+}
+
+template <typename T>
+size_t resource_system::directory(const std::string_view& dir, std::vector<T*>& arr) const {
+  constexpr auto type_id = utils::type_id<T>();
+  size_t counter = 0;
+  for (auto* resource : resources) { // resources отсортирован по id
+    if (!in_directory(resource->id, dir)) {
+      continue;
+    }
+    if (!std::is_same_v<T, resource_interface> && !resource->is_type(type_id)) {
+      continue;
+    }
+    arr.push_back(static_cast<T*>(resource));
+    ++counter;
   }
   return counter;
 }

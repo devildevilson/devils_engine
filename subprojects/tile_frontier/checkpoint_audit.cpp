@@ -406,7 +406,7 @@ struct fixture_result {
   utils::timelines source_clocks(utils::simulation_rate(60));
   for (std::size_t i = 0; i < warmup_ticks; ++i) {
     const auto tick = source_clocks.simulation_now() + utils::simulation_duration{1};
-    source.update(tick, source_clocks.advance_simulation(tick), batch, pool);
+    source.update(tick, source_clocks.advance_simulation(tick), &batch, pool);
   }
 
   fixture_result result;
@@ -433,7 +433,7 @@ struct fixture_result {
     utils::error{}("could not clone tick fixture");
   auto update_ticked = [&]() {
     const auto tick = ticked_clocks.simulation_now() + utils::simulation_duration{1};
-    ticked.update(tick, ticked_clocks.advance_simulation(tick), batch, pool);
+    ticked.update(tick, ticked_clocks.advance_simulation(tick), &batch, pool);
   };
   update_ticked();
   result.one_tick = capture(ticked, ticked_clocks);
@@ -595,7 +595,7 @@ void measure_full_checkpoint(
   thread::atomic_pool pool(1);
   const auto first_tick = destination_clocks.simulation_now() + utils::simulation_duration{1};
   static_cast<void>(destination.update(
-    first_tick, destination_clocks.advance_simulation(first_tick), batch, pool));
+    first_tick, destination_clocks.advance_simulation(first_tick), &batch, pool));
   const auto before = capture(destination, destination_clocks).raw;
 
   std::size_t checked = 0;
@@ -650,7 +650,7 @@ void measure_full_checkpoint(
   // queries remain usable after the whole refusal sequence.
   const auto next_tick = destination_clocks.simulation_now() + utils::simulation_duration{1};
   static_cast<void>(destination.update(
-    next_tick, destination_clocks.advance_simulation(next_tick), batch, pool));
+    next_tick, destination_clocks.advance_simulation(next_tick), &batch, pool));
 
   return checked;
 }

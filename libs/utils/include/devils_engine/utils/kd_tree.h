@@ -4,9 +4,12 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <span>
 #include <utility>
 #include <vector>
 
+#include "error.h"
 #include "geometry.h"
 #include "devils_engine/thread/atomic_pool.h"
 
@@ -24,10 +27,13 @@ namespace utils {
 // нашедший кандидата (напр. «нет никого крупнее»), деградирует до полного обхода (best=∞ ⇒
 // нет прунинга). Радиус и прунит, и задаёт модель ограниченного восприятия.
 //
-// Детерминизм: при РАВНЫХ дистанциях побеждает первый найденный (зависит от структуры
-// дерева). Порядок партиционирования nth_element не стабилен для равных ключей ⇒ для
-// строгого детерминизма позже (fixed-point) добавить тотальный тай-брейк по id в предикат
-// или пост-обработку. Сейчас точные совпадения дистанций между разными точками редки.
+// Детерминизм: при РАВНЫХ дистанциях побеждает первый найденный, то есть всё решает раскладка
+// дерева. Поэтому разбиение сравнивает по ПОЛНОМУ порядку — координата оси, затем порядок вставки
+// (node::seq): тогда раскладка однозначно задана входом (точки + порядок insert) и не зависит от
+// того, как конкретная стандартная библиотека реализует nth_element. С компаратором только по
+// координате libstdc++ и MSVC STL раскладывали равные координаты по-разному, и frontier_online
+// разошёлся между Linux и Windows на тике 199: два актора в одной точке, восприятие выбрало разную
+// добычу. Проверка — utils_general_test, «kd_tree layout does not depend on the selection algorithm».
 //
 // Vec — тип математического вектора (точка), доступ по operator[]; по умолчанию
 // std::array<float,Dim> (utils glm-free). Dim — число значимых осей. UpAxis — ось
@@ -44,6 +50,7 @@ public:
   struct node {
     point pos;
     T payload;
+    std::uint32_t seq = 0; // порядок insert — последний ключ полного порядка разбиения
   };
 
   void reserve(const size_t n) {
@@ -60,10 +67,20 @@ public:
   }
 
   void insert(const point& p, const T& payload) {
-    nodes_.push_back(node{p, payload});
+    nodes_.push_back(node{p, payload, next_seq()});
   }
   void insert(const point& p, T&& payload) {
-    nodes_.push_back(node{p, std::move(payload)});
+    nodes_.push_back(node{p, std::move(payload), next_seq()});
+  }
+
+  // Порядок разбиения по оси axis: строгий ПОЛНЫЙ порядок (см. «Детерминизм» выше). Публичен для
+  // сверки раскладки в тесте.
+  static bool split_less(const node& a, const node& b, const int axis) noexcept {
+    if (a.pos[axis] != b.pos[axis]) return a.pos[axis] < b.pos[axis];
+    return a.seq < b.seq;
+  }
+  std::span<const node> nodes() const noexcept {
+    return nodes_;
   }
 
   // Балансирующее построение: медианное разбиение по чередующимся осям, на месте.
@@ -199,9 +216,7 @@ private:
   size_t partition(const size_t lo, const size_t hi, const int axis) {
     const size_t mid = lo + (hi - lo) / 2;
     std::nth_element(nodes_.begin() + lo, nodes_.begin() + mid, nodes_.begin() + hi,
-                     [axis](const node& a, const node& b) {
-                       return a.pos[axis] < b.pos[axis];
-                     });
+                     [axis](const node& a, const node& b) { return split_less(a, b, axis); });
     return mid;
   }
 
@@ -356,6 +371,13 @@ private:
   }
 
   std::vector<node> nodes_;     // переиспользуемая арена точек (= неявное дерево после build)
+
+  std::uint32_t next_seq() const {
+    if (nodes_.size() >= size_t(UINT32_MAX)) {
+      utils::error{}("kd_tree: {} points exceed the 32-bit insertion sequence", nodes_.size());
+    }
+    return std::uint32_t(nodes_.size());
+  }
   std::vector<build_range> build_ranges_; // reused parallel frontier; one range per pool participant
   aabb bounds_ = aabb::empty(); // общий bbox всех точек (корневой регион для query-прунинга)
 };

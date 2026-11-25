@@ -4,7 +4,6 @@
 #include "link.h"
 #include "protocol.h"
 
-#include <random>
 
 // The authority process. It owns the tick clock, seals canonical bundles,
 // retains checkpoints and bundle history, mints reconnect tickets for itself
@@ -248,8 +247,6 @@ public:
       history_(96, 96 * 1024),
       checkpoints_(4, 256 * 1024) {
     final_tick_ = schedule_.final_tick;
-    std::random_device source;
-    nonce_seed_ = (uint64_t(source()) << 32) | uint64_t(source());
     scratch_.reserve(lab_max_message_bytes);
     bundle_scratch_.reserve(lab_max_message_bytes);
     decoded_intents_.reserve(lab_max_intents_per_tick * (lab_intent_window + 1));
@@ -380,12 +377,10 @@ private:
       ++counters_.refusals;
       return;
     }
+    // Nonce — из CSPRNG (network_gns): random_device + splitmix давали 256-битному nonce
+    // не больше 64 бит неопределённости.
     net::session_nonce nonce{};
-    uint64_t word = splitmix64(nonce_seed_ ^ ++nonce_counter_);
-    for (size_t i = 0; i < nonce.size(); ++i) {
-      if (i % 8 == 0) word = splitmix64(word);
-      nonce[i] = std::byte(uint8_t(word >> (8 * (i % 8))));
-    }
+    net::secure_random_bytes(nonce);
     slot->peer = peer;
     slot->used = true;
     slot->close_after = 0;
@@ -1185,8 +1180,8 @@ private:
   lab_schedule schedule_;
   verifier verify_;
   authority_counters counters_;
-  gns_runtime runtime_;
-  lab_link link_;
+  net::gns_runtime runtime_{1};
+  lab_link link_{runtime_.dispatcher()};
   lab_authority_mac mac_;
   net::credential_scratch credential_scratch_;
   net::session_hold_table holds_{lab_max_followers};
@@ -1217,7 +1212,6 @@ private:
   std::vector<ranked_slot> ordered_slots_;
   net::gns_peer admission_peer_;
   session_slot* admitted_ = nullptr;
-  uint64_t nonce_seed_ = 0, nonce_counter_ = 0;
   uint64_t epoch_ = 1, next_session_ = 0;
   net::session_refusal_reason last_refusal_ = net::session_refusal_reason::none;
   uint64_t admission_now_ = 0, next_tick_at_ = 0, linger_until_ = 0;

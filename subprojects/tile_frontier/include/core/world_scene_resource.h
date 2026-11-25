@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <devils_engine/demiurg/resource_base.h>
+#include <devils_engine/simul/camera.h>
 
 namespace tile_frontier {
 namespace core {
@@ -20,7 +21,8 @@ struct world_scene_config {
   uint32_t chunks_x = 0;
   uint32_t chunks_y = 0;
   uint32_t actor_count = 0;
-  float camera_half_width = 0.0f;
+  // Тип камеры сцены: проекция, контроллер, пределы, тело (simul/camera.h).
+  devils_engine::simul::camera_config camera;
   std::string actor_script;
   // Префиксы НАБОРОВ мозгов: каждый ресурс под префиксом = именованный GOAP/FSM (per-entity refs
   // через префабы: goap = prey). Прежние поля actor_fsm/actor_goap (один мозг на слайс) удалены.

@@ -140,6 +140,9 @@ bool is_read(const enum values u) noexcept {
 
 bool is_write(const enum values u) noexcept {
   switch (u) {
+    // Копия и блит пишут память так же, как отрисовка: условный пасс копирования (снимок экрана)
+    // и писатель истории копией должны это видеть.
+    case values::transfer_dst: return true;
     case values::color_attachment: return true;
     case values::depth_attachment: return true;
     case values::ignore_attachment: return true;

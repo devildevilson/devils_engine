@@ -23,6 +23,7 @@
 #include <devils_engine/utils/time-utils.hpp>
 #include <devils_engine/utils/timeline.h>
 
+#include "frame_capture.h"
 #include "game_state.h"
 #include "lifecycle.h"
 #include "loading_runtime.h"
@@ -151,7 +152,7 @@ public:
   }
 
   void host_runtime_settings_reloaded() {
-    simul::setup_logging(bootstrap_->settings.logging);
+    simul::setup_logging(simul::open_project_root(bootstrap_->engine.project_root), bootstrap_->settings.logging);
     auto& c = derived().state();
     apply_window_settings(c, bootstrap_->settings);
     apply_sound_settings();
@@ -266,18 +267,19 @@ public:
     }
   }
   void on_lifecycle_tick(const app_state phase, const size_t) {
-    auto& c = derived().state();
-    if (phase == app_state::loading && !c.target_ui_committed && standard_ui_resources_ready(c, systems_.render)) {
-      start_standard_ui();
-      c.target_ui_committed = true;
+    switch (phase) {
+      case app_state::boot: advance_boot(); break;
+      case app_state::loading: advance_loading(); break;
+      case app_state::game: break;
     }
   }
   bool lifecycle_phase_complete(const app_state phase) const {
     const auto& c = derived().state();
     switch (phase) {
-      case app_state::boot: return standard_ui_boot_resources_prepared(c);
+      case app_state::boot: return c.target_prepared && standard_ui_boot_resources_prepared(c);
       case app_state::loading:
-        return c.target_ui_committed && standard_startup_resources_ready(c, systems_.render) && derived().project_loading_complete();
+        return c.project_started && c.target_ui_committed && standard_startup_resources_ready(c, systems_.render) &&
+               derived().project_loading_complete();
       case app_state::game: return false;
     }
     return false;
@@ -297,6 +299,18 @@ public:
     }
     const size_t done = project.first + standard_startup_resources_done(c);
     return double(done) / double(total);
+  }
+
+  // Снимок экрана: рендер снимет первый кадр с номером не меньше not_before_frame (0 — ближайший),
+  // поток ассетов закодирует его по расширению path (.avif/.png/.ppm). Итог приходит в
+  // Derived::on_frame_captured(const command_frame_captured&), если проект его объявил, и в лог.
+  // Тот же путь у клавиши `screenshot` (F12 по умолчанию). false — очередь запросов полна.
+  bool request_frame_capture(std::string path, const uint64_t not_before_frame = 0) {
+    auto& c = derived().state();
+    if (c.br == nullptr) {
+      return false;
+    }
+    return c.br->capture_frame.try_push(command_capture_frame{std::move(path), not_before_frame});
   }
 
   // game→loading по смене runtime-состояния (из UI-биндинга). target резолвится из assets-реестра.
@@ -474,6 +488,7 @@ private:
 
   void update_engine_services() {
     auto& c = derived().state();
+    service_frame_captures();
     if (c.sound_devices_requested &&
         !c.sound_devices_logged &&
         c.sound_devices_ready.load(std::memory_order_acquire)) {
@@ -516,8 +531,33 @@ private:
     }
   }
 
-  // boot: запрос звуковых устройств (engine) + подготовка стартового runtime-состояния до
-  // pre-external целей. Проектная специфика мира сюда не входит.
+  void service_frame_captures() {
+    auto& c = derived().state();
+    if (c.br == nullptr) {
+      return;
+    }
+    static const auto screenshot = input::events::make_event_id("screenshot");
+    if (c.window != nullptr && input::events::check_event(screenshot, input::event_state::click_mask)) {
+      if (!request_frame_capture(default_screenshot_path())) {
+        utils::warn("screenshot: too many captures queued, request dropped");
+      }
+    }
+    command_frame_captured result;
+    const auto deliver = [this](const command_frame_captured& r) {
+      if constexpr (requires { derived().on_frame_captured(r); }) {
+        derived().on_frame_captured(r);
+      }
+    };
+    while (c.br->render_captured.try_pop(result)) {
+      deliver(result);
+    }
+    while (c.br->frame_captured.try_pop(result)) {
+      deliver(result);
+    }
+  }
+
+  // boot: запрос звуковых устройств (engine). Стартовое runtime-состояние готовится по кадрам в
+  // advance_boot до pre-external целей. Проектная специфика мира сюда не входит.
   void begin_boot() {
     auto& c = derived().state();
     auto* reg = derived().asset_registry();
@@ -535,21 +575,43 @@ private:
       DE_LOG(catalogue::log_domain::sound, flow, "main: requested sound playback devices");
     }
 
-    const auto initial_state = standard_boot_initial_state(*reg);
-    standard_prepare_runtime_state(c, *reg, *c.br, initial_state, true);
   }
 
-  // loading: движковый каркас (generation/gate/allowlist до final) + окно, затем проектная сцена.
-  void begin_loading() {
+  // Кадр boot: entry -> начальное состояние -> его мета-ресурсы, всё через поток ассетов.
+  void advance_boot() {
     auto& c = derived().state();
     auto* reg = derived().asset_registry();
     if (reg == nullptr) {
+      utils::error{}("game_host: assets registry is required at boot");
+    }
+    if (standard_boot_resolve_initial_state(c, *reg, *c.br)) {
+      standard_advance_runtime_state(c, *reg, *c.br, true);
+    }
+  }
+
+  // loading: движковый каркас (generation/gate); allowlist до final, окно и проектная сцена — по
+  // кадрам в advance_loading.
+  void begin_loading() {
+    auto& c = derived().state();
+    if (derived().asset_registry() == nullptr) {
       utils::error{}("game_host: assets registry is required at loading");
     }
-    standard_begin_loading(c, *reg, *c.br, systems_.render);
+    standard_enter_loading(c);
+  }
+
+  // Кадр loading: подготовка target и запросы final -> окно -> проектная сцена, когда готовы её
+  // prepare-ресурсы -> UI. Порядок прежний: проект начинает раньше, чем стартует UI script.
+  void advance_loading() {
+    auto& c = derived().state();
+    auto* reg = derived().asset_registry();
+    const bool requested_before = c.loading_requested;
+    if (!standard_advance_loading(c, *reg, *c.br, systems_.render)) {
+      return;
+    }
 
     // Окно появляется только после минимального boot-набора (UI + первый шрифт готовы).
-    if (bootstrap_->settings.window.create_on_start && systems_.render && !bootstrap_->settings.render.headless) {
+    if (!requested_before && bootstrap_->settings.window.create_on_start && systems_.render &&
+        !bootstrap_->settings.render.headless) {
       create_window_and_notify_render(
         c, bootstrap_->settings, bootstrap_->engine.app_name, this->frame_time());
       apply_runtime_bindings(*bootstrap_);
@@ -558,7 +620,15 @@ private:
       save_settings(*bootstrap_);
     }
 
-    derived().begin_project_loading();
+    if (!c.project_started && standard_project_prerequisites_ready(c)) {
+      c.project_started = true;
+      derived().begin_project_loading();
+    }
+
+    if (c.project_started && !c.target_ui_committed && standard_ui_resources_ready(c, systems_.render)) {
+      start_standard_ui();
+      c.target_ui_committed = true;
+    }
   }
 
   Bootstrap* bootstrap_ = nullptr;

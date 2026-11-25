@@ -1,3 +1,0 @@
-ret = "bool"
-scope = "actor"
-expr = "stats.hunger >= 0.5"

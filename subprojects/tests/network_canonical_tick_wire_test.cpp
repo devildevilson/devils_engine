@@ -83,6 +83,16 @@ TEST_CASE("network canonical tick refuses ambiguity before publication") {
   CHECK(bytes.empty());
   CHECK(net::try_encode_canonical_tick(0, std::nullopt, {}, bytes) ==
         net::canonical_tick_wire_status::invalid_header);
+  // Order is part of the format: the encoder refuses descending records instead of sorting them.
+  CHECK(net::try_encode_canonical_tick(1, std::nullopt,
+          std::array{net::canonical_tick_record_view{8, 1, payload},
+                     net::canonical_tick_record_view{7, 1, payload}}, bytes) ==
+        net::canonical_tick_wire_status::unsorted_input);
+  CHECK(net::try_encode_canonical_tick(1, std::nullopt,
+          std::array{net::canonical_tick_record_view{7, 2, payload},
+                     net::canonical_tick_record_view{7, 1, payload}}, bytes) ==
+        net::canonical_tick_wire_status::unsorted_input);
+  CHECK(bytes.empty());
 
   const std::array one{duplicate[0]};
   REQUIRE(net::try_encode_canonical_tick(1, std::nullopt, one, bytes) ==
@@ -121,6 +131,19 @@ TEST_CASE("network canonical tick refuses ambiguity before publication") {
     std::array<net::canonical_tick_record_view, 2> forged_storage{};
     CHECK(net::try_decode_canonical_tick(bytes, 0, forged_storage, view) ==
           net::canonical_tick_wire_status::duplicate_input);
+  }
+  SUBCASE("descending records in a forged message are refused, not reordered") {
+    REQUIRE(net::try_encode_canonical_tick(1, std::nullopt,
+              std::array{net::canonical_tick_record_view{7, 3, payload},
+                         net::canonical_tick_record_view{8, 3, payload}}, bytes) ==
+            net::canonical_tick_wire_status::ok);
+    // Second record's origin_peer 8 -> 6: below the first.
+    const size_t second_peer = net::canonical_tick_header_bytes +
+      net::canonical_tick_record_header_bytes + payload.size();
+    bytes[second_peer] = std::byte{6};
+    std::array<net::canonical_tick_record_view, 2> forged_storage{};
+    CHECK(net::try_decode_canonical_tick(bytes, 0, forged_storage, view) ==
+          net::canonical_tick_wire_status::unsorted_input);
   }
   SUBCASE("a trailing byte is refused") {
     bytes.push_back(std::byte{0});
@@ -180,4 +203,37 @@ TEST_CASE("network canonical tick carries sixteen bits and widens against the re
   CHECK(net::try_decode_canonical_tick(bytes, 0, storage, view) ==
         net::canonical_tick_wire_status::invalid_header);
   CHECK(view.tick == before.tick);
+}
+
+TEST_CASE("network canonical tick budget plans exactly what the encoder accepts") {
+  CHECK(net::canonical_tick_base_bytes(false) == net::canonical_tick_header_bytes);
+  CHECK(net::canonical_tick_base_bytes(true) ==
+        net::canonical_tick_header_bytes + net::canonical_tick_root_bytes);
+  // Records are the binding limit for small payloads, bytes for large ones.
+  CHECK(net::canonical_tick_record_capacity(true, 1) == net::canonical_tick_max_records);
+  const size_t big = 200;
+  const size_t by_bytes = (net::canonical_tick_max_bytes - net::canonical_tick_base_bytes(true)) /
+                          (net::canonical_tick_record_header_bytes + big);
+  CHECK(net::canonical_tick_record_capacity(true, big) == by_bytes);
+
+  // Fill a budget to refusal, then encode exactly the admitted records.
+  net::canonical_tick_budget budget(true);
+  std::vector<std::byte> payload(big, std::byte{1});
+  std::vector<net::canonical_tick_record_view> records;
+  while (budget.take(payload.size()))
+    records.push_back({1, records.size() + 1, payload});
+  CHECK(records.size() == by_bytes);
+  const auto before = budget.bytes();
+  CHECK_FALSE(budget.take(payload.size()));
+  CHECK(budget.bytes() == before);
+  CHECK_FALSE(budget.fits(net::canonical_tick_max_payload_bytes + 1));
+
+  std::vector<std::byte> bytes;
+  bytes.reserve(net::canonical_tick_max_bytes);
+  REQUIRE(net::try_encode_canonical_tick(5, UINT64_C(9), records, bytes) ==
+          net::canonical_tick_wire_status::ok);
+  CHECK(bytes.size() == budget.bytes());
+  records.push_back({1, records.size() + 1, payload});
+  CHECK(net::try_encode_canonical_tick(5, UINT64_C(9), records, bytes) ==
+        net::canonical_tick_wire_status::too_large);
 }

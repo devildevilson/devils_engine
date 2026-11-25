@@ -1,0 +1,19 @@
+{
+  "name": "devils-engine",
+  "version-string": "0.1.1",
+  "builtin-baseline": "4702e381dbbd9b54d3f7e1eb565cd8981c1814cd",
+  "dependencies": [
+    { "name": "lua", "platform": "windows" },
+    { "name": "zstd", "platform": "windows" },
+    { "name": "openssl", "platform": "windows" },
+    { "name": "glfw3", "platform": "windows" },
+    { "name": "shaderc", "platform": "windows" },
+    { "name": "libavif", "features": ["aom"], "platform": "windows" },
+    { "name": "libpng", "platform": "windows" },
+    { "name": "freetype", "platform": "windows" },
+    { "name": "opusfile", "platform": "windows" }
+  ],
+  "overrides": [
+    { "name": "lua", "version": "5.4.8" }
+  ]
+}

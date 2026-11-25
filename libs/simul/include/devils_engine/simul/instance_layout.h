@@ -121,13 +121,14 @@ struct leaf_traits<std::array<U, N>> {
 // --- разложение агрегата в плоскую последовательность атомов ---
 // std::array — агрегат, но мы трактуем его как лист, поэтому ветка is_leaf идёт ПЕРВОЙ.
 
+// Fold lambdas are consteval explicitly: MSVC does not propagate consteval into lambdas (P2564).
 template <typename T>
 consteval uint32_t count_atoms() {
   if constexpr (is_leaf<T>::value) {
     return 1;
   } else if constexpr (std::is_aggregate_v<T>) {
     uint32_t n = 0;
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       ((n += count_atoms<detail::field_type_t<T, I>>()), ...);
     }(std::make_index_sequence<reflect::size<T>()>{});
     return n;
@@ -143,7 +144,7 @@ consteval void fill_atoms(std::array<atom, Cap>& out, uint32_t& idx) {
   if constexpr (is_leaf<T>::value) {
     out[idx++] = leaf_traits<T>::value;
   } else if constexpr (std::is_aggregate_v<T>) {
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       (fill_atoms<detail::field_type_t<T, I>>(out, idx), ...);
     }(std::make_index_sequence<reflect::size<T>()>{});
   } else {

@@ -2,6 +2,9 @@
 #include "devils_engine/bindings/data_conversion.h"
 #include "devils_engine/bindings/critical_error.h"
 #include "devils_engine/bindings/env.h"
+#include "devils_engine/utils/deterministic_math.h"
+
+#include <bit>
 
 using namespace devils_engine;
 namespace {
@@ -157,4 +160,37 @@ TEST_CASE("critical native error crosses protected calls and is restored at host
       CHECK_FALSE(lua["after"].valid());
     }
   }
+}
+
+TEST_CASE("Lua environment math goes through utils::deterministic [bindings][deterministic]") {
+  // libm у платформ расходится в последних битах; скрипты мира не должны от неё зависеть.
+  namespace det = utils::deterministic;
+  sol::state lua;
+  lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::string, sol::lib::table, sol::lib::math,
+                     sol::lib::utf8, sol::lib::os);
+  auto env = bindings::create_env(lua);
+  bindings::basic_functions(env); // base.hypot
+  const auto run = [&](const char* text) {
+    auto result = lua.safe_script(text, env, sol::script_pass_on_error);
+    REQUIRE(result.valid());
+    return std::bit_cast<uint64_t>(result.get<double>());
+  };
+  const auto bits = [](const double value) { return std::bit_cast<uint64_t>(value); };
+  CHECK(run("return math.sin(1000000.25)") == bits(det::sin(1000000.25)));
+  CHECK(run("return math.cos(2.5)") == bits(det::cos(2.5)));
+  CHECK(run("return math.tan(0.75)") == bits(det::tan(0.75)));
+  CHECK(run("return math.asin(0.3)") == bits(det::asin(0.3)));
+  CHECK(run("return math.acos(-0.6)") == bits(det::acos(-0.6)));
+  CHECK(run("return math.atan(7.5)") == bits(det::atan2(7.5, 1.0)));
+  CHECK(run("return math.atan(-1, -2)") == bits(det::atan2(-1.0, -2.0)));
+  CHECK(run("return math.exp(-3.25)") == bits(det::exp(-3.25)));
+  CHECK(run("return math.log(123.5)") == bits(det::log(123.5)));
+  CHECK(run("return math.log(123.5, 2)") == bits(det::log2(123.5)));
+  CHECK(run("return math.log(123.5, 10)") == bits(det::log10(123.5)));
+  CHECK(run("return math.log(123.5, 3)") == bits(det::log(123.5) / det::log(3.0)));
+  CHECK(run("return base.hypot(3.5, 7.25)") == bits(det::hypot(3.5, 7.25)));
+  CHECK(run("return math.pow(1.75, -3.5)") == bits(det::pow(1.75, -3.5)));
+  // Глобальная math не тронута: подменяется только копия в окружении.
+  lua["env_math_sin"] = env["math"]["sin"];
+  CHECK_FALSE(lua.safe_script("return rawequal(env_math_sin, math.sin)").get<bool>());
 }

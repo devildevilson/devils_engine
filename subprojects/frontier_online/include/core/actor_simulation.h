@@ -16,6 +16,7 @@
 #include <devils_engine/catalogue/phase.h>    // passive phase_descriptor read model for tooling
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/goap_resource.h>
+#include <devils_engine/acumen/goap_system.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
 #include <devils_engine/act/intent.h>
@@ -28,8 +29,8 @@
 #include <devils_engine/utils/timeline.h>      // utils::game_timestamp — игровое время слайса (deadlines/flags)
 #include <glm/glm.hpp>
 
-#include "color32.h"
-#include "spawn_scope.h" // spawn_sink — слайс = мутабельная способность спавна для ds-натива spawn_at
+#include "core/color32.h"
+#include "core/spawn_scope.h" // spawn_sink — слайс = мутабельная способность спавна для ds-натива spawn_at
 
 namespace devils_engine {
 namespace thread {
@@ -80,8 +81,11 @@ struct spawn_point {
   uint64_t group = 0;
 };
 
+// Сущность игрока: одна на logical peer сессии. Peer 0 — свой игрок процесса (локальный клиент,
+// авторитет); peer N > 0 появляется в мире канонической записью присоединения (enqueue_canonical_join),
+// поэтому у всех участников один и тот же набор игроков с одними и теми же id. Тела у игрока нет.
 struct player_controller {
-  uint8_t index = 0;
+  uint64_t peer = 0;
 };
 
 // Ephemeral queue on the player entity. It is consumed at the gameplay tick boundary and is not
@@ -169,7 +173,9 @@ struct actor_tuning {
 
 // Текущее состояние FSM-исполнителя (mood) — хеш имени состояния (think/wander/seek_food/
 // chase/flee/…). РЕПЛИЦИРУЕМОЕ состояние. Выбирает анимацию в рендере (state → freq/amp
-// синусоиды) и служит точкой входа для on_entry-эффектов (звук — фаза D, поедание — фаза C).
+// синусоиды) и вход в состояние порождает sim-звук. Эффекты переходов и on_entry в этой схеме
+// не поддерживаются: шаг FSM идёт после commit, вне record_scope, и отложенный эффект там —
+// utils::error (поедание и прочие действия — эффекты GOAP-действий).
 // Хранится как uint64_t (= utils::id), чтобы не тянуть string_id в этот заголовок.
 struct actor_state {
   uint64_t state = 0;
@@ -284,7 +290,6 @@ struct named_fsm {
 };
 
 struct brain_config {
-  const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
   std::vector<named_fsm> fsms;   // все fsm/* ресурсы (префикс из scene config)
   std::vector<named_goap> goaps; // все goap/* ресурсы, каждый flattened
   std::vector<prefab_def> prefabs;
@@ -297,7 +302,7 @@ struct actor_brain_runtime {
   devils_engine::act::registry functions;
   devils_engine::acumen::registry goaps;
   devils_engine::mood::registry fsms;
-  std::vector<std::pair<uint64_t, std::string>> goap_origins;
+  devils_engine::acumen::goap_function_names goap_names; // дедуп имён act-функций между мозгами
   devils_engine::prefab::prefab_registry<spawn_args> prefabs;
 };
 
@@ -336,8 +341,30 @@ public:
   // Действие из КАНОНИЧЕСКОГО журнала тика. Дедупликации по виду нет: несколько участников
   // законно делают одно и то же в одном тике, а тождество входа — (peer, sequence) — уже
   // проверили журнал и canonical_tick_wire. Число записей ограничено журналом тика.
-  bool enqueue_canonical_intent(devils_engine::act::intent intent);
+  // Исполнитель — сущность игрока `peer`; нет такого игрока — false (запись тика отвергается).
+  bool enqueue_canonical_intent(devils_engine::act::intent intent, uint64_t peer);
+  // Каноническое присоединение: на следующей границе тика, ДО действий тика, появляется сущность
+  // игрока `peer`. Peer 0 и уже существующий/ожидающий игрок — false (запись тика отвергается).
+  bool enqueue_canonical_join(uint64_t peer);
+  // Канонический уход: на границе тика, ПОСЛЕ действий тика, сущность игрока `peer` удаляется.
+  // Peer 0, игрока нет, уход уже ожидается или у игрока есть действия этого тика — false: авторитет
+  // снимает предложения ушедшего, и запись, нарушившая это, отвергается целиком.
+  bool enqueue_canonical_leave(uint64_t peer);
+  // Сущность игрока peer или invalid_entityid. Peer 0 = player_entity().
+  devils_engine::aesthetics::entityid_t player_of(uint64_t peer) const noexcept;
+  // Есть неисполненные действия или присоединения: такой мир не годится для checkpoint.
+  bool player_inputs_pending() const noexcept;
   devils_engine::aesthetics::entityid_t player_entity() const noexcept { return player_entity_; }
+  // Участники сессии с игроком в мире (без локального слота peer 0).
+  uint32_t session_player_count() const noexcept {
+    uint32_t count = 0;
+    for (const auto& slot : players_) count += slot.peer != 0 ? 1u : 0u;
+    return count;
+  }
+  // Мировой бокс (спавн еды, кламп движения). Едет в checkpoint, поэтому у ведомого он тот же,
+  // что у авторитета: по нему клиент в сессии строит свою сетку и кламп камеры.
+  glm::vec2 world_min() const noexcept { return spawn_min_; }
+  glm::vec2 world_max() const noexcept { return spawn_max_; }
   // Tick задаёт session/host: слайс больше не изобретает локальную кадровую координату. game_delta
   // — целочисленная проекция этого fixed step в game-домен (пауза даёт 0, scale её меняет).
   // Tick обязан монотонно расти, но может иметь разрыв: paused/loading session ticks не исполняют
@@ -439,8 +466,8 @@ private:
   std::unique_ptr<deferred_effects> deferred_;
   std::vector<sound_emit> sound_emits_; // sim-звуки тика (вход в состояние FSM)
 
-  // Политика think-фазы (были поля cognition_scheduler; сериализуются как commit_ticks/think_budget).
-  // commit_ticks: сущность держится решения N тиков (спрос ≈ N_actors/commit_ticks). think_budget:
+  // Политика think-фазы (сериализуются как commit_game_ticks/think_budget).
+  // commit_game_ticks: сущность держится решения столько игрового времени (спрос ≈ N_actors/commit_ticks). think_budget:
   // потолок обдумываний за тик (спайк-сейфти, count-budget ⇒ детерминированно).
   // Окно коммита решения в µs game-времени (150ms = прежние 3 тика при 20fps и номинальном scale).
   uint64_t commit_game_ticks_ = 150000;
@@ -480,6 +507,15 @@ private:
   uint32_t food_target_ = 0;    // целевое число еды на карте (поддерживается респавном)
   uint64_t food_spawn_seq_ = 0; // счётчик спавнов — детерминированный поток позиций еды
   devils_engine::aesthetics::entityid_t player_entity_ = devils_engine::aesthetics::invalid_entityid;
+  // Производный кэш игроков мира, упорядоченный по peer: порядок исполнения их действий в тике.
+  // Пересобирается из world (init, присоединение, загрузка checkpoint) и в состояние не входит.
+  struct player_slot {
+    uint64_t peer = 0;
+    devils_engine::aesthetics::entityid_t entity = devils_engine::aesthetics::invalid_entityid;
+  };
+  std::vector<player_slot> players_;
+  std::vector<uint64_t> pending_joins_;
+  std::vector<uint64_t> pending_leaves_; // эфемерно, как player_intent_queue: пусто между тиками
   uint32_t texture_count_ = 1;  // запомненное число текстур (для визуала еды/спавна)
   std::vector<obstacle_disc> obstacles_; // плоский кэш препятствий для коллизии (тип — публичный выше)
 };

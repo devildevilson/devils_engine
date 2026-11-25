@@ -1,5 +1,6 @@
 #include "devils_engine/utils/log.h"
 #include <algorithm>
+#include <array>
 #include <charconv>
 
 #include "bindings.h"
@@ -88,6 +89,7 @@ void apply_bindings(const bindings_config& config) {
     }
 
     const size_t count = std::min(keys.size(), events::event_key_slots_count);
+    std::array<int32_t, events::event_key_slots_count> bound{};
     uint8_t slot = 0;
     for (size_t i = 0; i < count; ++i) {
       const auto [glfw_key, scancode] = binding_key_from_name(keys[i]);
@@ -95,7 +97,11 @@ void apply_bindings(const bindings_config& config) {
         utils::warn("input bindings: unknown key '{}' for action '{}'", keys[i], action);
         continue;
       }
+      // Повтор клавиши в одном действии слота не занимает: файлы, раздутые прежним разбором поверх
+      // умолчаний (`[key_s, key_s, ...]`), так сжимаются обратно при следующем сохранении.
+      if (std::find(bound.begin(), bound.begin() + slot, scancode) != bound.begin() + slot) continue;
       events::set_key(std::string_view(action), scancode, glfw_key, slot);
+      bound[slot] = scancode;
       slot += 1;
     }
 

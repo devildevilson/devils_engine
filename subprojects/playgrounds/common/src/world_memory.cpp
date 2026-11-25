@@ -148,7 +148,14 @@ bool world_memory::save(const std::string& path) const {
 }
 
 bool world_memory::load(const std::string& path) {
-  const auto bytes = file_io::read<char>(path, file_io::type::binary);
+  const auto content = file_io::read<char>(path);
+  if (!content) {
+    if (content.error() == file_io::read_error::not_found) {
+      return false;
+    }
+    utils::error{}("GN03 memory '{}' cannot be read: {}", path, file_io::describe(content.error()));
+  }
+  const auto& bytes = *content;
   if (bytes.empty()) {
     return false;
   }

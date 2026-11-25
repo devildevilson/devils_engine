@@ -8,12 +8,12 @@
 
 #include <glm/glm.hpp>
 
-#include "actor_simulation.h" // компоненты + tick_tail_reader (причинная сторона)
-#include "draw_intent.h"      // упаковщик инстансов в сырые байты (презентационная сторона)
+#include "core/actor_simulation.h" // компоненты + tick_tail_reader (причинная сторона)
+#include <devils_engine/simul/draw_intent.h> // упаковщик инстансов в сырые байты (презентация)
 
 // ПРЕЗЕНТАЦИОННАЯ сторона хвоста тика: сборка GPU-инстансов актёров.
 //
-// Раньше это жило прямо в actor_simulation.h, и из-за одного `instance_layout::rgba8_color`
+// Раньше это жило прямо в actor_simulation.h, и из-за одного `devils_engine::simul::instance_layout::rgba8_color`
 // причинный заголовок тянул libs/painter. Теперь причинное ядро объявляет только
 // `tick_tail_reader`, а всё, что знает про GPU-раскладку и страйд, лежит здесь и линкуется
 // исключительно в клиент. Headless-авторитет этот заголовок не включает вовсе.
@@ -25,13 +25,13 @@ namespace core {
 struct actor_instance {
   glm::vec2 pos;
   uint32_t texture;
-  instance_layout::rgba8_color color;
+  devils_engine::simul::instance_layout::rgba8_color color;
   float size;
 };
 
 class actor_batch final : public tick_tail_reader {
 public:
-  instance_layout::match_result bind(const std::string_view& layout = "v2ui1c4v1") {
+  devils_engine::simul::instance_layout::match_result bind(const std::string_view& layout = "v2ui1c4v1") {
     return intent_.bind(layout);
   }
   bool valid() const noexcept {
@@ -55,7 +55,7 @@ public:
     return uint32_t(instances_.size());
   }
   static constexpr uint32_t stride() noexcept {
-    return draw_intent<actor_instance>::stride();
+    return devils_engine::simul::draw_intent<actor_instance>::stride();
   }
 
   std::size_t blit(const std::span<uint8_t>& dst) const {
@@ -63,7 +63,7 @@ public:
   }
 
 private:
-  draw_intent<actor_instance> intent_;
+  devils_engine::simul::draw_intent<actor_instance> intent_;
   std::vector<actor_instance> instances_;
   std::vector<uint32_t> ids_;
 };

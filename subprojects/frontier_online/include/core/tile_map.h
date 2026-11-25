@@ -3,9 +3,12 @@
 
 #include <cstdint>
 
+#include <span>
+
+#include <devils_engine/simul/camera.h>
 #include <glm/glm.hpp>
 
-#include "terrain.h" // причинная модель земли: код рельефа, чанк, сетка
+#include "core/terrain.h" // причинная модель земли: код рельефа, чанк, сетка
 
 // ПРЕЗЕНТАЦИОННАЯ сторона карты: как причинную сетку смотрят и во что её превращают для GPU.
 //  - camera2d     : ортографическая top-down камера; её «фрустум» = мировой прямоугольник
@@ -47,39 +50,21 @@ struct tile_span {
 
 // Ортографическая top-down камера. center — точка в мире, на которую смотрим;
 // half_width — половина видимой ширины в мировых единицах (зум). Высота берётся из aspect.
-struct camera2d {
-  glm::vec2 center{0.0f, 0.0f};
-  float half_width = 8.0f;
-  float aspect = 16.0f / 9.0f; // width/height вьюпорта
-
-  float half_height() const noexcept {
-    return half_width / aspect;
-  }
-
-  // Видимая область как мировой AABB. min = левый-нижний угол, max = правый-верхний.
-  glm::vec2 view_min() const noexcept {
-    return center - glm::vec2(half_width, half_height());
-  }
-  glm::vec2 view_max() const noexcept {
-    return center + glm::vec2(half_width, half_height());
-  }
-
-  // Матрица world(xy) -> clip. Понадобится render-стороне (шейдер трансформирует tile_instance.pos).
-  glm::mat4 view_proj() const;
-};
-
-// Window-space cursor (origin top-left) -> world point. Uses logical window dimensions, not
-// framebuffer pixels, so HiDPI cursor coordinates remain consistent.
-inline glm::vec2 screen_to_world(
-  const camera2d& cam, const glm::vec2 cursor, const glm::vec2 window_size) noexcept {
-  const glm::vec2 safe_size = glm::max(window_size, glm::vec2{1.0f, 1.0f});
-  const glm::vec2 unit = glm::clamp(cursor / safe_size, glm::vec2{0.0f}, glm::vec2{1.0f});
-  return cam.view_min() + unit * (cam.view_max() - cam.view_min());
-}
+// Камера — движковый тип (simul/camera.h): тип в конфиге мира, состояние на главном потоке.
+using camera2d = devils_engine::simul::camera2d;
+using devils_engine::simul::screen_to_world;
 
 // Срез сетки, попадающий во view rect камеры. margin_tiles — запас по краям (в тайлах),
 // чтобы тайлы, частично заехавшие в кадр, не пропадали. Результат клампится к границам сетки.
 tile_span visible_tiles(const camera2d& cam, const tile_grid& grid, const float margin_tiles = 1.0f);
+// Срез под мировой AABB. Рендер рисует камеру между опубликованными снапшотами: отбирать по
+// simul::published_cameras::bounds(текущая), а не по одной текущей камере.
+tile_span visible_tiles(const devils_engine::simul::view_bounds& view, const tile_grid& grid,
+                        const float margin_tiles = 1.0f);
+
+// Сколько чанков покрывает бокс мира [.., max] целиком: край бокса не обязан делиться на чанк.
+// Хотя бы один чанк по каждой оси.
+glm::uvec2 chunks_covering(glm::vec2 box_max, uint32_t chunk_size, float tile_size);
 
 // Один инстанс тайла на GPU. ДОЛЖЕН байт-в-байт соответствовать layout "v2ui1":
 //   pos     -> v2  (glm::vec2, SFLOAT x2, 8B)

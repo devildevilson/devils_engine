@@ -21,6 +21,7 @@
 #include "platform.h"
 #include "crc32c.h"
 #include "utf.hpp"
+#include "isa_guard.h"
 
 namespace fs = std::filesystem;
 
@@ -104,23 +105,71 @@ std::string cache_folder() noexcept {
   return project_folder() + "cache/";
 }
 
-std::string get_cpu_name() noexcept {
-  std::string proc_name;
-  cpuinfo_initialize();
-
-  const auto ptr = cpuinfo_get_current_processor();
-  if (ptr == nullptr) {
-    const uint32_t count = cpuinfo_get_packages_count();
-    if (count > 0) {
-      const auto pack = cpuinfo_get_package(0);
-      proc_name = pack->name;
-    }
-  } else {
-    proc_name = ptr->package->name;
+namespace {
+const char* vendor_name(const cpuinfo_vendor vendor) noexcept {
+  switch (vendor) {
+    case cpuinfo_vendor_intel: return "Intel";
+    case cpuinfo_vendor_amd: return "AMD";
+    case cpuinfo_vendor_hygon: return "Hygon";
+    case cpuinfo_vendor_via: return "VIA";
+    case cpuinfo_vendor_arm: return "ARM";
+    case cpuinfo_vendor_qualcomm: return "Qualcomm";
+    case cpuinfo_vendor_apple: return "Apple";
+    case cpuinfo_vendor_samsung: return "Samsung";
+    case cpuinfo_vendor_nvidia: return "NVIDIA";
+    default: return "unknown";
   }
+}
 
-  cpuinfo_deinitialize();
-  return proc_name;
+template <typename Count, typename Get>
+uint64_t total_cache_bytes(const Count count, const Get get) noexcept {
+  uint64_t total = 0;
+  for (uint32_t i = 0; i < count(); ++i) {
+    total += get(i)->size;
+  }
+  return total;
+}
+} // namespace
+
+cpu_report query_cpu() noexcept {
+  cpu_report out;
+  out.required_isa = isa::names(isa::required());
+  if (!cpuinfo_initialize()) {
+    return out;
+  }
+  out.packages = cpuinfo_get_packages_count();
+  out.cores = cpuinfo_get_cores_count();
+  out.logical_processors = cpuinfo_get_processors_count();
+  if (out.packages > 0) {
+    out.name = cpuinfo_get_package(0)->name;
+  }
+  if (out.cores > 0) {
+    out.vendor = vendor_name(cpuinfo_get_core(0)->vendor);
+  }
+  for (uint32_t i = 0; i < cpuinfo_get_clusters_count(); ++i) {
+    out.cluster_cores.push_back(cpuinfo_get_cluster(i)->core_count);
+  }
+  out.l1d_bytes = total_cache_bytes(cpuinfo_get_l1d_caches_count, cpuinfo_get_l1d_cache);
+  out.l2_bytes = total_cache_bytes(cpuinfo_get_l2_caches_count, cpuinfo_get_l2_cache);
+  out.l3_bytes = total_cache_bytes(cpuinfo_get_l3_caches_count, cpuinfo_get_l3_cache);
+  out.isa = isa::names(isa::available());
+  return out;
+}
+
+std::string describe(const cpu_report& cpu) {
+  if (cpu.name.empty()) {
+    return std::format("unknown CPU (cpuinfo failed), build requires [{}]", cpu.required_isa);
+  }
+  std::string clusters;
+  if (cpu.cluster_cores.size() > 1) {
+    for (const auto count : cpu.cluster_cores) {
+      clusters += clusters.empty() ? std::format(", clusters {}", count) : std::format("+{}", count);
+    }
+  }
+  return std::format("'{}' ({}): {} cores / {} threads{}{}, L1d {} KiB, L2 {} KiB, L3 {} KiB, ISA [{}], build requires [{}]",
+                     cpu.name, cpu.vendor, cpu.cores, cpu.logical_processors, clusters,
+                     cpu.packages > 1 ? std::format(", {} packages", cpu.packages) : std::string(),
+                     cpu.l1d_bytes / 1024, cpu.l2_bytes / 1024, cpu.l3_bytes / 1024, cpu.isa, cpu.required_isa);
 }
 
 // CRC32C по Кастаньоли. Инструкция SSE4.2 и программный проход дают ОДНИ И ТЕ ЖЕ

@@ -7,9 +7,9 @@
 #include <string_view>
 #include <vector>
 
-#include "draw_intent.h"
-#include "texture_set.h"
-#include "tile_map.h"
+#include <devils_engine/simul/draw_intent.h>
+#include "core/texture_set.h"
+#include "core/tile_map.h"
 
 namespace frontier_online {
 namespace core {
@@ -20,7 +20,7 @@ namespace core {
 class tile_batch {
 public:
   // привязать tile_instance к layout draw_group (валидация раскладки по токенам + страйду)
-  instance_layout::match_result bind(const std::string_view& layout = "v2ui1") {
+  devils_engine::simul::instance_layout::match_result bind(const std::string_view& layout = "v2ui1") {
     return intent_.bind(layout);
   }
   bool valid() const noexcept {
@@ -46,7 +46,7 @@ public:
     return uint32_t(instances_.size());
   }
   static constexpr uint32_t stride() noexcept {
-    return draw_intent<tile_instance>::stride();
+    return devils_engine::simul::draw_intent<tile_instance>::stride();
   }
 
   // упаковать собранные инстансы в буфер вызывающего (payload сообщения); intent не аллоцирует.
@@ -55,7 +55,7 @@ public:
   }
 
 private:
-  draw_intent<tile_instance> intent_;
+  devils_engine::simul::draw_intent<tile_instance> intent_;
   std::vector<tile_instance> instances_;
 };
 

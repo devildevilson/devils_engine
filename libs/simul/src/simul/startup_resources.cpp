@@ -1,4 +1,5 @@
 #include "devils_engine/utils/log.h"
+#include <algorithm>
 #include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/simul/startup_resources.h>
 #include <devils_engine/utils/core.h>
@@ -22,12 +23,18 @@ void parse_config_resource(demiurg::resource_interface& resource, Config& config
   tavl::ct_context ctx;
   config = Config{};
   tavl::deserialize(parser, ctx, config);
-  if (ctx.diagnostics.empty()) {
+  // Пропущенное поле берёт умолчание из структуры (target = final, alias пуст, prepare = false):
+  // это контракт, а не диагностика. Обязательные поля (state, script) движок проверяет явно.
+  const auto reported = std::count_if(ctx.diagnostics.begin(), ctx.diagnostics.end(), [](const auto& d) {
+    return d.error.type != tavl::error_type::warn_missing_field;
+  });
+  if (reported == 0) {
     return;
   }
 
-  utils::warn("startup resource '{}': {} tavl diagnostics", resource.id, ctx.diagnostics.size());
+  utils::warn("startup resource '{}': {} tavl diagnostics", resource.id, reported);
   for (const auto& d : ctx.diagnostics) {
+    if (d.error.type == tavl::error_type::warn_missing_field) continue;
     utils::warn(
       "  tavl diagnostic '{}' at {}:{} field '{}'",
       tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);

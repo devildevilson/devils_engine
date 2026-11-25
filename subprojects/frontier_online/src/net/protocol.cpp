@@ -2,8 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <stdexcept>
 
+#include <devils_engine/utils/core.h>
+#include <devils_engine/utils/hmac.h>
 #include <devils_engine/utils/serialization.h>
 #include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/type_traits.h> // murmur_hash64A
@@ -17,11 +18,14 @@ namespace frontier_online {
 namespace net {
 
 namespace serial = devils_engine::utils::serial;
+namespace utils = devils_engine::utils;
 
 network::session_compatibility local_compatibility(const core::causal_content& content) {
   network::component_wire_table components;
-  if (declare_actor_components(components) != network::component_wire_status::ok)
-    throw std::logic_error("frontier_online component wire declarations are invalid");
+  if (const auto status = declare_actor_components(components);
+      status != network::component_wire_status::ok)
+    utils::error{}("frontier_online protocol: actor component wire declarations refused (status {})",
+                   unsigned(status));
   components.freeze();
   network::session_compatibility value;
   value.protocol_version = protocol_version;
@@ -135,35 +139,15 @@ bool decode(const std::span<const std::byte> bytes, checkpoint_begin& out) {
 
 bool encode_chunk(const uint32_t offset, const std::span<const std::byte> payload,
                   std::vector<std::byte>& out) {
-  if (payload.empty() || payload.size() > chunk_payload_bytes) return false;
-  const size_t required = 1 + 4 + 4 + payload.size();
+  const size_t required = 1 + devils_engine::network::document_chunk_header_bytes + payload.size();
   auto w = begin(out, required, message::checkpoint_chunk);
-  w.u32(offset);
-  w.u32(uint32_t(payload.size()));
-  w.bytes(payload);
-  return finish(w, out, required);
+  return devils_engine::network::write_document_chunk(w, offset, payload, chunk_payload_bytes) && finish(w, out, required);
 }
 
 bool decode_chunk(const std::span<const std::byte> bytes, chunk_view& out) {
   serial::state_reader r(bytes);
   if (r.u8() != uint8_t(message::checkpoint_chunk)) return false;
-  const auto offset = r.u32();
-  const auto length = r.u32();
-  if (!r.good() || length == 0 || length > chunk_payload_bytes) return false;
-  const auto payload = r.take(length);
-  if (!r.good() || r.position() != r.size()) return false;
-  out.offset = offset;
-  out.payload = payload;
-  return true;
-}
-
-bool append_checkpoint_chunk(const std::span<std::byte> document, uint32_t& received,
-                             const chunk_view& chunk) noexcept {
-  if (received > document.size() || chunk.offset != received || chunk.payload.empty() ||
-      chunk.payload.size() > document.size() - received) return false;
-  std::copy(chunk.payload.begin(), chunk.payload.end(), document.begin() + received);
-  received += uint32_t(chunk.payload.size());
-  return true;
+  return devils_engine::network::read_document_chunk(r, chunk_payload_bytes, out);
 }
 
 bool encode(const join_report& value, std::vector<std::byte>& out) {
@@ -259,6 +243,117 @@ bool decode(const std::span<const std::byte> bytes, session_terminated& out) {
   if (!r.good() || r.position() != r.size() || reason == 0 || reason > termination_reason_max)
     return false;
   out.reason = termination_reason(reason);
+  return true;
+}
+
+bool credential_policy::authority_mac(const uint32_t issuer, const std::span<const std::byte> message,
+                                      network::credential_mac& out) const {
+  if (authority_key == nullptr || issuer != credential_issuer) return false;
+  out = utils::hmac_sha256(*authority_key, message);
+  return true;
+}
+
+bool credential_policy::keyed_mac(const network::credential_mac& key,
+                                  const std::span<const std::byte> message,
+                                  network::credential_mac& out) const {
+  out = utils::hmac_sha256(key, message);
+  return true;
+}
+
+bool encode(const reconnect_grant& value, std::vector<std::byte>& out) {
+  out.clear();
+  if (value.session == 0 || value.logical_peer == 0 || value.hold_ms == 0) return false;
+  std::vector<std::byte> credential;
+  credential.reserve(network::reconnect_credential_bytes);
+  if (network::try_encode_credential(value.credential, credential) !=
+      network::credential_status::accepted)
+    return false;
+  const size_t required = 1 + 8 * 2 + credential.size() + value.secret.size() + 4;
+  auto w = begin(out, required, message::reconnect_grant);
+  w.u64(value.session);
+  w.u64(value.logical_peer);
+  w.bytes(credential);
+  w.bytes(value.secret);
+  w.u32(value.hold_ms);
+  return finish(w, out, required);
+}
+
+bool decode(const std::span<const std::byte> bytes, reconnect_grant& out) {
+  serial::state_reader r(bytes);
+  if (r.u8() != uint8_t(message::reconnect_grant)) return false;
+  reconnect_grant value;
+  value.session = r.u64();
+  value.logical_peer = r.u64();
+  const auto credential = r.take(network::reconnect_credential_bytes);
+  const auto secret = r.take(value.secret.size());
+  value.hold_ms = r.u32();
+  if (!r.good() || r.position() != r.size() || value.session == 0 || value.logical_peer == 0 ||
+      value.hold_ms == 0 ||
+      network::try_decode_credential(credential, value.credential) !=
+        network::credential_status::accepted ||
+      value.credential.ticket.session != value.session ||
+      value.credential.ticket.principal != value.logical_peer)
+    return false;
+  std::copy(secret.begin(), secret.end(), value.secret.begin());
+  out = value;
+  return true;
+}
+
+bool encode(const resume_plan& value, std::vector<std::byte>& out) {
+  out.clear();
+  if (value.session == 0 || value.logical_peer == 0 || value.tick == 0 ||
+      (value.mode != resume_mode::journal && value.mode != resume_mode::checkpoint))
+    return false;
+  const size_t required = 1 + 8 * 2 + 1 + 8 * 2;
+  auto w = begin(out, required, message::resume_plan);
+  w.u64(value.session);
+  w.u64(value.logical_peer);
+  w.u8(uint8_t(value.mode));
+  w.u64(value.tick);
+  w.u64(value.root);
+  return finish(w, out, required);
+}
+
+bool decode(const std::span<const std::byte> bytes, resume_plan& out) {
+  serial::state_reader r(bytes);
+  if (r.u8() != uint8_t(message::resume_plan)) return false;
+  resume_plan value;
+  value.session = r.u64();
+  value.logical_peer = r.u64();
+  const uint8_t mode = r.u8();
+  value.tick = r.u64();
+  value.root = r.u64();
+  if (!r.good() || r.position() != r.size() || value.session == 0 || value.logical_peer == 0 ||
+      value.tick == 0 ||
+      (mode != uint8_t(resume_mode::journal) && mode != uint8_t(resume_mode::checkpoint)))
+    return false;
+  value.mode = resume_mode(mode);
+  out = value;
+  return true;
+}
+
+bool encode_leave(std::vector<std::byte>& out) {
+  out.clear();
+  auto w = begin(out, 1, message::leave);
+  return finish(w, out, 1);
+}
+
+bool is_leave(const std::span<const std::byte> bytes) noexcept {
+  return bytes.size() == 1 && uint8_t(bytes[0]) == uint8_t(message::leave);
+}
+
+utils::digest anchor_digest(const uint64_t root) noexcept {
+  utils::digest value{};
+  for (size_t i = 0; i < 8; ++i) value[i] = uint8_t(root >> (8 * i));
+  return value;
+}
+
+bool anchor_root(const utils::digest& digest, uint64_t& root) noexcept {
+  uint64_t value = 0;
+  for (size_t i = 0; i < 8; ++i) value |= uint64_t(digest[i]) << (8 * i);
+  for (size_t i = 8; i < digest.size(); ++i)
+    if (digest[i] != 0) return false;
+  root = value;
   return true;
 }
 

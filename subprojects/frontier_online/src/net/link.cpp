@@ -1,7 +1,6 @@
 #include "net/link.h"
 
 #include <algorithm>
-#include <charconv>
 #include <steam/isteamnetworkingutils.h>
 #include <steam/steamnetworkingsockets.h>
 
@@ -14,10 +13,11 @@ namespace utils = devils_engine::utils;
 
 namespace {
 
-// Слоты отправки у адаптера заведены на ПОЛОСУ транспорта, а не на соединение: все участники
-// делят один пул. Поэтому управляющая полоса получает по 32 слота на каждое соединение, которое
-// транспорт может держать, — иначе bundles одного отстающего занимают места, нужные чужому
-// отказу или подтверждению.
+// Слоты полосы у адаптера общие для всех участников. Участник, убитый без закрытия, ещё ~10 с
+// числится соединённым и не отпускает ничего; без предела на соединение его bundles выбирали весь
+// пул, и ответ рукопожатия новичку не уходил. Поэтому управляющая полоса заводит по 32 слота на
+// каждое соединение, которое транспорт может держать, и тот же предел на одно соединение
+// (`peer_send_slots`) — его держит адаптер.
 inline constexpr size_t control_slots_per_peer = 32;
 
 std::array<network::gns_lane_config, 3> declared_lanes(const size_t bulk_slots,
@@ -27,7 +27,8 @@ std::array<network::gns_lane_config, 3> declared_lanes(const size_t bulk_slots,
   // Бюджет в байтах не может быть больше, чем удержат объявленные слоты: слоты И ЕСТЬ бюджет,
   // и просить байт больше, чем слотов, — противоречие, которое адаптер отвергает при постройке.
   lanes[lane_control] = {network::gns_delivery::reliable_ordered, 0, 1, control_slots,
-                         control_message_bytes, control_slots * control_message_bytes};
+                         control_message_bytes, control_slots * control_message_bytes,
+                         control_slots_per_peer};
   lanes[lane_bulk] = {network::gns_delivery::reliable_ordered, 2, 1, bulk_slots,
                       chunk_message_bytes, bulk_slots * chunk_message_bytes};
   // Ненадёжно-последовательные: для этого класса восстановление — это избыточность в окне тиков,
@@ -37,83 +38,19 @@ std::array<network::gns_lane_config, 3> declared_lanes(const size_t bulk_slots,
   return lanes;
 }
 
-// У обособленного GNS нет настроенного удостоверяющего центра, поэтому лаборатория говорит
-// «без аутентификации» один раз и явно, вместо того чтобы шифрование пакетов принимали за
-// подтверждённую личность.
-std::array<SteamNetworkingConfigValue_t, 1> unauthenticated_options() {
-  std::array<SteamNetworkingConfigValue_t, 1> options{};
-  options[0].SetInt32(k_ESteamNetworkingConfig_IP_AllowWithoutAuth, 2);
-  return options;
-}
-
 } // namespace
-
-bool parse_port(const std::string_view text, uint16_t& port) {
-  uint32_t value = 0;
-  const auto* last = text.data() + text.size();
-  const auto result = std::from_chars(text.data(), last, value);
-  if (result.ec != std::errc{} || result.ptr != last) return false;
-  if (value == 0 || value > 65535) return false;
-  port = uint16_t(value);
-  return true;
-}
-
-bool parse_endpoint(const std::string_view text, uint32_t& host, uint16_t& port) {
-  const auto colon = text.rfind(':');
-  if (colon == std::string_view::npos) return false;
-  if (!parse_port(text.substr(colon + 1), port)) return false;
-
-  const auto address = text.substr(0, colon);
-  uint32_t octets[4] = {};
-  size_t at = 0;
-  for (unsigned i = 0; i < 4; ++i) {
-    const auto dot = address.find('.', at);
-    const auto end = (i == 3) ? address.size() : dot;
-    if (i < 3 && dot == std::string_view::npos) return false;
-    if (i == 3 && dot != std::string_view::npos) return false;
-    const auto part = address.substr(at, end - at);
-    if (part.empty()) return false;
-    const auto* last = part.data() + part.size();
-    const auto result = std::from_chars(part.data(), last, octets[i]);
-    if (result.ec != std::errc{} || result.ptr != last || octets[i] > 255) return false;
-    at = end + 1;
-  }
-  host = (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3];
-  return true;
-}
-
-struct net_runtime::state {
-  SteamNetworkingErrMsg error{};
-  bool initialized = false;
-  std::unique_ptr<network::gns_dispatcher> dispatcher;
-
-  explicit state(const size_t endpoints) {
-    initialized = GameNetworkingSockets_Init(nullptr, error);
-    if (!initialized) utils::error{}("frontier_online net: GNS init failed: {}", error);
-    dispatcher = std::make_unique<network::gns_dispatcher>(*SteamNetworkingSockets(),
-                                                           *SteamNetworkingUtils(), endpoints);
-  }
-  ~state() {
-    dispatcher.reset();
-    if (initialized) GameNetworkingSockets_Kill();
-  }
-};
-
-net_runtime::net_runtime(const size_t endpoints) : state_(std::make_unique<state>(endpoints)) {
-  dispatcher_ = state_->dispatcher.get();
-}
-
-net_runtime::~net_runtime() = default;
-
-void net_runtime::pump() {
-  dispatcher_->pump();
-}
 
 struct net_link::state {
   std::array<network::gns_lane_config, 3> lanes;
   network::gns_transport transport;
   network::gns_listener listener;
   std::vector<std::byte> scratch;
+
+  // Слоты отправки возвращаются адаптеру только когда владелец увидел их освобождение.
+  void drain_releases() {
+    std::array<network::gns_send_release, 32> released;
+    while (transport.poll_send_releases(released) != 0) {}
+  }
 
   state(network::gns_dispatcher& dispatcher, const size_t peers)
     : lanes(declared_lanes(256, peers + 2)),
@@ -142,51 +79,27 @@ net_link::net_link(net_runtime& runtime, const size_t peers)
 net_link::~net_link() = default;
 
 net_link::listen_outcome net_link::listen_on(const uint16_t port, const uint32_t host) {
-  auto options = unauthenticated_options();
-  SteamNetworkingIPAddr address{};
-  address.SetIPv4(host, port);
-  const auto result = state_->transport.listen(address, options);
+  const auto result = network::gns_listen_on(state_->transport, host, port);
   if (result.status != network::gns_status::ok) {
-    utils::error{}("frontier_online net: listen on port {} refused, status {}", port,
-                   unsigned(result.status));
+    utils::error{}("frontier_online net: listen on port {} refused: {}", port, network::describe(result.status));
   }
   state_->listener = result.listener;
-  return {port, false};
+  return {result.port, result.ephemeral};
 }
 
 net_link::listen_outcome net_link::listen_any(const uint32_t host) {
-  auto options = unauthenticated_options();
-  SteamNetworkingIPAddr address{};
-  address.SetIPv4(host, 0);
-  auto result = state_->transport.listen(address, options);
-  if (result.status == network::gns_status::ok) {
-    state_->listener = result.listener;
-    SteamNetworkingIPAddr bound{};
-    if (state_->transport.listen_address(state_->listener, bound) == network::gns_status::ok &&
-        bound.m_port != 0) {
-      return {bound.m_port, true};
-    }
-    (void)state_->transport.close_listener(state_->listener);
+  // Закреплённая сборка GNS не принимает нулевой порт: запасной путь — перебор объявленного
+  // диапазона (network::gns_listen_any).
+  const auto result = network::gns_listen_any(state_->transport, host, 41300, 256);
+  if (result.status != network::gns_status::ok) {
+    utils::error{}("frontier_online net: no listen port in [41300, 41556): {}", network::describe(result.status));
   }
-  // Закреплённая сборка GNS не принимает нулевой порт. Это свойство бэкенда, а не деталь стенда,
-  // поэтому запасной путь — перебор объявленного диапазона, записанный, а не спрятанный.
-  for (uint16_t port = 41300; port < 41556; ++port) {
-    address.m_port = port;
-    result = state_->transport.listen(address, options);
-    if (result.status == network::gns_status::ok) {
-      state_->listener = result.listener;
-      return {port, false};
-    }
-    if (result.status != network::gns_status::backend_rejected) {
-      utils::error{}("frontier_online net: listen refused, status {}", unsigned(result.status));
-    }
-  }
-  utils::error{}("frontier_online net: no free port in the declared range");
-  return {};
+  state_->listener = result.listener;
+  return {result.port, result.ephemeral};
 }
 
 bool net_link::connect_to(const uint32_t host, const uint16_t port) {
-  auto options = unauthenticated_options();
+  auto options = network::gns_unauthenticated_options();
   SteamNetworkingIPAddr address{};
   address.SetIPv4(host, port);
   const auto result = state_->transport.connect(address, options);
@@ -196,11 +109,20 @@ bool net_link::connect_to(const uint32_t host, const uint16_t port) {
 }
 
 size_t net_link::poll(const std::span<observation> out) {
-  std::array<network::gns_send_release, 32> released;
-  while (state_->transport.poll_send_releases(released) != 0) {}
-  std::array<network::gns_connection_event, 8> events;
-  const size_t count = state_->transport.poll_connections(events);
+  state_->drain_releases();
+  // Событие, взятое у транспорта, обратно не вернуть: брать ровно столько, сколько есть куда
+  // положить, остальное дождётся следующего вызова.
   size_t written = 0;
+  while (!invalid_peers_.empty() && written < out.size()) {
+    observation value{invalid_peers_.back()};
+    value.terminal = true;
+    value.invalid = true;
+    out[written++] = value;
+    invalid_peers_.pop_back();
+  }
+  std::array<network::gns_connection_event, 8> events;
+  const size_t count = state_->transport.poll_connections(
+    std::span(events).first(std::min(events.size(), out.size() - written)));
   for (size_t i = 0; i < count && written < out.size(); ++i) {
     const auto& event = events[i];
     observation value{event.peer};
@@ -223,15 +145,15 @@ network::gns_status net_link::close(const network::gns_peer peer) {
 
 send_result net_link::send(const network::gns_peer peer, const uint16_t lane,
                            const std::span<const std::byte> bytes) {
-  const auto result = state_->transport.try_send(peer, lane, bytes);
-  switch (result.status) {
-    case network::gns_status::ok: return send_result::sent;
-    case network::gns_status::invalid_peer:
-    case network::gns_status::invalid_state: return send_result::no_peer;
-    case network::gns_status::count_budget_exceeded:
-    case network::gns_status::byte_budget_exceeded: return send_result::backpressure;
-    default: return send_result::refused;
+  auto& self = *state_;
+  auto result = self.transport.try_send(peer, lane, bytes);
+  if (result.status == network::gns_status::peer_budget_exceeded ||
+      result.status == network::gns_status::count_budget_exceeded ||
+      result.status == network::gns_status::byte_budget_exceeded) {
+    self.drain_releases();
+    result = self.transport.try_send(peer, lane, bytes);
   }
+  return network::classify_send(result.status);
 }
 
 size_t net_link::receive_batch(void* consumer,
@@ -257,8 +179,10 @@ size_t net_link::receive_batch(void* consumer,
         return total; // аренды заняты: обратное давление, следующий круг
       case network::gns_status::invalid_message:
         // Удалённая сторона нарушила контракт полос; адаптер уже закрыл ЕЁ соединение. Это
-        // поведение участника, а не повод останавливать процесс: о закрытии сообщит poll.
+        // поведение участника, а не повод останавливать процесс: о закрытии сообщит poll
+        // (наблюдение terminal + invalid), GNS сам о своём закрытии не сообщает.
         ++invalid_closed_;
+        if (result.closed.slot != UINT32_MAX) invalid_peers_.push_back(result.closed);
         continue;
       default:
         utils::error{}("frontier_online net: receive refused, status {}",
@@ -269,17 +193,6 @@ size_t net_link::receive_batch(void* consumer,
   return total;
 }
 
-net_link::conditions net_link::measure(const network::gns_peer peer) {
-  SteamNetConnectionRealTimeStatus_t status{};
-  conditions value;
-  if (state_->transport.statistics(peer, status) != network::gns_status::ok) return value;
-  value.available = true;
-  value.ping_ms = status.m_nPing;
-  value.quality_local = status.m_flConnectionQualityLocal;
-  value.quality_remote = status.m_flConnectionQualityRemote;
-  value.pending_reliable_bytes = status.m_cbPendingReliable;
-  return value;
-}
 
 } // namespace net
 } // namespace frontier_online

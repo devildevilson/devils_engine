@@ -15,6 +15,7 @@
 #include <devils_engine/network/reconnect.h>
 #include <devils_engine/network/session_wire.h>
 #include <devils_engine/network/transform_wire.h>
+#include <devils_engine/utils/hmac.h>
 #include <devils_engine/utils/sha256cpp.h>
 
 // NET-LAB-01, shared between the authority and the follower process.
@@ -318,41 +319,11 @@ struct lab_recovery_plan {
 
 // --------------------------------------------------------------- lab MAC policy
 
-// HMAC-SHA256 over the engine's own SHA-256. A concrete primitive belongs in a
-// consumer, never in `credential.h`.
+// HMAC-SHA256 over the engine's own SHA-256 (utils/hmac.h). A concrete primitive belongs
+// in a consumer of `credential.h`, never in `credential.h` itself.
 inline net::credential_mac hmac_sha256(const std::span<const std::byte> key,
                                        const std::span<const std::byte> message) {
-  constexpr size_t block_bytes = 64;
-  std::array<std::byte, block_bytes> padded{};
-  if (key.size() > block_bytes) {
-    utils::SHA256 shrink;
-    shrink.update(key.data(), key.size());
-    const auto digest = shrink.finalize();
-    for (size_t i = 0; i < digest.size(); ++i) padded[i] = std::byte(digest[i]);
-  } else {
-    for (size_t i = 0; i < key.size(); ++i) padded[i] = key[i];
-  }
-
-  std::array<std::byte, block_bytes> inner_pad{}, outer_pad{};
-  for (size_t i = 0; i < block_bytes; ++i) {
-    const auto value = std::to_integer<unsigned char>(padded[i]);
-    inner_pad[i] = std::byte(static_cast<unsigned char>(value ^ 0x36u));
-    outer_pad[i] = std::byte(static_cast<unsigned char>(value ^ 0x5cu));
-  }
-
-  utils::SHA256 inner;
-  inner.update(inner_pad.data(), inner_pad.size());
-  if (!message.empty()) inner.update(message.data(), message.size());
-  const auto inner_digest = inner.finalize();
-
-  utils::SHA256 outer;
-  outer.update(outer_pad.data(), outer_pad.size());
-  outer.update(inner_digest.data(), inner_digest.size());
-  const auto outer_digest = outer.finalize();
-
-  net::credential_mac result{};
-  for (size_t i = 0; i < result.size(); ++i) result[i] = std::byte(outer_digest[i]);
-  return result;
+  return utils::hmac_sha256(key, message);
 }
 
 inline constexpr uint32_t lab_issuer = UINT32_C(0x4c414231); // "LAB1"

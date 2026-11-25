@@ -120,24 +120,33 @@ void folder_module::resources_list(std::vector<resource_candidate>& out, const u
   }
 }
 
+// Файл модуля найден листингом; не прочитать его теперь — критическая ошибка (удалён, права).
+template <typename T>
+static T module_file(std::expected<T, file_io::read_error> content, const std::string& file) {
+  if (!content) {
+    utils::error{}("demiurg: folder module file '{}' cannot be read: {}", file, file_io::describe(content.error()));
+  }
+  return std::move(*content);
+}
+
 void folder_module::load_binary(const std::string& path, std::vector<uint8_t>& mem) const {
-  mem = file_io::read<uint8_t>(_path + path);
+  mem = module_file(file_io::read<uint8_t>(_path + path), _path + path);
 }
 
 void folder_module::load_binary(const std::string& path, std::vector<char>& mem) const {
-  mem = file_io::read<char>(_path + path);
+  mem = module_file(file_io::read<char>(_path + path), _path + path);
 }
 
 void folder_module::load_text(const std::string& path, std::string& mem) const {
-  mem = file_io::read(_path + path);
+  mem = module_file(file_io::read_text(_path + path), _path + path);
 }
 
 std::vector<uint8_t> folder_module::load_binary(const std::string& path) const {
-  return file_io::read<uint8_t>(_path + path);
+  return module_file(file_io::read<uint8_t>(_path + path), _path + path);
 }
 
 std::string folder_module::load_text(const std::string& path) const {
-  return file_io::read(_path + path);
+  return module_file(file_io::read_text(_path + path), _path + path);
 }
 
 } // namespace demiurg

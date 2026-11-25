@@ -2,27 +2,10 @@
 
 #include <devils_engine/demiurg/resource_system.h>
 
-#include "texture_set.h"
+#include "core/texture_set.h"
 
 namespace frontier_online {
 namespace core {
-
-uint32_t texture_set::gather(demiurg::resource_system& reg, const std::string_view& prefix) {
-  textures.clear();
-  // filter<T>: подстрочный поиск по id ("по части пути") + фильтр по типу T. Итерирует массив
-  // ресурсов напрямую. НЕ используем resource_system::find<T> — он идёт через demiurg::view<>,
-  // у которого operator[] возвращает висячую ссылку на временный T* (баг: "returning reference
-  // to temporary", resource_system.h:50) → UB/segfault. См. заметку в обзоре.
-  std::vector<painter::gpu_texture_resource*> found;
-  reg.filter<painter::gpu_texture_resource>(prefix, found);
-  textures.reserve(found.size());
-  for (auto* texture : found) {
-    if (texture != nullptr) {
-      textures.push_back(reg.handle(texture->id));
-    }
-  }
-  return uint32_t(textures.size());
-}
 
 uint32_t texture_set::assign(const std::span<const demiurg::resource_handle> handles) {
   textures.clear();

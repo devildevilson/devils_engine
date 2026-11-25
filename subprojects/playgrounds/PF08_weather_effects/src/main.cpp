@@ -179,6 +179,7 @@ bool parse_options(const int argc, char** argv, options& out) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view argument = argv[i];
     std::string value;
+    bool matched = true;
 
     if (argument == "--render") {
       out.requested = action::render;
@@ -329,7 +330,14 @@ bool parse_options(const int argc, char** argv, options& out) {
     } else if (read_prefixed(argument, "--cloud-speed=", value)) {
       out.view.cloud_advection_speed_m_s = std::stod(value);
       out.view.cloud_speed_overridden = true;
-    } else if (read_prefixed(argument, "--cloud-range=", value)) {
+    } else {
+      matched = false;
+    }
+    if (matched) continue;
+
+    // MSVC limits how deep one if/else-if chain may nest (C1061, ~128 links): the options
+    // continue in a second chain.
+    if (read_prefixed(argument, "--cloud-range=", value)) {
       out.view.cloud_range_m = std::stod(value);
     } else if (read_prefixed(argument, "--precip-coverage=", value)) {
       out.view.precipitation_coverage = std::stod(value);
@@ -1093,7 +1101,7 @@ void verify_calendar(checker& check, const pf08::celestial_system& system) {
 
 void verify_weather(checker& check) {
   const std::string path = std::string(PF08_RESOURCE_ROOT) + "/weather/presets.tavl";
-  const std::string text = file_io::read(path, file_io::type::text);
+  const std::string text = file_io::read_text(path).value_or(std::string{});
   pf08::weather_preset_list presets;
   std::string diagnostics;
   const bool parsed = !text.empty() && pf08::parse_weather_presets(text, presets, diagnostics);
@@ -1425,7 +1433,7 @@ int main(int argc, char** argv) {
   options selected;
   if (!parse_options(argc, argv, selected)) return 0;
 
-  const std::string text = file_io::read(selected.config_path, file_io::type::text);
+  const std::string text = file_io::read_text(selected.config_path).value_or(std::string{});
   if (text.empty()) {
     utils::warn("PF08 could not read celestial config '{}'", selected.config_path);
     return 2;

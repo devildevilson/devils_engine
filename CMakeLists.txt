@@ -24,6 +24,26 @@ project(
 
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
+# One language standard for the whole build: our libraries and every third-party dependency that
+# does not pin its own. Set before the first FetchContent_MakeAvailable so dependencies see it.
+# Without it each compiler's default leaked in: GCC/Clang gnu++17, MSVC C++14 (Abseil refuses
+# that). Dependencies that pin a standard unconditionally keep theirs: Jolt, FastNoise2, fastsimd
+# (C++17), so causal physics and noise do not change compiler mode with this line.
+# Extensions stay at CMake's default (gnu++23 on GCC/Clang), as our targets already compiled.
+if (NOT DEFINED CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 23)
+endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# LTO objects (-flto) inside static archives must be indexed by the compiler's own archiver
+# wrapper (gcc-ar / llvm-ar). Plain `ar` sees them only through the bfd plugin of the system's
+# default GCC; with a second compiler installed (Ubuntu 24.04 + g++-14) that plugin is the wrong
+# one, the archive index comes out empty and every library symbol is "undefined" at link time.
+if (NOT MSVC AND CMAKE_CXX_COMPILER_AR AND CMAKE_CXX_COMPILER_RANLIB)
+  set(CMAKE_AR "${CMAKE_CXX_COMPILER_AR}")
+  set(CMAKE_RANLIB "${CMAKE_CXX_COMPILER_RANLIB}")
+endif()
+
 set(DEVILS_ENGINE_NAME devils_engine)
 
 #set(DEVILS_ENGINE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${DEVILS_ENGINE_NAME}")
@@ -74,36 +94,15 @@ if (DEVILS_ENGINE_ARCH_FLAGS_AUTO OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_MSVC O
   endif()
 endif()
 
-# 3 dependencies for user to deal with
-if (WIN32) # freetype has proper cmake support
-  set(FREETYPE_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/freetype.lib)
-  set(FREETYPE_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype)
-  set(FREETYPE_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/include)
-endif()
-
-if (WIN32)
-  set(GLFW3_LIBRARY_NAME glfw3dll)
-else()
-  #find_package(glfw3 REQUIRED)
-  #set(GLFW3_LIBRARY_NAME glfw3)
-endif()
+# System dependencies: Linux takes them from the distribution, Windows from vcpkg in manifest
+# mode (vcpkg.json; configure with -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake).
+# Lua, zstd, OpenSSL, GLFW, shaderc, zlib, libpng, freetype (with whatever it was built with), ogg,
+# opus and opusfile; libavif for screenshots. The rest comes from FetchContent below.
 
 set(BUILD_TESTING ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "Build tests for third-party dependencies" FORCE)
 
 set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 set(CMAKE_SKIP_INSTALL_ALL_DEPENDENCY ON)
-
-set(ZLIB_COMPAT ON)
-set(ZLIB_BUILD_EXAMPLES OFF)
-set(ZLIB_BUILD_TESTING OFF)
-set(ZLIB_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
-set(ZLIBNG_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
-set(ZLIBNG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(WITH_GTEST ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
-set(PNG_STATIC OFF)
-set(PNG_TOOLS OFF)
-set(PNG_EXECUTABLES OFF)
-set(PNG_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 
 set(MSDFGEN_DISABLE_SVG ON)
 set(MSDFGEN_USE_SKIA OFF)
@@ -116,15 +115,13 @@ set(MSDF_ATLAS_BUILD_STANDALONE OFF CACHE BOOL "Do not build the msdf-atlas-gen 
 set(MSDF_ATLAS_USE_VCPKG OFF CACHE BOOL "Do not let msdf-atlas-gen configure vcpkg" FORCE)
 set(MSDF_ATLAS_USE_SKIA OFF CACHE BOOL "Do not build msdf-atlas-gen with Skia" FORCE)
 set(MSDF_ATLAS_NO_ARTERY_FONT ON CACHE BOOL "Do not require the artery-font-format submodule" FORCE)
+# Both default to the static MSVC runtime (/MT); the engine links the DLL runtime (/MD).
+set(MSDFGEN_DYNAMIC_RUNTIME ON CACHE BOOL "" FORCE)
+set(MSDF_ATLAS_DYNAMIC_RUNTIME ON CACHE BOOL "" FORCE)
 
 set(SPDLOG_BUILD_EXAMPLE OFF)
 set(SPDLOG_BUILD_TESTS OFF)
 set(SPDLOG_USE_STD_FORMAT ON)
-
-set(DYNAMICBITSET_USE_STD_BITOPS ON)
-set(DYNAMICBITSET_BUILD_EXAMPLE OFF)
-set(DYNAMICBITSET_BUILD_DOCS OFF)
-set(DYNAMICBITSET_FORMAT_TARGET OFF)
 
 set(CPUINFO_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(CPUINFO_BUILD_UNIT_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
@@ -157,32 +154,7 @@ set(DS_ARCH ${DEVILS_ENGINE_ARCH} CACHE STRING "ISA baseline for devils_script s
 set(DS_BUILD_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(DS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
-set(MZ_OPENSSL OFF CACHE BOOL "Disable OpenSSL dependency in minizip-ng" FORCE)
-set(MZ_PKCRYPT OFF CACHE BOOL "Disable PKWARE traditional encryption in minizip-ng" FORCE)
-set(MZ_WZAES OFF CACHE BOOL "Disable WinZIP AES encryption in minizip-ng" FORCE)
-set(MZ_LIBBSD OFF CACHE BOOL "Disable libbsd crypto-random dependency in minizip-ng" FORCE)
-set(MZ_ZLIB OFF CACHE BOOL "" FORCE)
-set(MZ_ZLIB_NG ON CACHE BOOL "" FORCE)
-set(MZ_FORCE_FETCH_LIBS ON CACHE BOOL "" FORCE)
-#set(MZ_FETCH_LIBS OFF CACHE BOOL "" FORCE)
-set(MZ_ZSTD ON CACHE BOOL "" FORCE)
-set(MZ_BZIP2 OFF CACHE BOOL "" FORCE)
-set(MZ_LZMA OFF CACHE BOOL "" FORCE)
-set(MZ_PKCRYPT OFF CACHE BOOL "" FORCE)
-set(MZ_WZAES OFF CACHE BOOL "" FORCE)
-set(MZ_LIBCOMP OFF CACHE BOOL "" FORCE)
-set(MZ_SANITIZER "" CACHE BOOL "" FORCE)
 
-set(INSTALL_DOCS OFF)
-set(INSTALL_PKG_CONFIG_MODULE OFF)
-set(INSTALL_CMAKE_PACKAGE_MODULE OFF)
-
-set(OP_DISABLE_HTTP ON CACHE BOOL "" FORCE)
-set(OP_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
-set(OP_DISABLE_DOCS ON CACHE BOOL "" FORCE)
-
-set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
-set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 
 set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
 
@@ -197,9 +169,12 @@ set(FASTNOISE2_TESTS OFF CACHE BOOL "" FORCE)
 
 set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(protobuf_BUILD_EXPORT OFF CACHE BOOL "" FORCE) # Not an option in protobuf 36; kept harmless.
-set(protobuf_WITH_ZLIB ON CACHE BOOL "Enable zlib support in Protobuf" FORCE)
+# GNS uses protobuf only for its own messages; gzip streams are not needed, and without them the
+# headless server does not link zlib.
+set(protobuf_WITH_ZLIB OFF CACHE BOOL "No zlib support in Protobuf" FORCE)
 set(Protobuf_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
 set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
+set(protobuf_MSVC_STATIC_RUNTIME OFF CACHE BOOL "Same DLL runtime (/MD) as the engine" FORCE)
 set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 
 set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
@@ -213,6 +188,14 @@ set(DOUBLE_PRECISION OFF)
 # deterministic build also exports the matching JPH compile definition to its
 # consumers, so inline math (Sin/Cos, vector operations) uses the same path.
 set(CROSS_PLATFORM_DETERMINISTIC ON)
+# Jolt's GPU compute backends (hair, compute tests) are not used by the engine. They compile HLSL
+# with dxc at build time, so a machine without the Vulkan SDK tools failed the build. The CPU
+# compute fallback and everything rigid-body stay as they were.
+set(JPH_USE_VK OFF)
+set(JPH_USE_DX12 OFF)
+set(JPH_USE_MTL OFF)
+# Jolt defaults to the static MSVC runtime (/MT); everything else links the DLL runtime (/MD).
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
 set(INTERPROCEDURAL_OPTIMIZATION ON)
 set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF)
 set(CPP_EXCEPTIONS_ENABLED OFF)
@@ -263,28 +246,13 @@ FetchContent_Declare(
   OVERRIDE_FIND_PACKAGE
 )
 
+# ZIP modules (demiurg): read and write, store and deflate. Its zlib-compatible names are switched off
+# below: the system zlib is linked too (libpng, freetype), and miniz's deflate/inflate would replace it.
 FetchContent_Declare(
-  ZLIB
-  GIT_REPOSITORY https://github.com/zlib-ng/zlib-ng.git
-  GIT_TAG        2.3.3
+  miniz
+  GIT_REPOSITORY https://github.com/richgel999/miniz.git
+  GIT_TAG        3.1.2
   GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE
-)
-
-FetchContent_Declare(
-  PNG
-  GIT_REPOSITORY https://github.com/pnggroup/libpng.git
-  GIT_TAG        v1.6.58
-  GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE
-)
-
-FetchContent_Declare(
-  minizip-ng
-  GIT_REPOSITORY https://github.com/zlib-ng/minizip-ng.git
-  GIT_TAG        4.2.2
-  GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -300,13 +268,6 @@ FetchContent_Declare(
   GIT_TAG        v4.13.3
   GIT_PROGRESS   TRUE
   SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
-)
-
-FetchContent_Declare(
-  freetype
-  GIT_REPOSITORY https://github.com/freetype/freetype.git
-  GIT_TAG        VER-2-14-3
-  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -352,12 +313,6 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-  glfw3
-  URL  https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.bin.WIN64.zip
-  FIND_PACKAGE_ARGS
-)
-
-FetchContent_Declare(
   sol2
   GIT_REPOSITORY https://github.com/ThePhD/sol2.git
   GIT_TAG        v3.5.0
@@ -391,14 +346,6 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-  dynamic_bitset
-  GIT_REPOSITORY https://github.com/pinam45/dynamic_bitset.git
-  GIT_TAG        v1.3.3
-  GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE
-)
-
-FetchContent_Declare(
   glm
   GIT_REPOSITORY https://github.com/g-truc/glm.git
   GIT_TAG        1.0.3
@@ -425,14 +372,6 @@ FetchContent_Declare(
   GIT_TAG cbd58a3696887b34c70949aef21a71735a0c2ad5 # v2.7.2
   GIT_SUBMODULES ""
 )
-
-#FetchContent_Declare(
-#  RE-flex
-#  GIT_REPOSITORY https://github.com/Genivia/RE-flex.git
-#  GIT_TAG        v6.0.0
-#  GIT_PROGRESS   TRUE
-#  OVERRIDE_FIND_PACKAGE
-#)
 
 FetchContent_Declare(
   cpuinfo
@@ -468,30 +407,8 @@ FetchContent_Declare(
 FetchContent_Declare(
   devils_script
   GIT_REPOSITORY https://github.com/devildevilson/devils_script.git
-  GIT_TAG        v1.4.0
+  GIT_TAG        v1.4.1
   OVERRIDE_FIND_PACKAGE
-)
-
-FetchContent_Declare(
-  ogg
-  GIT_REPOSITORY https://github.com/xiph/ogg.git
-  GIT_TAG        v1.3.6
-  OVERRIDE_FIND_PACKAGE
-)
-
-FetchContent_Declare(
-  opus
-  GIT_REPOSITORY https://github.com/xiph/opus.git
-  GIT_TAG        v1.6.1
-  OVERRIDE_FIND_PACKAGE
-)
-
-FetchContent_Declare(
-  opusfile
-  GIT_REPOSITORY https://github.com/xiph/opusfile.git
-  GIT_TAG        6dfd29e7adb87f2e193575fc3fa88cbf1a0b27df
-  OVERRIDE_FIND_PACKAGE
-  EXCLUDE_FROM_ALL
 )
 
 FetchContent_Declare(
@@ -553,35 +470,7 @@ FetchContent_Declare(
   SOURCE_SUBDIR "Build"
 )
 
-FetchContent_MakeAvailable(ZLIB)
-
-# workarounds for zlib-ng
-if(TARGET zlib AND NOT TARGET ZLIB::ZLIB)
-  add_library(ZLIB::ZLIB ALIAS zlib-ng)
-  set(ZLIB_FOUND TRUE CACHE INTERNAL "")
-  set(ZLIB_INCLUDE_DIRS $<TARGET_PROPERTY:zlib-ng,INTERFACE_INCLUDE_DIRECTORIES> CACHE INTERNAL "")
-  set(ZLIB_LIBRARIES zlib-ng CACHE INTERNAL "")
-  #set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
-  #set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
-endif()
-
-FetchContent_MakeAvailable(PNG)
-
-# workarounds for other libs
-add_library(PNG::PNG ALIAS png_shared)
-
-FetchContent_MakeAvailable(freetype)
-
-add_library(Freetype::Freetype ALIAS freetype-interface)
-
-# make global 23 later
-if (MSVC AND NOT DEFINED CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
-  FetchContent_MakeAvailable(absl)
-  unset(CMAKE_CXX_STANDARD)
-else()
-  FetchContent_MakeAvailable(absl)
-endif()
+FetchContent_MakeAvailable(absl)
 FetchContent_MakeAvailable(protobuf)
 
 include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
@@ -654,7 +543,7 @@ function(protobuf_generate_cpp SRCS HDRS)
 endfunction()
 ]==])
 
-FetchContent_MakeAvailable(gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest CLI11 cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi JoltPhysics) # RE-flex
+FetchContent_MakeAvailable(gtl spdlog miniz atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm doctest CLI11 cpuinfo miniaudio rapidhash tavl devils_script reflect FastNoise2 voronoi JoltPhysics)
 
 macro(install)
 endmacro()
@@ -665,17 +554,7 @@ macro(install)
     _install(${ARGN})
 endmacro()
 
-if (TARGET minizip)
-  target_compile_options(minizip PRIVATE
-    $<$<COMPILE_LANG_AND_ID:C,GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU}>
-    $<$<COMPILE_LANG_AND_ID:C,MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC}>
-  )
-endif()
-
-#add_library(VulkanMemoryAllocator-Hpp INTERFACE)
-#add_library(VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp ALIAS VulkanMemoryAllocator-Hpp)
-#target_include_directories(VulkanMemoryAllocator-Hpp INTERFACE "${vulkanmemoryallocator-hpp_SOURCE_DIR}/include")
-#target_link_libraries(VulkanMemoryAllocator-Hpp INTERFACE Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
+target_compile_definitions(miniz PUBLIC MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
 
 #target_compile_options(spdlog
 #  PRIVATE /fsanitize=address
@@ -683,30 +562,8 @@ endif()
 
 find_package(Threads REQUIRED)
 
-install(TARGETS ogg opus EXPORT OpusFileTargets)
-
-FetchContent_MakeAvailable(opusfile)
-
 if (DEVILS_ENGINE_BUILD_TESTS OR DEVILS_ENGINE_BUILD_VENDOR_TESTS)
   enable_testing()
-endif()
-
-if(MSVC)
-  set(DYN_LIBRARIES_LIST
-    libs/lua54/lua54.dll
-    libs/glfw34/glfw3.dll
-    libs/ktx/ktx.dll
-    libs/vulkan/shaderc_shared.dll
-    libs/freetype/freetype.dll
-    libs/libpng16/libpng16.dll
-    libs/brotli/brotlicommon.dll
-    libs/brotli/brotlidec.dll
-    libs/brotli/brotlienc.dll
-  )
-else()
-  set(DYN_LIBRARIES_LIST
-
-  )
 endif()
 
 #add_compile_definitions("DEVILS_ENGINE_PROJECT_NAME=\"${PROJECT_NAME}\"")
@@ -714,6 +571,33 @@ endif()
 
 # Link each target with other targets or add options, etc.
 include("${CMAKE_SOURCE_DIR}/cmake/devils_tests.cmake")
+
+# Lua 5.4 for sol2, which does not support 5.5. One target for every consumer (bindings,
+# originator, visage). Linux: strictly lua5.4 through pkg-config, because find_package(Lua) picks
+# an incompatible liblua5.5 next to 5.4 headers on some systems. Windows: vcpkg, pinned to 5.4.
+add_library(devils_lua54 INTERFACE)
+if (WIN32)
+  find_package(Lua REQUIRED)
+  # Read the version from lua.h directly: since 5.4.7 it is defined as LUA_VERSION_MAJOR_N /
+  # MINOR_N (the string macros are built from them), and FindLua then reports no version at all.
+  file(STRINGS "${LUA_INCLUDE_DIR}/lua.h" _devils_lua_version
+       REGEX "^#define[ \t]+LUA_VERSION_(MAJOR|MINOR)(_N)?[ \t]+\"?[0-9]+")
+  string(REGEX MATCH "LUA_VERSION_MAJOR(_N)?[ \t]+\"?([0-9]+)" _ "${_devils_lua_version}")
+  set(_devils_lua_major "${CMAKE_MATCH_2}")
+  string(REGEX MATCH "LUA_VERSION_MINOR(_N)?[ \t]+\"?([0-9]+)" _ "${_devils_lua_version}")
+  set(_devils_lua_minor "${CMAKE_MATCH_2}")
+  if (NOT _devils_lua_major EQUAL 5 OR NOT _devils_lua_minor EQUAL 4)
+    message(FATAL_ERROR "Lua 5.4 is required (sol2 does not support 5.5); found "
+                        "'${_devils_lua_major}.${_devils_lua_minor}' in ${LUA_INCLUDE_DIR}. vcpkg.json pins 5.4")
+  endif()
+  target_include_directories(devils_lua54 INTERFACE ${LUA_INCLUDE_DIR})
+  target_link_libraries(devils_lua54 INTERFACE ${LUA_LIBRARIES})
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(lua54 REQUIRED IMPORTED_TARGET lua5.4)
+  target_link_libraries(devils_lua54 INTERFACE PkgConfig::lua54)
+endif()
+add_library(devils_engine::lua54 ALIAS devils_lua54)
 
 add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
@@ -802,11 +686,3 @@ else()
     USES_TERMINAL
   )
 endif()
-
-#foreach (library_path IN LISTS DYN_LIBRARIES_LIST)
-#  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-#    COMMAND "${CMAKE_COMMAND}" -E copy
-#        "${CMAKE_SOURCE_DIR}/${library_path}"
-#        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/"
-#    COMMENT "Copy libs")
-#endforeach()

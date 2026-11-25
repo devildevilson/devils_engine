@@ -4,6 +4,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -12,6 +13,69 @@ def value(output: str, name: str) -> int:
     if match is None:
         raise RuntimeError(f"missing {name}")
     return int(match.group(1))
+
+
+RESOURCE_SKIP = "Could not find proper type for resource"
+
+
+def readable(output: str) -> str:
+    # Каждый процесс начинает с ~30 предупреждений demiurg о ресурсах без типа (headless-сервер не
+    # регистрирует окно, звук и шрифты). В отчёте CI они вытесняли из окна саму причину.
+    lines = output.splitlines()
+    skipped = sum(RESOURCE_SKIP in line for line in lines)
+    kept = [line for line in lines if RESOURCE_SKIP not in line]
+    if skipped:
+        kept.insert(0, f"({skipped} resource-type warnings omitted)")
+    return "\n".join(kept)
+
+
+def exit_code(code: int | None) -> str:
+    # Аварийное завершение на Windows приходит кодом NTSTATUS: 0xC0000005 — нарушение доступа,
+    # 0xC00000FD — переполнение стека, 0xC0000409 — abort/fast fail. Процесс, убитый тестом, — свой код.
+    if code is None:
+        return "running"
+    return f"{code} (0x{code & 0xFFFFFFFF:08X})" if code < 0 or code > 255 else str(code)
+
+
+class Process:
+    """A child whose output is drained by its own thread from the very start.
+
+    A pipe nobody reads fills up and blocks the writer: on Windows an anonymous pipe holds ~4 KB,
+    and the authority's ~30 startup warnings filled it, so it never reached listening (on Linux the
+    64 KB pipe hid this). Every child is read continuously, whatever the test waits for.
+    """
+
+    def __init__(self, command: list[str], watch: str | None = None) -> None:
+        self.lines: list[str] = []
+        self.seen = threading.Event()
+        self.watch = watch
+        self.popen = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, errors="replace")
+        self.reader = threading.Thread(target=self._drain, daemon=True)
+        self.reader.start()
+
+    def _drain(self) -> None:
+        assert self.popen.stdout is not None
+        for line in self.popen.stdout:
+            self.lines.append(line)
+            if self.watch is not None and line.startswith(self.watch):
+                self.seen.set()
+        self.seen.set()  # конец вывода тоже будит ждущего: он проверит, было ли событие
+
+    def watched(self) -> bool:
+        return self.watch is not None and any(line.startswith(self.watch) for line in self.lines)
+
+    def finish(self, timeout: float) -> str:
+        self.popen.wait(timeout=timeout)
+        self.reader.join(timeout=5)
+        return "".join(self.lines)
+
+    def stop(self) -> str:
+        if self.popen.poll() is None:
+            self.popen.kill()
+        self.popen.wait()
+        self.reader.join(timeout=5)
+        return "".join(self.lines)
 
 
 def main() -> int:
@@ -24,43 +88,26 @@ def main() -> int:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
-    common = ["--live", "--ticks=180", "--timeout=20", "--verify", *resources]
-    processes: list[subprocess.Popen[str]] = []
-    outputs: list[str] = []
+    # --verbose: события рукопожатия и этапы запуска. Когда процесс снят снаружи, только они и
+    # говорят, где он стоял.
+    common = ["--live", "--ticks=180", "--timeout=20", "--verify", "--verbose", *resources]
+    processes: list[Process] = []
     try:
-        authority = subprocess.Popen(
+        processes.append(Process(
             [binary, *common, f"--listen={port}", "--live-loopback", "--expect-joins=2",
-             f"--actors={actors}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
-        processes.append(authority)
+             f"--actors={actors}"]))
         time.sleep(0.4)
-        follower_a = subprocess.Popen(
-            [binary, *common, f"--join=127.0.0.1:{port}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
+        follower_a = Process([binary, *common, f"--join=127.0.0.1:{port}"],
+                             watch="live.follower.joined_tick = ")
         processes.append(follower_a)
-        first_prefix = ""
-        assert follower_a.stdout is not None
-        for line in follower_a.stdout:
-            first_prefix += line
-            if line.startswith("live.follower.joined_tick = "):
-                break
-        else:
+        follower_a.seen.wait(timeout=25)
+        if not follower_a.watched():
             raise RuntimeError("first follower exited before its join was confirmed")
         time.sleep(0.4)
-        follower_b = subprocess.Popen(
-            [binary, *common, f"--join=127.0.0.1:{port}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
-        processes.append(follower_b)
+        processes.append(Process([binary, *common, f"--join=127.0.0.1:{port}"]))
 
-        for index, process in enumerate(processes):
-            output, _ = process.communicate(timeout=25)
-            if index == 1:
-                output = first_prefix + output
-            outputs.append(output)
-        if any(process.returncode != 0 for process in processes):
+        outputs = [process.finish(timeout=25) for process in processes]
+        if any(process.popen.returncode != 0 for process in processes):
             raise RuntimeError("one or more live processes failed")
 
         server_root = value(outputs[0], "live.authority.root")
@@ -90,17 +137,10 @@ def main() -> int:
         return 0
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"live process smoke failed: {error}", file=sys.stderr)
-        for process in processes:
-            if process.poll() is None:
-                process.kill()
-        for index, process in enumerate(processes):
-            if index >= len(outputs):
-                output, _ = process.communicate()
-                if index == 1 and "first_prefix" in locals():
-                    output = first_prefix + output
-                outputs.append(output)
-        for label, output in zip(("authority", "follower A", "follower B"), outputs):
-            print(f"--- {label} ---\n{output}", file=sys.stderr)
+        for label, process in zip(("authority", "follower A", "follower B"), processes):
+            output = process.stop()
+            print(f"--- {label} (exit {exit_code(process.popen.returncode)}) ---\n{readable(output)}",
+                  file=sys.stderr)
         return 1
 
 

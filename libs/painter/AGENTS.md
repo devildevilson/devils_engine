@@ -14,6 +14,13 @@ Rendering и GPU assets, цель `devils_engine::painter`. Начинать с 
 - Texture/mesh hot unload и bindless slot reuse должны ждать fence-safe retirement.
 - Conditional doublebuffer не допускает rebuild смежных submitted frames, если прежняя generation
   ещё читается; cadence/rebuild gate должен учитывать число in-flight frames.
+- Буферы групп отрисовки (обоих типов) — копия на кадр в полёте (`per_frame`). Хост пишет пару
+  (инстансы + одна indirect-команда) только в копию текущего кадра после `prepare_frame`; в
+  проектах — через `simul::standard_render_write_draw_pair`. `draw_capacity` — число пар группы.
+- Снимок экрана — условный пасс копирования в буфер `readback` + `frame_readback` на хосте
+  (README «Снимки Экрана»); не возвращать отдельную отправку с `waitForFences`. `transfer_dst` —
+  запись (`usage::is_write`). Копия картинка ↔ буфер сверяет размер элемента, а не VkFormat. Буфер
+  `size = viewport` не делит контейнер. AVIF/PNG/PPM — `image_file.h`, только клиентские цели.
 - Compute context — отдельный windowless path; не тянуть window/scene host в compute consumers.
 - Shader include resolution и prepare идут через demiurg; Vulkan/VMA targets объявлять явно.
 - Копии shader/frame setup из PF/GN переносить только с сохранением graph schema и visual baseline.

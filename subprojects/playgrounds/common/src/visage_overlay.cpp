@@ -57,9 +57,12 @@ visage_overlay::visage_overlay(
   env["playground_details"] = state_->ui->script_state().create_table();
   env["playground_detail_count"] = 0;
 
-  const auto source = file_io::read(script_path);
+  const auto source = file_io::read_text(script_path);
+  if (!source) {
+    utils::error{}("playground Visage overlay could not read '{}': {}", script_path, file_io::describe(source.error()));
+  }
   auto result = state_->ui->script_state().safe_script(
-    source,
+    *source,
     env,
     sol::script_pass_on_error,
     "@" + script_path);

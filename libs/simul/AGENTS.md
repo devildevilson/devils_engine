@@ -14,9 +14,34 @@
 - Gameplay time — exact integer ticks; wall/presentation clock не должен менять causal state.
 - Broker channels различают latest snapshot, reliable commands и payload ownership; не заменять
   их одной очередью. Producer pin-ит sound resource generation до отправки команды.
+- Аргументы запуска — `launch_arguments` в bootstrap (`app_runtime::run(arguments)`), не глобальные
+  синглтоны «запрос процесса»; проект раздаёт свои опции системам при создании.
+- Камера: тип в конфиге (`camera_config`), состояние на главном потоке (`step_camera`), рендер —
+  `value_interpolator` + один `render_frame_clock` на кадр для всех потоков снапшотов. Не заводить
+  ручные пары prev/cur и свои wall-clock аккумуляторы.
 - Immutable draw intents/scene state передаются через commit/publication boundary; render не
   применяет gameplay effects. `interaction_commit.h` — общая фаза, политика игры остаётся в project.
+- Host-visible буферы с копией на кадр (`write_buffer` с `swap = per_frame`, пары групп отрисовки
+  через `standard_render_write_draw_pair`) только запоминают байты; в копию текущего кадра их кладёт
+  `standard_render_flush_buffer_writes` после `prepare_frame`. Писать в копии до fence нельзя.
+- Общий UBO `camera_buffer` (`global_ubo.h`, блок `global_ubo` в `ui.vert.glsl`) — контракт движка:
+  проект даёт `view_proj` камеры в `standard_render_write_global_ubo` каждый рендер-кадр, проекцию
+  интерфейса и размер кадра simul берёт из фреймбуфера.
+- Снимок экрана — один путь для команды запуска и клавиши `screenshot` (F12): главный поток
+  `game_host::request_frame_capture(path, not_before_frame)` → `capture_frame` → рендер
+  (`standard_render_draw_frame`: условный пасс + `painter::frame_readback`) → `encode_frame` → поток
+  ассетов пишет AVIF/PNG/PPM → `frame_captured`/`render_captured` → `Derived::on_frame_captured`. Отказ —
+  статус, не `utils::error`. Кодирование не на потоке рендера и не в пуле кадра: `atomic_pool::wait`
+  ждёт все задачи, и долгая запись повисла бы на кадре главного потока.
 - Lua require/request идёт через demiurg, engine владеет разрешением путей и module cache.
+- Ресурсы в host с потоком ассетов грузит только он: не звать `res->load()` на главном потоке,
+  даже для мета-ресурсов загрузки (`standard_meta_ready` — запрос и ожидание по кадрам). Что
+  проекту нужно к `begin_project_loading()`, объявляет манифест сцены (`prepare = true`, каталоги
+  `id = "dir/"`); потребитель только проверяет `usable()`.
+- Файловые пути из bootstrap и настроек (settings/debug/key bindings, log, cache, resource_root)
+  разрешаются `project_path` внутри `engine.project_root` (пусто — папка бинарника) через
+  `utils::root`; абсолютный путь или `..` за корень — критическая ошибка с ключом. Тест задаёт
+  корень временной папкой, а не абсолютные имена файлов.
 - Streaming priority/cancellation/epoch publication — будущий runtime owner. Не переносить
   скрытый scheduler внутрь originator tools ради нужд viewer.
 

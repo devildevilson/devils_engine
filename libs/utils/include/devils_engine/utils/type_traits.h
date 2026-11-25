@@ -715,9 +715,40 @@ consteval auto template_string_cat(
   }
 }
 
+// КАНОНИЧЕСКОЕ ИМЯ для чисел и строк. Имя от компилятора у них разное: GCC пишет uint64_t как
+// "long unsigned int", MSVC — как "unsigned __int64", а std::string у них совсем разный. Если из
+// такого имени строится идентичность (id компонента, хеш схемы), она разъезжается между платформами.
+// Каноническое имя получает только тип, который ЯВЛЯЕТСЯ псевдонимом фиксированной ширины: long и
+// long long одного размера, но это разные типы, и одно имя на двоих дало бы им один type_id. Второй
+// из них (long long на Linux, long на Windows) остаётся с именем от компилятора — как и шаблоны,
+// лямбды и прочие нестандартные типы: строить идентичность из их имени значит стрелять себе в ногу.
+template <typename T>
+constexpr std::string_view canonical_type_name() noexcept {
+  if constexpr (std::is_same_v<T, bool>) return "bool";
+  else if constexpr (std::is_same_v<T, char>) return "char";
+  else if constexpr (std::is_same_v<T, char8_t>) return "char8_t";
+  else if constexpr (std::is_same_v<T, char16_t>) return "char16_t";
+  else if constexpr (std::is_same_v<T, char32_t>) return "char32_t";
+  else if constexpr (std::is_same_v<T, wchar_t>) return "wchar_t";
+  else if constexpr (std::is_same_v<T, int8_t>) return "int8_t";
+  else if constexpr (std::is_same_v<T, int16_t>) return "int16_t";
+  else if constexpr (std::is_same_v<T, int32_t>) return "int32_t";
+  else if constexpr (std::is_same_v<T, int64_t>) return "int64_t";
+  else if constexpr (std::is_same_v<T, uint8_t>) return "uint8_t";
+  else if constexpr (std::is_same_v<T, uint16_t>) return "uint16_t";
+  else if constexpr (std::is_same_v<T, uint32_t>) return "uint32_t";
+  else if constexpr (std::is_same_v<T, uint64_t>) return "uint64_t";
+  else if constexpr (std::is_same_v<T, float>) return "float";
+  else if constexpr (std::is_same_v<T, double>) return "double";
+  else if constexpr (std::is_same_v<T, long double>) return "long double";
+  else if constexpr (std::is_same_v<T, std::string>) return "std::string";
+  else if constexpr (std::is_same_v<T, std::string_view>) return "std::string_view";
+  else return detail::get_type_name<T>();
+}
+
 template <typename T>
 constexpr std::string_view type_name() {
-  return detail::get_type_name<T>();
+  return canonical_type_name<T>();
 }
 
 // murmur_hash64A остаётся здесь намеренно: на нём держится type_id (ниже). Остальные хеши
@@ -727,10 +758,13 @@ constexpr uint64_t murmur_hash64A(const std::string_view& in_str, const uint64_t
   return detail::murmur_hash64A(in_str, seed);
 }
 
+// Идентичность ТИПА без модификаторов: T, const T, T&, const T&, T&& дают один id. Прежде здесь стоял
+// remove_reference_t<remove_cv_t<T>> (наследие C++17, до remove_cvref_t), и у const T& константность
+// переживала снятие ссылки. Указатель — другой тип, а не модификатор: T* и T различаются.
 template <typename T>
 constexpr size_t type_id() {
-  using type = std::remove_reference_t<std::remove_cv_t<T>>; // std::remove_pointer_t
-  const auto name = detail::get_type_name<type>();
+  using type = std::remove_cvref_t<T>;
+  const auto name = canonical_type_name<type>();
   return murmur_hash64A(name, default_murmur_seed);
 }
 

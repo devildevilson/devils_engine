@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_NETLAB01_PROTOCOL_H
 #define DEVILS_ENGINE_NETLAB01_PROTOCOL_H
 
+#include <devils_engine/network/document_chunks.h>
+
 #include "lab.h"
 
 // The stand's own message classes. Byte zero is the type, because it decides
@@ -163,33 +165,20 @@ inline constexpr size_t lab_bundle_intent_bytes = 4;
                                        const std::span<const std::byte> payload,
                                        std::vector<std::byte>& out) {
   out.clear();
-  if (payload.size() > lab_checkpoint_chunk_bytes) return false;
-  if (out.capacity() < 1 + 4 + 4 + payload.size()) return false;
+  if (out.capacity() < 1 + net::document_chunk_header_bytes + payload.size()) return false;
   net::state_writer w(out, false);
   w.u8(uint8_t(lab_message::checkpoint_chunk));
-  w.u32(offset);
-  w.u32(uint32_t(payload.size()));
-  w.bytes(payload);
-  return w.good();
+  return net::write_document_chunk(w, offset, payload, lab_checkpoint_chunk_bytes);
 }
 
-struct lab_chunk_view {
-  uint32_t offset = 0;
-  std::span<const std::byte> payload;
-};
+// Формат куска — network/document_chunks.h (общий с frontier_online).
+using lab_chunk_view = net::document_chunk_view;
 
 [[nodiscard]] inline bool decode_chunk(const std::span<const std::byte> bytes,
                                        lab_chunk_view& out) {
   net::state_reader r(bytes);
   if (r.u8() != uint8_t(lab_message::checkpoint_chunk)) return false;
-  const auto offset = r.u32();
-  const auto length = r.u32();
-  if (!r.good() || length > lab_checkpoint_chunk_bytes) return false;
-  const auto payload = r.take(length);
-  if (!r.good() || r.position() != r.size()) return false;
-  out.offset = offset;
-  out.payload = payload;
-  return true;
+  return net::read_document_chunk(r, lab_checkpoint_chunk_bytes, out);
 }
 
 // The murmur64 root over canonical uncompressed state. NET-05's measurement is

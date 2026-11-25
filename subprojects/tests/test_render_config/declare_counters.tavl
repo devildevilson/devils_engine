@@ -2,3 +2,6 @@
 per_frame
 per_update
 swapchain
+// Условный счётчик снимков: его двигает хост (painter::frame_readback), и пасс `capture` исполняется
+// только в кадрах сдвига. Период копий у ресурса на нём объявляется явно (`type`).
+frame_capture

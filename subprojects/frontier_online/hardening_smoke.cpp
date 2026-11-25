@@ -14,10 +14,12 @@
 //   6. два участника делают одно действие в одном тике; отставший за историю отключается с
 //      причиной, остальные продолжают; медленный ведомый догоняет без ошибки;
 //   7. ведомый прекращает сессию с названной причиной, если авторитет молчит или противоречит себе.
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <optional>
 #include <set>
 #include <span>
@@ -33,12 +35,13 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_checkpoint.h"
+#include "core/actor_simulation.h"
 #include "core/causal_content.h"
 #include "net/link.h"
 #include "net/live_runtime.h"
 #include "net/player_intent_wire.h"
 #include "net/protocol.h"
-#include "net/secure_random.h"
+#include <devils_engine/network/secure_random.h>
 
 namespace fo = frontier_online::core;
 namespace fnet = frontier_online::net;
@@ -70,6 +73,23 @@ bool drive(fnet::net_runtime& runtime, Step&& step, Done&& done,
     std::this_thread::sleep_for(1ms);
   }
   return done();
+}
+
+// Игрок участника появляется канонической записью тика после его согласия с checkpoint, поэтому
+// до предложений авторитет должен протикать, а участники — исполнить свои записи присоединения.
+bool admit(fnet::net_runtime& runtime, fnet::live_authority& authority,
+           const std::initializer_list<fnet::live_follower*> followers) {
+  return drive(runtime,
+               [&] {
+                 authority.service();
+                 authority.advance();
+                 for (auto* follower : followers) follower->service();
+               },
+               [&] {
+                 return std::all_of(followers.begin(), followers.end(),
+                                    [](const auto* follower) { return follower->admitted(); });
+               },
+               10000ms);
 }
 
 fnet::live_run_options session_options() {
@@ -306,8 +326,9 @@ void phase_violations_close_peer(fnet::net_runtime& runtime, const fo::causal_co
   CHECK(any_termination(authority.endpoint(), fnet::termination_reason::violations));
 }
 
-// 5. Поток предложений. Один участник шлёт пачками, второй — одно действие. Первый закрыт по
-//    порогу нарушений, действие второго принято и исполнено у всех.
+// 5. Поток предложений. Один участник шлёт потоком (много больше учетверённой квоты за круг),
+//    второй — одно действие. Первый закрыт по порогу нарушений, действие второго принято и
+//    исполнено у всех. Пачка чуть сверх квоты (джиттер) только отбрасывается — сценарий 5b.
 void intent_flood_does_not_starve_others(fnet::net_runtime& runtime,
                                          const fo::causal_content& content,
                                          const fo::causal_content& other) {
@@ -323,6 +344,7 @@ void intent_flood_does_not_starve_others(fnet::net_runtime& runtime,
   CHECK(honest.start());
   CHECK(drive(runtime, [&] { authority.service(); flooder.service(); honest.service(); },
               [&] { return flooder.ready() && honest.ready(); }, 10000ms));
+  CHECK(admit(runtime, authority, {&flooder, &honest}));
 
   const auto layouts = fnet::player_intent_layouts();
   const network::id_index_table registry;
@@ -341,7 +363,7 @@ void intent_flood_does_not_starve_others(fnet::net_runtime& runtime,
     authority.service();
     authority.advance();
     if (!flooder.endpoint().live_terminal())
-      for (int i = 0; i < 10; ++i) (void)flooder.endpoint().send_intent(batch);
+      for (int i = 0; i < 40; ++i) (void)flooder.endpoint().send_intent(batch);
     flooder.service();
     honest.service();
     std::this_thread::sleep_for(1ms);
@@ -358,6 +380,49 @@ void intent_flood_does_not_starve_others(fnet::net_runtime& runtime,
   CHECK(honest.stats().own_inputs == 1);
   CHECK(honest.root() == authority.root());
   CHECK(honest.endpoint().fault() == fnet::follower_fault::none);
+}
+
+// 5b. Пачки чуть сверх квоты (джиттер, заминка сервера) — только отбрасываются: участник не
+//     закрыт и остаётся в сессии, сколько бы кругов это ни длилось.
+void intent_bursts_are_dropped_not_punished(fnet::net_runtime& runtime,
+                                            const fo::causal_content& content,
+                                            const fo::causal_content& other) {
+  auto opts = session_options();
+  opts.predict_wrong = false;
+  auto config = authority_options(1);
+  config.intents_per_step = 4;
+  config.violation_limit = 8;
+  fnet::live_authority authority(runtime, content, opts, config);
+  fnet::live_follower bursty(runtime, other, follower_options(authority.port()), opts);
+  CHECK(bursty.start());
+  CHECK(drive(runtime, [&] { authority.service(); bursty.service(); }, [&] { return bursty.ready(); },
+              10000ms));
+  CHECK(admit(runtime, authority, {&bursty}));
+
+  const auto layouts = fnet::player_intent_layouts();
+  const network::id_index_table registry;
+  network::intent proposal;
+  CHECK(fnet::encode_player_intent(food(10.0, 10.0), 2, 0, proposal));
+  std::vector<std::byte> batch;
+  batch.reserve(network::intent_batch_max_bytes);
+  CHECK(network::try_encode_intent_batch(authority.tick() + 5, std::span(&proposal, 1), layouts,
+                                         registry, batch) == network::intent_wire_status::ok);
+  const uint64_t peer = bursty.endpoint().peer_id();
+  const uint64_t until = authority.tick() + 40;
+  while (authority.tick() < until) {
+    runtime.pump();
+    authority.service();
+    authority.advance();
+    for (int i = 0; i < 8; ++i) (void)bursty.endpoint().send_intent(batch); // вдвое сверх квоты
+    bursty.service();
+    std::this_thread::sleep_for(1ms);
+  }
+  std::printf("intent bursts: violations %llu, terminated %d\n",
+              static_cast<unsigned long long>(authority.endpoint().violations()),
+              int(terminated(authority.endpoint(), peer, fnet::termination_reason::violations)));
+  CHECK(authority.endpoint().violations() == 0);
+  CHECK(!terminated(authority.endpoint(), peer, fnet::termination_reason::violations));
+  CHECK(authority.endpoint().is_live_member(peer));
 }
 
 // 6. Живая сессия под нагрузкой порядка: два действия одного вида в одном тике, медленный
@@ -379,6 +444,8 @@ void live_session_survives_order_pressure(fnet::net_runtime& runtime,
   CHECK(repairing.start());
   CHECK(drive(runtime, [&] { authority.service(); slow.service(); repairing.service(); },
               [&] { return slow.ready() && repairing.ready(); }, 10000ms));
+  CHECK(admit(runtime, authority, {&slow, &repairing}));
+  CHECK(authority.stats().admitted_peers == 2);
 
   // Оба предлагают spawn_food на ОДИН тик. Раньше второе действие роняло авторитет.
   const uint64_t shared_tick = authority.tick() + 10;
@@ -438,6 +505,92 @@ void live_session_survives_order_pressure(fnet::net_runtime& runtime,
   CHECK(repairing.root() == authority.root());
 }
 
+// 7б. Уход и повторный вход. Участник закрывает соединение посреди сессии и не возвращается: его
+//     слот держится окно удержания (здесь короткое), после него авторитет пишет уход канонической
+//     записью, игрок исчезает у всех, его ещё не исполненное предложение снимается. Тот же человек
+//     входит заново НОВЫМ logical peer со свежим checkpoint, и корни всех совпадают.
+void departed_peer_leaves_and_enters_fresh(fnet::net_runtime& runtime,
+                                           const fo::causal_content& content,
+                                           const fo::causal_content& other) {
+  auto opts = session_options();
+  opts.predict_wrong = false;
+  auto config = authority_options(2);
+  config.hold_window = 300ms;
+  fnet::live_authority authority(runtime, content, opts, config);
+  fnet::live_follower stays(runtime, other, follower_options(authority.port()), opts);
+  CHECK(stays.start());
+
+  const auto tick_together = [&](fnet::live_follower* extra, const uint64_t ticks) {
+    const uint64_t until = authority.tick() + ticks;
+    while (authority.tick() < until) {
+      runtime.pump();
+      authority.service();
+      authority.advance();
+      stays.service();
+      if (extra != nullptr) extra->service();
+      std::this_thread::sleep_for(2ms);
+    }
+  };
+
+  uint64_t departed_peer = 0;
+  {
+    fnet::live_follower leaves(runtime, other, follower_options(authority.port()), opts);
+    CHECK(leaves.start());
+    CHECK(drive(runtime, [&] { authority.service(); stays.service(); leaves.service(); },
+                [&] { return stays.ready() && leaves.ready(); }, 10000ms));
+    CHECK(admit(runtime, authority, {&stays, &leaves}));
+    departed_peer = leaves.endpoint().peer_id();
+    CHECK(stays.world().player_of(departed_peer) != devils_engine::aesthetics::invalid_entityid);
+    // Предложение на тик, до которого уходящий не доживёт: авторитет его уже принял.
+    CHECK(leaves.propose_food(25.0, 25.0, authority.tick() + 20));
+    // Дать предложению дойти до авторитета: ждать нечего наблюдаемого, поэтому просто 100 мс.
+    (void)drive(runtime, [&] { authority.service(); stays.service(); leaves.service(); },
+                [] { return false; }, 100ms);
+  } // соединение рвётся вместе с ведомым
+
+  CHECK(drive(runtime,
+              [&] {
+                authority.service();
+                authority.advance();
+                stays.service();
+                std::this_thread::sleep_for(1ms);
+              },
+              [&] { return authority.stats().departed_peers == 1; }, 10000ms));
+  tick_together(nullptr, 30); // за тик несостоявшегося предложения
+  CHECK(drive(runtime, [&] { authority.service(); stays.service(); },
+              [&] { return stays.tick() == authority.tick(); }, 10000ms));
+  const bool gone = stays.world().player_of(departed_peer) == devils_engine::aesthetics::invalid_entityid;
+
+  fnet::live_follower again(runtime, other, follower_options(authority.port()), opts);
+  CHECK(again.start());
+  CHECK(drive(runtime, [&] { authority.service(); stays.service(); again.service(); },
+              [&] { return again.ready(); }, 10000ms));
+  CHECK(admit(runtime, authority, {&stays, &again}));
+  const uint64_t fresh_peer = again.endpoint().peer_id();
+  tick_together(&again, 10);
+  CHECK(drive(runtime, [&] { authority.service(); stays.service(); again.service(); },
+              [&] { return stays.tick() == authority.tick() && again.tick() == authority.tick(); },
+              10000ms));
+  std::printf("leave and enter: departed %u, food of the departed applied %u dropped %llu, "
+              "player gone %d, fresh peer %llu (was %llu), roots %s\n",
+              authority.stats().departed_peers, authority.stats().applied_inputs,
+              static_cast<unsigned long long>(authority.stats().dropped_inputs), int(gone),
+              static_cast<unsigned long long>(fresh_peer),
+              static_cast<unsigned long long>(departed_peer),
+              stays.root() == authority.root() && again.root() == authority.root() ? "equal"
+                                                                                  : "DIFFER");
+  CHECK(authority.stats().departed_peers == 1);
+  CHECK(authority.stats().applied_inputs == 0);
+  CHECK(gone);
+  CHECK(fresh_peer != departed_peer);
+  CHECK(authority.stats().admitted_peers == 3);
+  CHECK(stays.world().player_of(fresh_peer) != devils_engine::aesthetics::invalid_entityid);
+  CHECK(again.world().player_of(departed_peer) == devils_engine::aesthetics::invalid_entityid);
+  CHECK(stays.endpoint().fault() == fnet::follower_fault::none);
+  CHECK(stays.root() == authority.root());
+  CHECK(again.root() == authority.root());
+}
+
 // 8. Потери. Пятая часть пакетов теряется в обе стороны; надёжные полосы переотправляет GNS,
 //    предложения — сам ведомый, повторяя неподтверждённые. Каждое действие принято РОВНО
 //    один раз: повторы распознаются по номеру ввода, а не по содержимому.
@@ -453,10 +606,16 @@ void inputs_survive_loss_exactly_once(fnet::net_runtime& runtime, const fo::caus
                              [&] { return client.ready(); }, 15000ms);
     CHECK(ready);
     if (!ready) return;
+    const bool admitted = admit(runtime, authority, {&client});
+    CHECK(admitted);
+    if (!admitted) return;
     // Потери включаются после присоединения: здесь проверяется ввод, а не рукопожатие.
     SteamNetworkingUtils()->SetGlobalConfigValueFloat(
       k_ESteamNetworkingConfig_FakePacketLoss_Send, 20.0f);
     const uint64_t first = authority.tick() + 8;
+    // Диагностика для медленных машин (CI): отставание ведомого и реальная длительность окна.
+    const uint64_t lag_at_proposal = authority.tick() - client.tick();
+    const auto window_start = std::chrono::steady_clock::now();
     for (uint64_t i = 0; i < 5; ++i)
       CHECK(client.propose_food(10.0 + double(i), 11.0 + double(i), first + i));
     // Настоящий период тика (60 Гц): соотношение задержек GNS и срока цели — часть проверки.
@@ -471,14 +630,19 @@ void inputs_survive_loss_exactly_once(fnet::net_runtime& runtime, const fo::caus
       }
       std::this_thread::sleep_for(1ms);
     }
+    const auto window_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - window_start).count();
     SteamNetworkingUtils()->SetGlobalConfigValueFloat(
       k_ESteamNetworkingConfig_FakePacketLoss_Send, 0.0f);
     CHECK(drive(runtime, [&] { authority.service(); client.service(); },
                 [&] { return client.tick() == authority.tick(); }, 15000ms));
-    std::printf("loss: applied %u, own %u, rejected %u, duplicates %llu, roots %s\n",
+    std::printf("loss: applied %u, own %u, rejected %u, duplicates %llu, dropped %llu, "
+                "lag %llu ticks, window %lld ms, roots %s\n",
                 authority.stats().applied_inputs, client.stats().own_inputs,
                 client.stats().rejected_inputs,
                 static_cast<unsigned long long>(authority.stats().duplicate_inputs),
+                static_cast<unsigned long long>(authority.stats().dropped_inputs),
+                static_cast<unsigned long long>(lag_at_proposal), static_cast<long long>(window_ms),
                 client.root() == authority.root() ? "equal" : "DIFFER");
     CHECK(authority.stats().applied_inputs == 5);
     CHECK(client.stats().own_inputs == 5);
@@ -582,7 +746,7 @@ void handshake_randomness_is_not_degenerate(fnet::net_runtime& runtime,
   std::set<std::array<std::byte, 32>> nonces;
   for (int i = 0; i < 10000; ++i) {
     std::array<std::byte, 32> value{};
-    fnet::secure_random_bytes(value);
+    network::secure_random_bytes(value);
     nonces.insert(value);
   }
   CHECK(nonces.size() == 10000);
@@ -597,8 +761,8 @@ void handshake_randomness_is_not_degenerate(fnet::net_runtime& runtime,
 
 int main() {
   spdlog::set_level(spdlog::level::err);
-  fo::causal_content authority_content(FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT);
-  fo::causal_content follower_content(FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT);
+  fo::causal_content authority_content(frontier_online::core::project_modules_root());
+  fo::causal_content follower_content(frontier_online::core::project_modules_root());
   fnet::net_runtime runtime(32);
 
   handshake_randomness_is_not_degenerate(runtime, authority_content);
@@ -607,7 +771,9 @@ int main() {
   lane_contract_breach_closes_only_that_peer(runtime, authority_content, follower_content);
   phase_violations_close_peer(runtime, authority_content);
   intent_flood_does_not_starve_others(runtime, authority_content, follower_content);
+  intent_bursts_are_dropped_not_punished(runtime, authority_content, follower_content);
   live_session_survives_order_pressure(runtime, authority_content, follower_content);
+  departed_peer_leaves_and_enters_fresh(runtime, authority_content, follower_content);
   inputs_survive_loss_exactly_once(runtime, authority_content, follower_content);
   bad_authority_is_named(runtime, follower_content, bad_authority::silent,
                          fnet::follower_fault::handshake_timeout, "silent");

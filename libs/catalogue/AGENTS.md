@@ -13,6 +13,9 @@
   от reusable strategy. Конкурентный порядок записи не должен стать порядком gameplay effects.
 - Journals, output/scratch и statistics имеют явного владельца и bounded lifetime.
 - `phase.h` — passive metadata, не второй scheduler. Introspection/diagnostics не меняет исполнение.
+- Executor домена `mt::domain` — `inline static`: один на домен на процесс. Два мира в одном процессе
+  делят его и тикают только поочерёдно (каждый ставит свой executor перед своим record); параллельные
+  тики двух миров на одном домене — гонка. Отдельные executor на мир требуют своих типов доменов.
 - Gameplay semantics остаётся в act/consumer, target-group resolving — в resolve.
 
 ## Проверка

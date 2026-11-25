@@ -6,6 +6,8 @@
 #include <chrono>
 #include <steam/isteamnetworkingutils.h>
 #include <steam/steamnetworkingsockets.h>
+#include <devils_engine/network/gns_runtime.h>
+#include <devils_engine/network/secure_random.h>
 #include <devils_engine/network/gns_transport.h>
 
 // The transport side of NET-LAB-01: one real GNS endpoint per process, with the
@@ -26,20 +28,8 @@ inline uint64_t monotonic_ms() {
                     .count());
 }
 
-struct gns_runtime {
-  SteamNetworkingErrMsg error{};
-  bool initialized = false;
-
-  gns_runtime() {
-    initialized = GameNetworkingSockets_Init(nullptr, error);
-    if (!initialized) utils::error{}("NET-LAB-01: GNS init failed: {}", error);
-  }
-  ~gns_runtime() {
-    if (initialized) GameNetworkingSockets_Kill();
-  }
-  gns_runtime(const gns_runtime&) = delete;
-  gns_runtime& operator=(const gns_runtime&) = delete;
-};
+// GNS Init/Kill и диспетчер — движковый net::gns_runtime (network/gns_runtime.h): владелец считается,
+// первый поднимает, последний гасит.
 
 inline constexpr net::gns_transport_config lab_transport_config{
   // One slot per follower plus two: a reconnect overlaps the connection it
@@ -72,25 +62,16 @@ inline std::array<net::gns_lane_config, 3> lab_lanes() {
   return lanes;
 }
 
-enum class lab_send_result : uint8_t { sent, no_peer, backpressure, refused };
+using lab_send_result = net::gns_send_outcome;
 
 class lab_link {
 public:
-  lab_link()
+  explicit lab_link(net::gns_dispatcher& dispatcher)
     : lanes_(lab_lanes()),
-      dispatcher_(*SteamNetworkingSockets(), *SteamNetworkingUtils(), 1),
+      dispatcher_(dispatcher),
       transport_(dispatcher_, lab_transport_config, lanes_) {
     if (!transport_.ready()) utils::error{}("NET-LAB-01: transport not ready");
     scratch_.reserve(lab_max_message_bytes);
-  }
-
-  // Standalone GNS has no configured certificate authority, so an explicitly
-  // unauthenticated laboratory session says so once, here, instead of letting
-  // packet encryption be mistaken for identity.
-  static std::array<SteamNetworkingConfigValue_t, 1> unauthenticated_options() {
-    std::array<SteamNetworkingConfigValue_t, 1> options{};
-    options[0].SetInt32(k_ESteamNetworkingConfig_IP_AllowWithoutAuth, 2);
-    return options;
   }
 
   struct listen_outcome {
@@ -108,45 +89,24 @@ public:
   // who named a port and silently got another one would point the followers at
   // the wrong one.
   listen_outcome listen_on(const uint32_t host, const uint16_t port) {
-    auto options = unauthenticated_options();
-    SteamNetworkingIPAddr address{};
-    address.SetIPv4(host, port);
-    const auto result = transport_.listen(address, options);
+    const auto result = net::gns_listen_on(transport_, host, port);
     if (result.status != net::gns_status::ok)
-      utils::error{}("NET-LAB-01: listen on the declared port refused, status {}",
-                     unsigned(result.status));
+      utils::error{}("NET-LAB-01: listen on the declared port refused: {}", net::describe(result.status));
     listener_ = result.listener;
-    return {port, false};
+    return {result.port, result.ephemeral};
   }
 
   listen_outcome listen_any(const uint32_t host = 0x7f000001) {
-    auto options = unauthenticated_options();
-    SteamNetworkingIPAddr address{};
-    address.SetIPv4(host, 0);
-    auto result = transport_.listen(address, options);
-    if (result.status == net::gns_status::ok) {
-      listener_ = result.listener;
-      SteamNetworkingIPAddr bound{};
-      if (transport_.listen_address(listener_, bound) == net::gns_status::ok && bound.m_port != 0)
-        return {bound.m_port, true};
-      (void)transport_.close_listener(listener_);
-    }
-    for (uint16_t port = 41200; port < 41456; ++port) {
-      address.m_port = port;
-      result = transport_.listen(address, options);
-      if (result.status == net::gns_status::ok) {
-        listener_ = result.listener;
-        return {port, false};
-      }
-      if (result.status != net::gns_status::backend_rejected)
-        utils::error{}("NET-LAB-01: listen refused, status {}", unsigned(result.status));
-    }
-    utils::error{}("NET-LAB-01: no free port in the declared laboratory range");
-    return {};
+    const auto result = net::gns_listen_any(transport_, host, 41200, 256);
+    if (result.status != net::gns_status::ok)
+      utils::error{}("NET-LAB-01: no listen port in the declared laboratory range: {}",
+                     net::describe(result.status));
+    listener_ = result.listener;
+    return {result.port, result.ephemeral};
   }
 
   bool connect_to(const uint16_t port, const uint32_t host = 0x7f000001) {
-    auto options = unauthenticated_options();
+    auto options = net::gns_unauthenticated_options();
     SteamNetworkingIPAddr address{};
     address.SetIPv4(host, port);
     const auto result = transport_.connect(address, options);
@@ -198,15 +158,7 @@ public:
 
   lab_send_result send(const net::gns_peer peer, const uint16_t lane,
                        const std::span<const std::byte> bytes) {
-    const auto result = transport_.try_send(peer, lane, bytes);
-    switch (result.status) {
-      case net::gns_status::ok: return lab_send_result::sent;
-      case net::gns_status::invalid_peer:
-      case net::gns_status::invalid_state: return lab_send_result::no_peer;
-      case net::gns_status::count_budget_exceeded:
-      case net::gns_status::byte_budget_exceeded: return lab_send_result::backpressure;
-      default: return lab_send_result::refused;
-    }
+    return net::classify_send(transport_.try_send(peer, lane, bytes).status);
   }
 
   // Consumes at most one native pump's worth of messages. The lease is released
@@ -267,7 +219,7 @@ public:
 
 private:
   std::array<net::gns_lane_config, 3> lanes_;
-  net::gns_dispatcher dispatcher_;
+  net::gns_dispatcher& dispatcher_;
   net::gns_transport transport_;
   net::gns_listener listener_;
   net::gns_peer pending_;

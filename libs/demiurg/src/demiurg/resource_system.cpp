@@ -185,6 +185,47 @@ static bool get_f(const resource_interface* const res, const std::string_view& v
   return l(res->id, value);
 }
 
+bool resource_system::in_directory(const std::string_view& id, const std::string_view& dir) noexcept {
+  if (dir.empty()) {
+    return true;
+  }
+  if (!id.starts_with(dir)) {
+    return false;
+  }
+  return dir.back() == '/' || (id.size() > dir.size() && id[dir.size()] == '/');
+}
+
+std::string_view resource_system::name_in_directory(std::string_view id, const std::string_view& dir) noexcept {
+  if (dir.empty() || !in_directory(id, dir)) {
+    return id;
+  }
+  id.remove_prefix(dir.size());
+  if (!id.empty() && id.front() == '/') {
+    id.remove_prefix(1);
+  }
+  return id;
+}
+
+void resource_system::require_usable(const resource_interface& resource, const std::string_view& role,
+                                     const std::source_location location) {
+  if (!resource.usable()) {
+    utils::error{location}(
+      "{} '{}' is not loaded (level {} of {}); the registry owner (loading state or synchronous_loader) must request it before use",
+      role, resource.id, resource.state(), resource.final_state());
+  }
+}
+
+void resource_system::require_missing(const std::string_view& id, const std::string_view& role,
+                                      const std::source_location location) {
+  utils::error{location}("{} '{}' was not found in the resource registry", role, id);
+}
+
+void resource_system::require_wrong_type(const resource_interface& resource, const std::string_view& role,
+                                         const std::source_location location) {
+  utils::error{location}("{} '{}' has resource type '{}', not the one the caller requires", role,
+                         resource.id, resource.type);
+}
+
 resource_interface* resource_system::get(const std::string_view& id) const {
   if (id == "") {
     return nullptr;
@@ -277,6 +318,7 @@ std::vector<resource_system::manifest_entry> resource_system::resolve_manifest(
     const auto& candidate = candidates[i];
     auto* type = find_proper_type(candidate.id, candidate.ext);
     if (type == nullptr) {
+      if (registered_segments_only_ && !has_registered_segment(candidate.id)) continue;
       utils::warn("Could not find proper type for resource '{}' extension '{}'. Skip", candidate.id, candidate.ext);
       continue;
     }
@@ -571,6 +613,22 @@ size_t resource_system::all_resources_count() const noexcept {
 
 // if type is models/monster1
 // then something/somesome/abc/models/monster1 is prior over models/monster1/something/somesome/abc
+// Тот же обход сегментов, что у find_proper_type, но без сверки расширения.
+bool resource_system::has_registered_segment(const std::string_view id) const {
+  std::string_view current_full_str = id;
+  while (!current_full_str.empty()) {
+    size_t end = current_full_str.size();
+    while (end != std::string_view::npos) {
+      if (types.contains(current_full_str.substr(0, end))) return true;
+      if (end == 0) break;
+      end = current_full_str.rfind('/', end - 1);
+    }
+    const size_t slash_index = current_full_str.find('/');
+    current_full_str = slash_index == std::string_view::npos ? "" : current_full_str.substr(slash_index + 1);
+  }
+  return false;
+}
+
 resource_system::type* resource_system::find_proper_type(const std::string_view& id, const std::string_view& extension) const {
   type* t = nullptr;
   std::string_view current_full_str = id;

@@ -309,6 +309,11 @@ template <typename T>
 concept map_like = requires { typename T::key_type; typename T::mapped_type; typename T::value_type; };
 template <typename T>
 concept seq_like = requires(T value) { typename T::value_type; value.begin(); value.end(); } && !map_like<T>;
+// Хеш-множество (unordered_set, gtl::flat_hash_set): порядок обхода у него — свойство таблицы, а не
+// данных. У std::unordered_set он свой в каждой стандартной библиотеке, у gtl зависит от ёмкости и
+// истории вставок, поэтому байты пишутся в порядке значений, как у карт. std::set уже упорядочен.
+template <typename T>
+concept hashed_set_like = seq_like<T> && requires { typename T::key_type; typename T::hasher; };
 template <typename T>
 concept adapted = requires {
   { adapter<std::remove_cvref_t<T>>::name } -> std::convertible_to<std::string_view>;
@@ -360,6 +365,8 @@ consteval std::string_view scalar_tag() noexcept {
   }
 }
 
+// Fold lambdas below are consteval explicitly: MSVC does not propagate consteval into lambdas
+// (P2564), so a call to canon inside a plain lambda is not a constant expression there.
 template <typename T, std::size_t Depth = 0>
 consteval std::uint32_t canon(std::uint32_t hash) {
   using U = std::remove_cvref_t<T>;
@@ -390,13 +397,13 @@ consteval std::uint32_t canon(std::uint32_t hash) {
       canon<typename U::first_type, Depth + 1>(hash_str(hash, "pair")));
   else if constexpr (is_tuple<U>::value) {
     hash = hash_str(hash, "tup");
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       ((hash = canon<std::tuple_element_t<I, U>, Depth + 1>(hash)), ...);
     }(std::make_index_sequence<std::tuple_size_v<U>>());
     return hash;
   } else if constexpr (is_variant<U>::value) {
     hash = hash_str(hash, "var");
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       ((hash = canon<std::variant_alternative_t<I, U>, Depth + 1>(hash)), ...);
     }(std::make_index_sequence<std::variant_size_v<U>>());
     return hash;
@@ -407,7 +414,7 @@ consteval std::uint32_t canon(std::uint32_t hash) {
     return canon<typename U::value_type, Depth + 1>(hash_str(hash, "seq"));
   else if constexpr (std::is_aggregate_v<U>) {
     hash = hash_str(hash, "{");
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) consteval {
       ((hash = canon<std::remove_cvref_t<decltype(reflect::get<I>(std::declval<U&>()))>,
                      Depth + 1>(hash)),
        ...);
@@ -511,6 +518,16 @@ void serialize(writer& output, const T& value) {
       serialize(output, pair->first);
       serialize(output, pair->second);
     }
+  } else if constexpr (detail::hashed_set_like<U>) {
+    std::vector<const typename U::value_type*> ordered;
+    ordered.reserve(value.size());
+    for (const auto& element : value)
+      ordered.push_back(std::addressof(element));
+    deterministic_sort(ordered.begin(), ordered.end(),
+                       [](const auto* left, const auto* right) { return *left < *right; });
+    output.u64(ordered.size());
+    for (const auto* element : ordered)
+      serialize(output, *element);
   } else if constexpr (detail::seq_like<U>) {
     output.u64(value.size());
     for (const auto& element : value)

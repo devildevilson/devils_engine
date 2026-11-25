@@ -21,7 +21,7 @@ function M.main(seed, x, z)
   return {x = px, y = modules.world.height(px, pz) + offset, z = pz,
     cx = x, cz = z, key = base.mix(seed, x, z, 0x4d41494e)}
 end
-local function distance2(a, b) return (a.x - b.x) ^ 2 + (a.z - b.z) ^ 2 end
+local function distance2(a, b) return math.pow(a.x - b.x, 2) + math.pow(a.z - b.z, 2) end
 function M.neighbours(seed, x, z)
   local a = M.main(seed, x, z)
   local radius = constants.main_neighbour_radius
@@ -30,7 +30,7 @@ function M.neighbours(seed, x, z)
   -- bounded interval connect all columns. Every point can reach such a row.
   -- Expanded Gabriel neighbours (at most one intervening centre) add cross-links
   -- without weakening connectivity.
-  assert(radius >= span * math.sqrt((1 + 2 * jitter) ^ 2 + (2 * jitter) ^ 2),
+  assert(radius >= span * math.sqrt(math.pow(1 + 2 * jitter, 2) + math.pow(2 * jitter, 2)),
     'radius cannot contain mandatory neighbours')
   local halo = math.ceil(radius / span + 2 * jitter)
   local candidates = {}
@@ -38,7 +38,7 @@ function M.neighbours(seed, x, z)
     for dx = -halo, halo do
       if dx ~= 0 or dz ~= 0 then
         local b = M.main(seed, x + dx, z + dz)
-        if distance2(a, b) <= radius ^ 2 then candidates[#candidates + 1] = b end
+        if distance2(a, b) <= math.pow(radius, 2) then candidates[#candidates + 1] = b end
       end
     end
   end
@@ -56,7 +56,7 @@ function M.neighbours(seed, x, z)
       local mx, mz = (a.x + b.x) / 2, (a.z + b.z) / 2
       local reach2 = distance2(a, b) / 4
       for _, c in ipairs(candidates) do
-        if c.key ~= b.key and (c.x - mx) ^ 2 + (c.z - mz) ^ 2 < reach2 - 1e-8 then blockers = blockers + 1 end
+        if c.key ~= b.key and math.pow(c.x - mx, 2) + math.pow(c.z - mz, 2) < reach2 - 1e-8 then blockers = blockers + 1 end
         if blockers > 1 then
           keep = false
           break

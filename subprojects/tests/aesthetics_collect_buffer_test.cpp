@@ -93,6 +93,15 @@ TEST_CASE("collect_buffer overflow is a loud error (must not drop)") {
   CHECK_THROWS(c.push(hit{3, 3, 3})); // сверх ёмкости — громкая ошибка, не тихий дроп
 }
 
+TEST_CASE("collect_buffer sort refuses a partial order (a tie would keep the push race order)") {
+  collect_buffer<hit> c;
+  c.reset(4);
+  c.push(hit{1, 4, 1});
+  c.push(hit{1, 9, 3});
+  // Только по цели: два сообщения цели 1 равны под порядком, их взаимный порядок решила бы гонка push.
+  CHECK_THROWS(c.sort([](const hit& a, const hit& b) { return a.target < b.target; }));
+}
+
 TEST_CASE("collect_buffer collects lock-free from a thread pool and sorts deterministically") {
   constexpr size_t n = 4000;
   constexpr uint32_t m = 128; // число целей

@@ -30,11 +30,13 @@
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/simul/boot_config.h>
 #include <devils_engine/simul/configuration_layers.h>
+#include <devils_engine/simul/launch_arguments.h>
 #include <devils_engine/simul/render_config.h>
 #include <devils_engine/simul/systems.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/fileio.h>
+#include <devils_engine/utils/root.h>
 #include <devils_engine/utils/time-utils.hpp>
 #include <tavl/deserialize.h>
 #include <tavl/serialize.h>
@@ -44,6 +46,8 @@ namespace simul {
 
 template <typename Settings, typename PersistedSettings = Settings>
 struct standard_runtime_bootstrap {
+  // Аргументы запуска из main (app_runtime::run кладёт их до init_bootstrap).
+  launch_arguments arguments;
   engine_boot_config engine;
   Settings settings;
   Settings default_settings;
@@ -93,40 +97,41 @@ void import_persisted_settings(Bootstrap& boot) {
 
 size_t frame_time_from_fps(uint32_t fps) noexcept;
 size_t thread_start_gap(size_t frame_time, uint32_t divisor) noexcept;
-std::string project_path(std::string path);
+// Корень проекта: явный абсолютный project_root или папка бинарника. Отказ — критическая ошибка.
+utils::root open_project_root(std::string_view project_root);
+// Путь внутри корня. key называет ключ конфига, из которого пришёл путь: отказ (абсолютный путь,
+// выход через `..`) — критическая ошибка с этим ключом и значением.
+std::string project_path(const utils::root& root, std::string_view key, std::string_view path);
+
+template <typename Bootstrap>
+std::string project_path(const Bootstrap& boot, const std::string_view key, const std::string_view path) {
+  return project_path(open_project_root(boot.engine.project_root), key, path);
+}
 std::string source_line(uint32_t line);
 
 template <typename Bootstrap>
 std::string settings_path(const Bootstrap& boot) {
-  if (boot.engine.settings_file.empty()) {
-    return utils::project_folder() + "settings.tavl";
-  }
-  if (boot.engine.settings_file.front() == '/') {
-    return boot.engine.settings_file;
-  }
-  return utils::project_folder() + boot.engine.settings_file;
+  return project_path(boot, "engine.settings_file",
+                      boot.engine.settings_file.empty() ? "settings.tavl" : boot.engine.settings_file);
 }
 
 template <typename Bootstrap>
 std::string debug_settings_path(const Bootstrap& boot) {
-  return project_path(boot.engine.debug_settings_file.empty() ? "debug.tavl" : boot.engine.debug_settings_file);
+  return project_path(boot, "engine.debug_settings_file",
+                      boot.engine.debug_settings_file.empty() ? "debug.tavl" : boot.engine.debug_settings_file);
 }
 
 template <typename Bootstrap>
 std::string key_bindings_path(const Bootstrap& boot) {
-  if (boot.engine.key_bindings_file.empty()) {
-    return utils::project_folder() + "key_bingings.tavl";
-  }
-  if (boot.engine.key_bindings_file.front() == '/') {
-    return boot.engine.key_bindings_file;
-  }
-  return utils::project_folder() + boot.engine.key_bindings_file;
+  return project_path(boot, "engine.key_bindings_file",
+                      boot.engine.key_bindings_file.empty() ? "key_bingings.tavl" : boot.engine.key_bindings_file);
 }
 
 inline input::bindings_config standard_key_bindings() {
   input::bindings_config out;
   out.actions["quit"] = {"escape"};
   out.actions["toggle_menu"] = {"f1"};
+  out.actions["screenshot"] = {"f12"};
   out.actions["camera_up"] = {"key_w"};
   out.actions["camera_left"] = {"key_a"};
   out.actions["camera_down"] = {"key_s"};
@@ -141,22 +146,31 @@ enum class config_file_status : uint8_t {
   invalid,
 };
 
+// Файл разбирается ПОВЕРХ fallback: поля, которых в файле нет, остаются умолчаниями. Списки и
+// таблицы при этом не заменяются, а ДОПОЛНЯЮТСЯ (tavl дописывает элементы в заполненный контейнер),
+// поэтому значение с контейнерами, где файл должен заменять умолчание, передаёт пустой fallback и
+// накладывает умолчания само. Так сделаны привязки клавиш: умолчания применяет
+// apply_runtime_bindings, файл заменяет действие целиком. Разбор поверх умолчаний давал
+// `[key_s, key_s]`, и каждый запуск с сохранённым файлом добавлял ещё одну копию.
 template <typename Value>
 config_file_status load_tavl_file(
   const std::string& path,
   const Value& fallback,
   Value& out,
   const std::string_view label) {
-  if (!file_io::exists(path)) {
+  const auto content = file_io::read_text(path);
+  if (!content) {
+    if (content.error() != file_io::read_error::not_found) {
+      utils::error{}("{} '{}' cannot be read: {}", label, path, file_io::describe(content.error()));
+    }
     out = fallback;
     return config_file_status::missing;
   }
 
   try {
     tavl::parser parser;
-    const auto content = file_io::read(path);
     parser.add_default_operator();
-    parser.flush(content);
+    parser.flush(*content);
     parser.finish();
 
     Value candidate = fallback;
@@ -235,10 +249,10 @@ void sync_engine_boot_config(Bootstrap& boot) {
 }
 
 template <typename LoggingConfig>
-void setup_logging(const LoggingConfig& log_cfg) {
+void setup_logging(const utils::root& root, const LoggingConfig& log_cfg) {
   std::string file;
   if (!log_cfg.file.empty()) {
-    file = utils::project_folder() + log_cfg.file;
+    file = project_path(root, "logging.file", log_cfg.file);
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(file).parent_path(), ec);
   }
@@ -266,6 +280,22 @@ void setup_logging(const LoggingConfig& log_cfg) {
   apply(ld::demiurg, log_cfg.demiurg);
 }
 
+// debug.tavl — технический файл разработчика, не игрока: появляется на диске, только когда в нём
+// есть что хранить (logging/metrics отличаются от bundled defaults), либо если он уже есть.
+template <typename Bootstrap>
+bool write_debug_settings(Bootstrap& boot, const std::string_view label) {
+  const auto path = debug_settings_path(boot);
+  if (!file_io::exists(path)) {
+    std::string current;
+    std::string defaults;
+    if (tavl::serialize(boot.persisted_debug, current) &&
+        tavl::serialize(boot.default_persisted_debug, defaults) && current == defaults) {
+      return true;
+    }
+  }
+  return write_tavl_file(boot.persisted_debug, path, label);
+}
+
 template <typename Bootstrap>
 config_file_status deserialize_settings_file(Bootstrap& boot, const std::string& path) {
   const auto status = load_tavl_file(
@@ -274,7 +304,7 @@ config_file_status deserialize_settings_file(Bootstrap& boot, const std::string&
   if (!file_io::exists(debug_path)) {
     // Preserve logging/metrics from the former combined user settings before splitting it.
     load_tavl_file(path, boot.default_persisted_debug, boot.persisted_debug, "legacy debug settings");
-    if (write_tavl_file(boot.persisted_debug, debug_path, "debug settings") && status == config_file_status::loaded)
+    if (write_debug_settings(boot, "debug settings") && status == config_file_status::loaded)
       write_tavl_file(boot.persisted_settings, path, "settings migration");
   } else {
     load_tavl_file(debug_path, boot.default_persisted_debug, boot.persisted_debug, "debug settings");
@@ -317,7 +347,7 @@ bool save_settings(Bootstrap& boot) {
   export_persisted_settings(boot);
   const bool settings_written = write_tavl_file(
     boot.persisted_settings, settings_path(boot), "settings");
-  const bool debug_written = write_tavl_file(boot.persisted_debug, debug_settings_path(boot), "debug settings");
+  const bool debug_written = write_debug_settings(boot, "debug settings");
   const bool bindings_written = save_key_bindings(boot);
   return settings_written && debug_written && bindings_written;
 }
@@ -337,7 +367,7 @@ bool reload_settings(Bootstrap& boot) {
 
   const auto bindings_file = key_bindings_path(boot);
   const auto bindings_status = load_tavl_file(
-    bindings_file, boot.default_bindings, boot.bindings, "key bindings");
+    bindings_file, input::bindings_config{}, boot.bindings, "key bindings");
   boot.bindings_file_loaded = bindings_status == config_file_status::loaded;
 
   // UI reload приходит после создания окна. В headless/до окна оставляем текстовый
@@ -371,13 +401,17 @@ void init_standard_bootstrap(Bootstrap& boot) {
   boot.engine_resources = std::make_unique<demiurg::resource_system>();
   register_standard_engine_resources<AppConfigResource>(boot);
 
-  boot.engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + boot.engine.resource_root);
+  boot.engine_modules = std::make_unique<demiurg::module_system>(
+    project_path(boot, "engine.resource_root", boot.engine.resource_root));
   boot.engine_modules->load_modules({demiurg::module_system::list_entry{boot.engine.engine_module, "", ""}});
   boot.engine_resources->parse_resources(boot.engine_modules.get());
 
   preload_render_config_sources(*boot.engine_resources);
 
+  // Пустой id — проект задаёт эту часть сам (в коде bootstrap) и документа движка не ищет:
+  // config/* в resources/engine — предварительные числа для тестов и площадок без своих настроек.
   for (const auto& id : {boot.engine.engine_config_id, boot.engine.project_config_id, boot.engine.debug_config_id}) {
+    if (id.empty()) continue;
     if (auto* cfg_res = boot.engine_resources->template get<AppConfigResource>(id)) {
       cfg_res->load(utils::safe_handle_t{});
       cfg_res->apply_to(boot.settings);
@@ -403,7 +437,7 @@ void init_standard_bootstrap(Bootstrap& boot) {
 
   const auto bindings_file = key_bindings_path(boot);
   const auto bindings_status = load_tavl_file(
-    bindings_file, boot.default_bindings, boot.bindings, "key bindings");
+    bindings_file, input::bindings_config{}, boot.bindings, "key bindings");
   boot.bindings_file_loaded = bindings_status == config_file_status::loaded;
   if (boot.bindings_file_loaded) {
     DE_LOG(catalogue::log_domain::main, flow, "Loaded key bindings '{}'", bindings_file);
@@ -411,7 +445,7 @@ void init_standard_bootstrap(Bootstrap& boot) {
     write_tavl_file(boot.bindings, bindings_file, "key bindings");
   }
 
-  setup_logging(boot.settings.logging);
+  setup_logging(open_project_root(boot.engine.project_root), boot.settings.logging);
 
   const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
   uint32_t reserved_threads = boot.engine.worker_threads_reserved;
@@ -429,8 +463,8 @@ void init_standard_bootstrap(Bootstrap& boot) {
     hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
     min_worker_threads);
 
-  const auto cpu_name = utils::get_cpu_name();
-  utils::info("Using cpu '{}', cores: {}, worker threads: {}", cpu_name, hw_threads, thread_count);
+  utils::info("CPU {}", utils::describe(utils::query_cpu()));
+  utils::info("Hardware threads: {}, worker threads: {}", hw_threads, thread_count);
   DE_LOG(catalogue::log_domain::main, flow,
          "Loaded app config '{}': window {}x{}, render config '{}'",
          boot.engine.engine_config_id,
@@ -493,11 +527,12 @@ struct standard_app_runtime_traits {
 template <typename Bootstrap>
 void prepare_pipeline_cache(Bootstrap& boot, const std::string& pipeline_cache_id) {
   const std::string cache_module = boot.settings.render.cache_folder + "/painter";
-  file_io::create_directory(project_path(boot.settings.render.cache_folder));
-  file_io::create_directory(project_path(cache_module));
-  file_io::create_directory(project_path(cache_module + "/pipeline_cache"));
+  const auto root = open_project_root(boot.engine.project_root);
+  file_io::create_directory(project_path(root, "render.cache_folder", boot.settings.render.cache_folder));
+  file_io::create_directory(project_path(root, "render.cache_folder", cache_module));
+  file_io::create_directory(project_path(root, "render.cache_folder", cache_module + "/pipeline_cache"));
 
-  boot.cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
+  boot.cache_modules = std::make_unique<demiurg::module_system>(root.path());
   boot.cache_modules->load_modules({demiurg::module_system::list_entry{cache_module, "", ""}});
   boot.engine_resources->append_resources(boot.cache_modules.get());
   if (auto* pc = boot.engine_resources->template get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
@@ -514,7 +549,7 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
 
   const auto render_ft = frame_time_from_fps(boot.engine.render_fps);
   const std::string pipeline_cache_id = "pipeline_cache/main";
-  const std::string pipeline_cache_path = project_path(boot.settings.render.cache_folder + "/painter/pipeline_cache/main.bin");
+  const std::string pipeline_cache_path = project_path(boot, "render.cache_folder", boot.settings.render.cache_folder + "/painter/pipeline_cache/main.bin");
   prepare_pipeline_cache(boot, pipeline_cache_id);
 
   render_system_config render_cfg;
@@ -524,7 +559,10 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
   render_cfg.cache_registry = boot.engine_resources.get();
   render_cfg.pipeline_cache_id = pipeline_cache_id;
   render_cfg.pipeline_cache_path = pipeline_cache_path;
-  render_cfg.shader_cache_directory = project_path(boot.settings.render.cache_folder + "/painter/spirv");
+  // Кэш SPIR-V — НЕ внутри `<cache>/painter`: тот каталог подключён к реестру движка модулем ради
+  // кэша пайплайна (prepare_pipeline_cache), и файлы `.despv` в нём demiurg перечислял как ресурсы
+  // без типа — по предупреждению на каждый скомпилированный шейдер при каждом старте.
+  render_cfg.shader_cache_directory = project_path(boot, "render.cache_folder", boot.settings.render.cache_folder + "/spirv");
   render_cfg.app_name = std::move(app_name);
   render_cfg.headless = boot.engine.headless;
   render_cfg.vulkan_debug = boot.engine.vulkan_debug;

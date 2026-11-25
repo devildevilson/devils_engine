@@ -408,10 +408,11 @@ static vk::UniqueShaderModule load_shader_module(
   const auto full_path = (ctx->shader_filesystem_prefix_.empty()
                             ? utils::project_folder() + "tests/shaders/"
                             : ctx->shader_filesystem_prefix_) + shader_path;
-  if (!file_io::exists(full_path)) {
-    utils::error{}("Shader file '{}' not found", full_path);
+  const auto shader_text = file_io::read_text(full_path);
+  if (!shader_text) {
+    utils::error{}("Shader file '{}' cannot be read: {}", full_path, file_io::describe(shader_text.error()));
   }
-  const auto content = file_io::read(full_path);
+  const auto& content = *shader_text;
   shader_crafter sc(nullptr);
   sc.set_include_root(
     ctx->shader_filesystem_prefix_.empty()

@@ -92,6 +92,7 @@ public:
   void before_ui_update(devils_engine::visage::system& ui) const;
 
 private:
+  struct lua_bindings; // Lua-биндинги (реализация в .cpp)
   void drain_loaded_chunks(broker& messages, uint64_t generation);
   // WASD-движение камеры: скорость выражена в реальном времени кадра, но изменение разрешено
   // только пока active-gameplay timeline идёт; точка клампится в [0, world_extent_].
@@ -116,6 +117,10 @@ private:
   std::vector<bool> chunks_loaded_;
   uint32_t chunks_loaded_count_ = 0;
   camera2d camera_;
+  // Опубликованные камеры, которые рендер ещё может показать: тайлы отбираются по их объединению.
+  devils_engine::simul::published_cameras published_cameras_;
+  camera2d last_published_camera_{{0.0f, 0.0f}, 0.0f, 0.0f}; // последняя ушедшая в рендер (пауза шлёт только изменения)
+  devils_engine::simul::camera_config camera_config_; // тип камеры сцены
   glm::vec2 world_extent_{0.0f, 0.0f}; // бокс тайлового мира — кламп камеры
   tile_batch tile_batch_;
   bool tiles_logged_ = false;

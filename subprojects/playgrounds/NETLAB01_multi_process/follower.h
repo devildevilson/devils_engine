@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <random>
 
 // The follower process. It proposes intents, consumes the authoritative
 // timeline, notices loss two different ways, reconnects with the ticket the
@@ -128,8 +127,6 @@ public:
                const uint16_t envelope_version = net::session_wire_envelope_version)
     : schedule_(schedule), local_(compatibility), envelope_version_(envelope_version),
       ticket_path_(ticket_path), host_address_(host_address), port_(port), roster_(roster) {
-    std::random_device source;
-    nonce_seed_ = (uint64_t(source()) << 32) | uint64_t(source());
     scratch_.reserve(lab_max_message_bytes);
     reply_.reserve(net::session_wire_max_message_bytes);
     credential_bytes_.reserve(net::reconnect_credential_bytes);
@@ -271,12 +268,10 @@ private:
   }
 
   void start_handshake() {
+    // Nonce — из CSPRNG (network_gns): random_device + splitmix давали 256-битному nonce
+    // не больше 64 бит неопределённости.
     net::session_nonce nonce{};
-    uint64_t word = splitmix64(nonce_seed_ ^ ++nonce_counter_);
-    for (size_t i = 0; i < nonce.size(); ++i) {
-      if (i % 8 == 0) word = splitmix64(word);
-      nonce[i] = std::byte(uint8_t(word >> (8 * (i % 8))));
-    }
+    net::secure_random_bytes(nonce);
     std::optional<uint64_t> resumed;
     std::optional<net::recovery_anchor<uint64_t, utils::digest>> confirmed;
     if (has_ticket_ && resuming_) resumed = ticket_.credential.ticket.session;
@@ -934,8 +929,8 @@ private:
   lab_schedule schedule_;
   verifier verify_;
   follower_counters counters_;
-  gns_runtime runtime_;
-  lab_link link_;
+  net::gns_runtime runtime_{1};
+  lab_link link_{runtime_.dispatcher()};
   lab_follower_mac follower_mac_;
   net::credential_scratch credential_scratch_;
   net::session_compatibility local_ = lab_compatibility();
@@ -966,7 +961,6 @@ private:
 
   uint32_t host_address_ = 0x7f000001;
   int64_t anchor_ = 0;
-  uint64_t nonce_seed_ = 0, nonce_counter_ = 0;
   uint64_t checkpoint_filled_ = 0, last_proposed_ = 0, exit_request_ = 0, linger_until_ = 0;
   uint64_t final_tick_ = 0;
   uint64_t authority_tick_seen_ = 0;

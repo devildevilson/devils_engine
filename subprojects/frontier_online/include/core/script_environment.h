@@ -4,7 +4,7 @@
 #include <devils_engine/act/script_compiler.h>
 #include <devils_script/system.h>
 
-#include "entity_scope.h"
+#include "core/entity_scope.h"
 
 // Проектный holder devils_script::system: ЕДИНСТВЕННАЯ точка регистрации нативных геймплейных
 // функций (скрипты обязаны их видеть) + concrete act::script_compiler для entity_scope. Нативки

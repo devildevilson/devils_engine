@@ -61,6 +61,7 @@ public:
   void end_simulation_frame(size_t time, const devils_engine::simul::phase_gate& gate);
   void on_visage_before_update();                             // tf_* env + слияние sound_state перед visage
   void project_settings_reloaded();                           // проектная реакция на reload настроек
+  void on_frame_captured(const devils_engine::simul::command_frame_captured& result); // итог снимка (--dump)
 
 private:
   std::unique_ptr<simulation_init> container;

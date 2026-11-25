@@ -11,11 +11,14 @@ set(TEST_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/tests")
 function(devils_add_doctest target)
   add_executable(${target} doctest_main.cpp ${ARGN})
   target_link_libraries(${target} PRIVATE devils_engine::options doctest::doctest)
+  # Without it doctest only forward-declares std::basic_ostream; MSVC then instantiates its
+  # string_view operator<< for CHECK(a == b) on an incomplete stream type.
+  target_compile_definitions(${target} PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
   set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
 
   if (WIN32)
     add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      COMMAND ${CMAKE_COMMAND} -E $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:${target}>>,copy_if_different,true>
         $<TARGET_RUNTIME_DLLS:${target}>
         $<TARGET_FILE_DIR:${target}>
       COMMAND_EXPAND_LISTS
@@ -38,10 +41,23 @@ devils_add_doctest(utils_general_test utils_general_test.cpp)
 target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_engine::mood devils_engine::act)
 
 devils_add_doctest(utils_contract_test utils_contract_test.cpp)
+# Межплатформенная математика: сверка битов libm с эталоном GCC/glibc (см. заголовок файла).
+devils_add_doctest(utils_math_platform_test utils_math_platform_test.cpp)
+target_link_libraries(utils_math_platform_test PRIVATE devils_engine::utils)
 target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 
 devils_add_doctest(utils_serialization_test utils_serialization_test.cpp)
 target_link_libraries(utils_serialization_test PRIVATE devils_engine::utils)
+devils_add_doctest(utils_root_test utils_root_test.cpp)
+target_link_libraries(utils_root_test PRIVATE devils_engine::utils)
+# Проверка набора инструкций (libs/utils/src/utils/isa_guard.h) отказывает до main любого
+# исполняемого файла; здесь — до main utils_root_test, которому подменён процессор «без ничего».
+if (NOT DEVILS_ENGINE_ARCH STREQUAL "OFF")
+  devils_add_test(NAME utils_isa_guard_refuses COMMAND $<TARGET_FILE:utils_root_test>)
+  set_tests_properties(utils_isa_guard_refuses PROPERTIES LABELS devils_engine
+    ENVIRONMENT "DEVILS_ENGINE_ISA_GUARD_TEST=missing"
+    PASS_REGULAR_EXPRESSION "processor lacks: [^\n]*avx")
+endif()
 
 devils_add_doctest(timeline_test timeline_test.cpp)
 target_link_libraries(timeline_test PRIVATE devils_engine::utils)
@@ -92,6 +108,9 @@ target_link_libraries(network_hot_path_test PRIVATE devils_engine::network)
 devils_add_doctest(network_session_test network_session_test.cpp)
 target_link_libraries(network_session_test PRIVATE devils_engine::network)
 
+devils_add_doctest(network_endpoint_test network_endpoint_test.cpp)
+target_link_libraries(network_endpoint_test PRIVATE devils_engine::network)
+
 devils_add_doctest(network_session_wire_test network_session_wire_test.cpp)
 target_link_libraries(network_session_wire_test PRIVATE devils_engine::network)
 
@@ -112,6 +131,8 @@ target_link_libraries(network_reconnect_test PRIVATE devils_engine::network)
 if (TARGET devils_engine::network_gns)
   devils_add_doctest(network_gns_transport_test network_gns_transport_test.cpp)
   target_link_libraries(network_gns_transport_test PRIVATE devils_engine::network_gns)
+  devils_add_doctest(network_secure_random_test network_secure_random_test.cpp)
+  target_link_libraries(network_secure_random_test PRIVATE devils_engine::network_gns)
   devils_add_doctest(network_backend_session_test network_backend_session_test.cpp)
   target_link_libraries(network_backend_session_test PRIVATE devils_engine::network devils_engine::network_gns)
 endif()
@@ -137,6 +158,7 @@ if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)
   devils_add_test(NAME utils_deterministic_cross_compiler_probe
     COMMAND ${CMAKE_COMMAND}
       -DPROBE_SOURCE=${CMAKE_CURRENT_LIST_DIR}/utils_deterministic_corpus.cpp
+      -DPROBE_EXTRA_SOURCE=${CMAKE_SOURCE_DIR}/libs/utils/src/utils/deterministic_math.cpp
       -DPROBE_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/libs/utils/include
       -DPROBE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/utils_deterministic_probe
       -DGXX=${DEVILS_NETWORK_GXX}
@@ -166,6 +188,12 @@ target_compile_definitions(gn06_motif_resource_test PRIVATE
 
 devils_add_doctest(simul_lifecycle_test simul_lifecycle_test.cpp)
 target_link_libraries(simul_lifecycle_test PRIVATE devils_engine::simul)
+
+devils_add_doctest(simul_interpolation_test simul_interpolation_test.cpp)
+target_link_libraries(simul_interpolation_test PRIVATE devils_engine::simul)
+
+devils_add_doctest(simul_camera_test simul_camera_test.cpp)
+target_link_libraries(simul_camera_test PRIVATE devils_engine::simul)
 
 devils_add_doctest(turn_pipeline_test turn_pipeline_test.cpp)
 target_link_libraries(turn_pipeline_test PRIVATE devils_engine::simul)
@@ -226,6 +254,8 @@ target_link_libraries(mood_diagnostics_test PRIVATE devils_engine::mood devils_e
 
 devils_add_doctest(act_call_context_test act_call_context_test.cpp)
 target_link_libraries(act_call_context_test PRIVATE devils_engine::act devils_script)
+devils_add_doctest(act_script_math_test act_script_math_test.cpp)
+target_link_libraries(act_script_math_test PRIVATE devils_engine::act devils_script)
 
 devils_add_doctest(act_packer_test act_packer_test.cpp)
 target_link_libraries(act_packer_test PRIVATE devils_engine::act devils_script)
@@ -256,6 +286,9 @@ target_link_libraries(catalogue_introspection_test PRIVATE devils_engine::catalo
 # устройства законно, и тогда он просто ничего не проверяет.
 devils_add_doctest(painter_compute_context_test painter_compute_context_test.cpp)
 target_link_libraries(painter_compute_context_test PRIVATE devils_engine::painter devils_engine::utils)
+
+devils_add_doctest(painter_image_file_test painter_image_file_test.cpp)
+target_link_libraries(painter_image_file_test PRIVATE devils_engine::painter)
 
 devils_add_doctest(painter_shader_prepare_test painter_shader_prepare_test.cpp)
 target_link_libraries(painter_shader_prepare_test PRIVATE devils_engine::painter devils_engine::demiurg devils_engine::utils)
@@ -391,7 +424,7 @@ devils_add_doctest(fixed_pool_move_test fixed_pool_move_test.cpp)
 target_link_libraries(fixed_pool_move_test PRIVATE devils_engine::utils)
 
 devils_add_doctest(demiurg_profile_test demiurg_profile_test.cpp)
-target_link_libraries(demiurg_profile_test PRIVATE devils_engine::demiurg minizip)
+target_link_libraries(demiurg_profile_test PRIVATE devils_engine::demiurg miniz)
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if (Python3_Interpreter_FOUND)
@@ -451,7 +484,7 @@ foreach(library IN ITEMS demiurg input sound visage)
   target_link_libraries(public_link_${library} PRIVATE devils_engine::${library})
   if(WIN32)
     add_custom_command(TARGET public_link_${library} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      COMMAND ${CMAKE_COMMAND} -E $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:public_link_${library}>>,copy_if_different,true>
         $<TARGET_RUNTIME_DLLS:public_link_${library}>
         $<TARGET_FILE_DIR:public_link_${library}>
       COMMAND_EXPAND_LISTS)

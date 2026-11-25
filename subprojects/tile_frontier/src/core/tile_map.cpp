@@ -73,22 +73,17 @@ void apply_chunk(tile_grid& grid, const tile_chunk& chunk) {
   }
 }
 
-glm::mat4 camera2d::view_proj() const {
-  // Ортопроекция мирового прямоугольника во view rect камеры. Z игнорируем (плоская карта),
-  // берём широкий диапазон [-1,1]. Соглашение clip-пространства (Y вниз / depth 0..1) под
-  // конкретный бэкенд painter ещё предстоит сверить на render-стороне — это заготовка.
-  const glm::vec2 mn = view_min();
-  const glm::vec2 mx = view_max();
-  return glm::ortho(mn.x, mx.x, mn.y, mx.y, -1.0f, 1.0f);
+tile_span visible_tiles(const camera2d& cam, const tile_grid& grid, const float margin_tiles) {
+  return visible_tiles(devils_engine::simul::view_bounds{cam.view_min(), cam.view_max()}, grid, margin_tiles);
 }
 
-tile_span visible_tiles(const camera2d& cam, const tile_grid& grid, const float margin_tiles) {
+tile_span visible_tiles(const devils_engine::simul::view_bounds& view, const tile_grid& grid, const float margin_tiles) {
   if (grid.width == 0 || grid.height == 0 || grid.tile_size <= 0.0f) {
     return {};
   }
 
-  const glm::vec2 mn = cam.view_min();
-  const glm::vec2 mx = cam.view_max();
+  const glm::vec2 mn = view.min;
+  const glm::vec2 mx = view.max;
   const float inv = 1.0f / grid.tile_size;
 
   // мировой AABB камеры -> индексы тайлов; floor для нижней границы, ceil для верхней,

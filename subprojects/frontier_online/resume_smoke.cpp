@@ -1,4 +1,3 @@
-#include "devils_engine/utils/log.h"
 // Resume-детерминизм РЕАЛЬНОГО геймплея frontier_online: прогоняем симуляцию, checkpoint → restore в
 // чистый слайс, затем гоняем оба слайса синхронно и сверяем ПОЛНОЕ состояние побайтово. Оракул
 // равенства — сам сериализатор: checkpoint детерминирован (позиционно + сортировка мап), поэтому
@@ -11,10 +10,12 @@
 
 #include <devils_engine/aesthetics/serialization.h> // dump_world — оракул равенства
 #include <devils_engine/thread/atomic_pool.h>
+#include <devils_engine/utils/log.h>
 #include <spdlog/spdlog.h>
 
 #include "core/actor_batch.h"
 #include "core/actor_simulation.h"
+#include "core/causal_content.h"
 #include "core/actor_checkpoint.h"
 #include "test_brain_fixture.h"
 
@@ -45,7 +46,7 @@ int main() {
     catalogue::validate_phase_descriptor(phase);
   }
 
-  test_brain_fixture fixture(FRONTIER_ONLINE_SOURCE_RESOURCE_ROOT);
+  test_brain_fixture fixture(frontier_online::core::project_modules_root());
   const auto& brains = fixture.config();
 
   const uint32_t count = 2000;

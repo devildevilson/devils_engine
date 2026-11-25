@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,6 +17,7 @@
 #include <devils_engine/demiurg/resource_loader.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/painter/glsl_source_file.h>
+#include <devils_engine/painter/image_file.h>
 #include <devils_engine/painter/mesh_resource.h>
 #include <devils_engine/painter/texture_resource.h>
 #include <devils_engine/simul/lua_script_resource.h>
@@ -69,6 +71,7 @@ public:
     update_project(time, br);
     drain_prepare_shaders(br);
     reconcile_gpu_jobs(br);
+    encode_one_frame(br);
   }
 
   demiurg::resource_system* resources() {
@@ -112,6 +115,31 @@ private:
     demiurg::resource_loader loader;
     std::vector<demiurg::resource_loader::external_job> gpu_jobs;
   };
+
+  // Снимок: кодирование и запись — на этом потоке, он и так читает и декодирует файлы. Одна запись за
+  // update: AVIF кодируется сотни миллисекунд, остальная работа потока не должна ждать очередь снимков.
+  void encode_one_frame(Broker& br) {
+    command_encode_frame cmd;
+    if (!br.encode_frame.try_pop(cmd)) {
+      return;
+    }
+    const painter::image_view view{cmd.width, cmd.height, cmd.bgra,
+                                   std::span<const uint8_t>(cmd.pixels.data(), cmd.pixels.size())};
+    const auto written = painter::write_image_file(cmd.path, view);
+    command_frame_captured result;
+    result.path = std::move(cmd.path);
+    result.ok = written.has_value();
+    if (written) {
+      utils::info("frame capture: wrote {}x{} to '{}'", cmd.width, cmd.height, result.path);
+    } else {
+      result.error = written.error();
+      utils::warn("frame capture: {}", result.error);
+    }
+    if (!br.frame_captured.try_push(std::move(result))) {
+      // Ожидающий итога (выход по --dump) его не увидит: сказать об этом хотя бы в лог.
+      utils::warn("frame capture: result dropped: the result queue is full");
+    }
+  }
 
   void drain_gpu_done(Broker& br) {
     command_gpu_done cmd{};
