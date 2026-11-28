@@ -1,0 +1,1 @@
+{ name = room_target, resources = [ scene_color = color_attachment, scene_depth = depth_attachment ] }

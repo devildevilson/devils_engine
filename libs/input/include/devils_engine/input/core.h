@@ -127,7 +127,9 @@ void restore_window(GLFWwindow* w) noexcept;
 void set_window_monitor(GLFWwindow* w, GLFWmonitor* m, const int32_t xpos, const int32_t ypos, const uint32_t width, const uint32_t height, const int32_t refresh_rate) noexcept;
 std::tuple<int32_t, int32_t> window_pos(GLFWwindow* m) noexcept;
 std::tuple<float, float> window_content_scale(GLFWwindow* m) noexcept;
+// Main thread. The returned view is valid until the next title query or change.
 std::string_view window_title(GLFWwindow* m) noexcept;
+void set_window_title(GLFWwindow* w, const std::string& title) noexcept;
 GLFWmonitor* window_monitor(GLFWwindow* m) noexcept;
 void set_icon(GLFWwindow* m, const size_t count, const icon_t* icons);
 

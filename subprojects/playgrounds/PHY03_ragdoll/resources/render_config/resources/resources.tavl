@@ -1,0 +1,5 @@
+{ name = swapchain_image, format = swapchain4, role = present, size = viewport, swap = swapchain }
+{ name = scene_color, format = sf4, role = hdr_color, size = viewport, swap = per_frame }
+{ name = scene_depth, format = d32, role = depth, size = viewport, swap = per_frame }
+{ name = camera_buffer, format = c1, role = upload, size = camera_bytes, swap = per_frame }
+{ name = scene_vertices, format = c1, role = upload, size = vertex_bytes, swap = per_frame }

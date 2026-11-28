@@ -193,6 +193,10 @@ std::string_view window_title(GLFWwindow* m) noexcept {
   return std::string_view(glfwGetWindowTitle(m));
 }
 
+void set_window_title(GLFWwindow* w, const std::string& title) noexcept {
+  glfwSetWindowTitle(w, title.c_str());
+}
+
 GLFWmonitor* window_monitor(GLFWwindow* m) noexcept {
   return glfwGetWindowMonitor(m);
 }

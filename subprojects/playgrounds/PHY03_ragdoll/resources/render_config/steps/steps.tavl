@@ -1,0 +1,8 @@
+{ name = draw_room, material = room_material, geometry = triangle_geometry,
+  sets = [ room_data ], command = "draw constant room_draw" }
+{
+  name = draw_colliders, material = collider_material, geometry = line_geometry
+  sets = [ room_data ], command = "draw constant collider_draw"
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{ name = present_room, command = "blit scene_color swapchain_image" }

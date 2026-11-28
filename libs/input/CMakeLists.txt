@@ -9,8 +9,8 @@ project(
 )
 
 # GLFW: the distribution's package on Linux, vcpkg on Windows. 3.4 is the floor: core.cpp uses
-# glfwInitVulkanLoader and glfwGetWindowTitle (Ubuntu 24.04 ships 3.3). GLOBAL because
-# devils_input is a static library: its consumers link `glfw` from their own directories.
+# glfwInitVulkanLoader and glfwGetWindowTitle (Ubuntu 24.04 ships 3.3). Consumers link
+# devils_engine::input and receive GLFW through its private static link dependency.
 find_package(glfw3 3.4 REQUIRED GLOBAL)
 
 set(SRC_LIST

@@ -45,6 +45,7 @@
 | `NET07` | `NET07_replication_baselines` | закрыта | explicit baseline/delta replication поверх fault laboratory |
 | `PHY01` | `PHY01_jolt_basics` | активна | Jolt runtime/world ownership, rigid bodies, queries, jobs и deterministic math probe |
 | `PHY02` | `PHY02_bounded_physics` | закрыта | ограниченные пары и запросы, учёт памяти и сравнение штатного пула Jolt с `atomic_pool` |
+| `PHY03` | [`PHY03_ragdoll`](PHY03_ragdoll/README.md) | активна | капсула, рэгдолл, торможение платформы, подъём и два режима FPS-камеры |
 
 `anomalous_weather` оставлена в parking lot без номера: она вернётся после PF10, но следующий свободный
 номер заранее за ней не закрепляется.

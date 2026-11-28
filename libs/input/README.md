@@ -49,7 +49,7 @@ Window API покрывает текущие потребности движка
 - `set_window_monitor`;
 - `window_pos`;
 - `window_content_scale`;
-- `window_title`;
+- `window_title` / `set_window_title`;
 - `window_monitor`;
 - `set_icon`.
 

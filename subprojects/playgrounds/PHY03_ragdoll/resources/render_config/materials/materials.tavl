@@ -1,0 +1,12 @@
+{
+  name = room_material
+  shaders = { vertex = "room.vert.glsl", fragment = "room.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = collider_material
+  shaders = { vertex = "room.vert.glsl", fragment = "room.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}

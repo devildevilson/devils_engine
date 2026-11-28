@@ -1,0 +1,7 @@
+{
+  name = room_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = vertex },
+    { resource = scene_vertices, usage = storage_read, stage = vertex }
+  ]
+}

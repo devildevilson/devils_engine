@@ -13,6 +13,11 @@
 #include <ctime>
 #include <string>
 
+#if defined(__linux__)
+#include <cerrno>
+#include <sys/prctl.h>
+#endif
+
 using namespace devils_engine;
 
 namespace devils_engine::phy02 {
@@ -706,6 +711,13 @@ void verify(const shapes& cooked, settings config) {
 }
 
 void scratch_limit_probe(const shapes& cooked) {
+#if defined(__linux__)
+  // Keep the expected SIGABRT from triggering the system coredump handler.
+  if (prctl(PR_SET_DUMPABLE, 0L, 0L, 0L, 0L) == -1) {
+    const int error = errno;
+    utils::error{}("PHY02 scratch probe: prctl(PR_SET_DUMPABLE) failed with errno {}", error);
+  }
+#endif
   thread::atomic_pool pool(1);
   limits cap;
   cap.scratch = 1;
