@@ -86,11 +86,10 @@ kinematic target входят в command stream, и когда результа�
 batch removal и политика 32-bit generation wrap; текущий handle гарантирует отказ старого поколения,
 но после полного оборота счётчика прежнее значение математически повторится.
 
-Пока используется примерный `JPH::JobSystemThreadPool`. Подключить существующий `thread::atomic_pool`
-тонким callback недостаточно: Jolt создаёт динамический dependency graph, держит ref-counted jobs и
-добавляет jobs в barrier уже во время ожидания, тогда как engine pool сейчас даёт bounded submit/wait
-без этой модели. Если объединять pools, нужен отдельный `JobSystemWithBarrier` adapter с измеренной
-очередью и доказанным отсутствием deadlock; это самостоятельный следующий срез.
+Площадка использует `JPH::JobSystemThreadPool`. Отдельный адаптер к `thread::atomic_pool` с
+`JobSystemWithBarrier` проверен в PHY02 вместе с зависимостями jobs, заполнением очереди и
+добавлением задач в действующий барьер. Штатная очередь Jolt служит базой, общий пул выбирается
+по измерениям у потребителя. [PHY02](../PHY02_bounded_physics/README.md)
 
 Abseil остаётся vendored dependency protobuf. `absl::InlinedVector` реален, но один контейнер не
 оправдывает второй публичный vocabulary type рядом с `std::vector` и GTL; flat hash/btree containers
